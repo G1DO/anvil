@@ -11,21 +11,8 @@
 	<groupId>com.g1do</groupId>
 	<artifactId>anvil</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<name/>
-	<description/>
-	<url/>
-	<licenses>
-		<license/>
-	</licenses>
-	<developers>
-		<developer/>
-	</developers>
-	<scm>
-		<connection/>
-		<developerConnection/>
-		<tag/>
-		<url/>
-	</scm>
+	<name>anvil</name>
+	<description>Capability-secure, deterministically replayable execution fabric.</description>
 	<properties>
 		<java.version>25</java.version>
 	</properties>
