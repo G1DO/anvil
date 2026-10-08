@@ -1,6 +1,6 @@
 # anvil
 
-Capability-secure, deterministically replayable execution fabric. Current state: V1 durable schema plus idempotent transactional submit plus fenced claim/heartbeat/commit/reconciler.
+Capability-secure, deterministically replayable execution fabric. Current state: V1 durable schema plus idempotent transactional submit plus fenced claim/heartbeat/commit/reconciler plus crash-safe content store with safe garbage collection.
 
 ## Stack
 
@@ -55,6 +55,22 @@ Capability-secure, deterministically replayable execution fabric. Current state:
   reconciler_poll=1s`; `clock_timestamp()` is the only lease clock.
   At-least-once with idempotent fenced effects; exactly-once is not asserted.
 
+## Content store (issue #5)
+
+- `ContentStore.put(tenant, bytes)` returns `sha256(bytes)` (lowercase hex) and
+  stores under `tenants/{tenant}/{sha}` (`anvil.cas.root`, default `var/cas`);
+  no cross-tenant deduplication. `get(tenant, sha)` re-verifies the hash.
+- Durability order is mandatory: tmp-write in the destination directory ->
+  fsync file -> atomic rename -> fsync directory, then the `artifacts` row
+  is written. The final name appears only via atomic rename, so readers never
+  see partial bytes; a hash mismatch is a torn tail and is removed rather
+  than served (`CorruptContentException`).
+- `acquire(tenant, sha, size)` / `release(tenant, sha)` drive
+  `artifacts.refcount`. `collectGarbage()` deletes only `refcount = 0` rows
+  older than `GC_grace=1h` (DB clock), re-checking each row `FOR UPDATE` so a
+  newly referenced SHA is retained, then sweeps crash orphans (files without
+  rows, old tmp files) by file mtime. Any ambiguity retains rather than deletes.
+
 ## How the database works today
 
 - `application.yaml` sets only the app name; there is no datasource URL.
@@ -63,9 +79,9 @@ Capability-secure, deterministically replayable execution fabric. Current state:
 
 ## Layout
 
-- `src/main/java/com/g1do/anvil` — application entry plus `tenant/` (X-Tenant-Id auth), `submit/` (CBOR, service, controller), and `jobs/` (fenced claim, heartbeat, commit, reconciler)
+- `src/main/java/com/g1do/anvil` — application entry plus `tenant/` (X-Tenant-Id auth), `submit/` (CBOR, service, controller), `jobs/` (fenced claim, heartbeat, commit, reconciler), and `cas/` (crash-safe content store, refcount, garbage collection)
 - `src/main/resources` — config + migrations (`static/`, `templates/` are unused Boot defaults)
-- `src/test` — `contextLoads`, V1 schema proof, submit idempotency proof, fenced claim proof, plus the Testcontainers configuration
+- `src/test` — `contextLoads`, V1 schema proof, submit idempotency proof, fenced claim proof, content-store crash/GC proof, plus the Testcontainers configuration
 
 ## Tests
 
