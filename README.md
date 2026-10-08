@@ -1,6 +1,6 @@
 # anvil
 
-Capability-secure, deterministically replayable execution fabric. Current state: V1 durable schema plus idempotent transactional submit.
+Capability-secure, deterministically replayable execution fabric. Current state: V1 durable schema plus idempotent transactional submit plus fenced claim/heartbeat/commit/reconciler.
 
 ## Stack
 
@@ -33,6 +33,28 @@ Capability-secure, deterministically replayable execution fabric. Current state:
   (`jackson-dataformat-cbor` with `SORT_PROPERTIES_ALPHABETICALLY`);
   `version_sha = sha256(canonical_cbor)`; dupe enforcement is the DB `UNIQUE(tenant_id, idempotency_key)`.
 
+## Claim API (issue #4)
+
+- `JobService.claim(tenant, owner)` claims one `QUEUED` job atomically: candidate
+  selection `WHERE tenant_id + QUEUED + unheld/expired lease + attempt < max_attempts
+  ORDER BY created_at, id LIMIT 20 FOR UPDATE SKIP LOCKED`, then `QUEUED -> RUNNING`
+  with `fencing_token + 1`, `attempt + 1`, `lease = clock_timestamp() + 10s`.
+  The `attempts` ledger row (`UNIQUE(tenant_id, job_id, attempt_number)`) is written
+  in the same transaction: zero lost, zero doubled.
+- `heartbeat(tenant, job, owner, token)` extends only a live lease held by the same
+  owner and token (`RUNNING` plus `lease_expires_at > clock_timestamp()`).
+- `commitSucceeded/Failed(tenant, job, owner, token)` moves `RUNNING -> SUCCEEDED/FAILED`
+  only when id plus owner plus fencing token plus `RUNNING` all match; a stale owner
+  affects zero rows and causes no state change (terminal rows are additionally
+  immutable via `job_state_guard`).
+- `reconcile(tenant)` / `reconcileAll()` is the polling reconciler (intended `1s`):
+  expired `RUNNING` with attempts left returns to `QUEUED` (reclaimable with a new
+  token); `QUEUED` or expired `RUNNING` at or beyond `max_attempts` moves to `DEAD`
+  and is never re-offered. Terminals are never claimable.
+- Timings: `lease_ttl=10s, heartbeat_every=3s, claim LIMIT 20, max_attempts=5,
+  reconciler_poll=1s`; `clock_timestamp()` is the only lease clock.
+  At-least-once with idempotent fenced effects; exactly-once is not asserted.
+
 ## How the database works today
 
 - `application.yaml` sets only the app name; there is no datasource URL.
@@ -41,9 +63,9 @@ Capability-secure, deterministically replayable execution fabric. Current state:
 
 ## Layout
 
-- `src/main/java/com/g1do/anvil` — application entry plus `tenant/` (X-Tenant-Id auth) and `submit/` (CBOR, service, controller)
+- `src/main/java/com/g1do/anvil` — application entry plus `tenant/` (X-Tenant-Id auth), `submit/` (CBOR, service, controller), and `jobs/` (fenced claim, heartbeat, commit, reconciler)
 - `src/main/resources` — config + migrations (`static/`, `templates/` are unused Boot defaults)
-- `src/test` — `contextLoads`, V1 schema proof, submit idempotency proof, plus the Testcontainers configuration
+- `src/test` — `contextLoads`, V1 schema proof, submit idempotency proof, fenced claim proof, plus the Testcontainers configuration
 
 ## Tests
 
