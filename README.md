@@ -1,6 +1,6 @@
 # anvil
 
-Capability-secure, deterministically replayable execution fabric. Current state: V1 durable schema only — no endpoints.
+Capability-secure, deterministically replayable execution fabric. Current state: V1 durable schema plus idempotent transactional submit.
 
 ## Stack
 
@@ -20,7 +20,18 @@ Capability-secure, deterministically replayable execution fabric. Current state:
 ./mvnw spring-boot:run
 ```
 
-The app starts with no endpoints yet; startup-only is expected.
+## Submit API (issue #3)
+
+- `POST /api/documents` (aliases `/api/v1/documents`, `/documents`) with headers
+  `X-Tenant-Id: t_single` and `Idempotency-Key: <key>` and JSON
+  `{"title","mime_type","body"}` (`body` is a JSON string treated as UTF-8 bytes for CBOR `bstr`).
+- Valid request returns `202` with `{"doc_id","version_id","job_id"}` on both first and duplicate delivery;
+  same `(tenant_id, idempotency_key)` returns the same IDs with exactly one job row.
+- Auth -> Validate -> Canonicalize CBOR -> persist in one DB transaction
+  (document plus version plus job plus outbox); validation or persistence failure leaves none behind.
+- CBOR canonical form: RFC 8949 core-deterministic over `{title, mime_type, body}` only
+  (`jackson-dataformat-cbor` with `SORT_PROPERTIES_ALPHABETICALLY`);
+  `version_sha = sha256(canonical_cbor)`; dupe enforcement is the DB `UNIQUE(tenant_id, idempotency_key)`.
 
 ## How the database works today
 
@@ -30,9 +41,9 @@ The app starts with no endpoints yet; startup-only is expected.
 
 ## Layout
 
-- `src/main/java/com/g1do/anvil` — application entry
+- `src/main/java/com/g1do/anvil` — application entry plus `tenant/` (X-Tenant-Id auth) and `submit/` (CBOR, service, controller)
 - `src/main/resources` — config + migrations (`static/`, `templates/` are unused Boot defaults)
-- `src/test` — `contextLoads` plus the Testcontainers configuration
+- `src/test` — `contextLoads`, V1 schema proof, submit idempotency proof, plus the Testcontainers configuration
 
 ## Tests
 
@@ -43,4 +54,4 @@ The app starts with no endpoints yet; startup-only is expected.
 - License undecided (`pom.xml` carries no license block on purpose)
 - No ADRs yet — the first one lands with the Postgres version pin or the first table
 - No CONTRIBUTING — single contributor; dev commands live here
-- No runbooks or API docs — no deploy target, no endpoints
+- No runbooks — no deploy target
