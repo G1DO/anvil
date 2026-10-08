@@ -1,6 +1,6 @@
 # anvil
 
-Capability-secure, deterministically replayable execution fabric. Current state: V1 durable schema plus idempotent transactional submit plus fenced claim/heartbeat/commit/reconciler plus crash-safe content store with safe garbage collection.
+Capability-secure, deterministically replayable execution fabric. Current state: V1 durable schema plus idempotent transactional submit plus fenced claim/heartbeat/commit/reconciler plus crash-safe content store with safe garbage collection plus loss-free outbox relay with idempotent consumer.
 
 ## Stack
 
@@ -71,6 +71,25 @@ Capability-secure, deterministically replayable execution fabric. Current state:
   newly referenced SHA is retained, then sweeps crash orphans (files without
   rows, old tmp files) by file mtime. Any ambiguity retains rather than deletes.
 
+## Outbox relay (issue #6)
+
+- `OutboxRelay.relayOnce(publisher)` polls `WHERE sent_at IS NULL ORDER BY id
+  LIMIT 100 FOR UPDATE SKIP LOCKED` (uses `outbox_poll_idx`), publishes each
+  event with its stable identity (`outbox.id` as `event_id` in payload plus
+  `event_id` header: `{event_id, tenant_id, job_id, doc_id, version_id,
+  type:"job.committed", sha256}`), then marks
+  `UPDATE outbox SET sent_at` in a separate transaction after publish.
+  A publish throw skips the mark, so a crash between publish and mark
+  re-publishes the same identity rather than losing it; exactly-once delivery
+  is not asserted.
+- `IdempotentConsumer.consume(event)` runs `INSERT INTO processed_events
+  ON CONFLICT DO NOTHING` in one transaction and applies the test effect only
+  when the insert wins. Idempotency lives in the database, not in relay
+  memory, so duplicates (crash replay or concurrent relays) still apply once.
+  Progress is durable `sent_at`; concurrent relays may both publish the same
+  row when polls interleave, but the second mark is a no-op
+  (`WHERE sent_at IS NULL`) and the consumer still applies once.
+
 ## How the database works today
 
 - `application.yaml` sets only the app name; there is no datasource URL.
@@ -79,9 +98,9 @@ Capability-secure, deterministically replayable execution fabric. Current state:
 
 ## Layout
 
-- `src/main/java/com/g1do/anvil` — application entry plus `tenant/` (X-Tenant-Id auth), `submit/` (CBOR, service, controller), `jobs/` (fenced claim, heartbeat, commit, reconciler), and `cas/` (crash-safe content store, refcount, garbage collection)
+- `src/main/java/com/g1do/anvil` — application entry plus `tenant/` (X-Tenant-Id auth), `submit/` (CBOR, service, controller), `jobs/` (fenced claim, heartbeat, commit, reconciler), `cas/` (crash-safe content store, refcount, garbage collection), and `outbox/` (loss-free relay, idempotent consumer)
 - `src/main/resources` — config + migrations (`static/`, `templates/` are unused Boot defaults)
-- `src/test` — `contextLoads`, V1 schema proof, submit idempotency proof, fenced claim proof, content-store crash/GC proof, plus the Testcontainers configuration
+- `src/test` — `contextLoads`, V1 schema proof, submit idempotency proof, fenced claim proof, content-store crash/GC proof, outbox relay ghost/dedup/concurrency proof, plus the Testcontainers configuration
 
 ## Tests
 
