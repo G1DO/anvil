@@ -1,12 +1,12 @@
 # anvil
 
-Capability-secure, deterministically replayable execution fabric. Current state: scaffold — no endpoints, no migrations.
+Capability-secure, deterministically replayable execution fabric. Current state: V1 durable schema only — no endpoints.
 
 ## Stack
 
 - Java 25 (Temurin LTS), Spring Boot 4.1.1, Maven wrapper
 - Runtime: Spring Web (MVC), JDBC, Validation, Flyway, PostgreSQL driver
-- Tests: Testcontainers (spins up `postgres:latest`)
+- Tests: Testcontainers (spins up `postgres:18`)
 
 ## Prerequisites
 
@@ -26,7 +26,7 @@ The app starts with no endpoints yet; startup-only is expected.
 
 - `application.yaml` sets only the app name; there is no datasource URL.
 - Postgres comes automatically: `@ServiceConnection PostgreSQLContainer` in tests, Boot Dev Services on local run.
-- `src/main/resources/db/migration/` is empty, so Flyway is a no-op. The first migration goes there.
+- `src/main/resources/db/migration/V1__durable_v1_schema.sql` is the source of truth for the single-tenant slice (tenants, documents, versions, jobs, attempts, artifacts, outbox, processed_events) with the transition guard and claim/relay indexes.
 
 ## Layout
 
