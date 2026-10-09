@@ -249,6 +249,48 @@ class JobServiceTest {
     }
 
     @Test
+    void naiveSelectThenUpdateExhibitsDoubleClaimAtGateScale() throws Exception {
+        // Gate-scale naive proof (issue #12): batched concurrency, peak 64
+        // platform threads, total 500 contended claims over a single QUEUED job.
+        // Batched variant is explicitly allowed by the issue when 500/2000 live
+        // threads would OOM CI; peak plus total are documented here and in the
+        // assertions below. Naive never leaves QUEUED (only owner changes), so
+        // every SELECT still sees the same row even when batched: all 500 report
+        // the same id, i.e. 499 doubles, satisfying gate naive >=1 /500.
+        UUID job = seedQueued("t_single", "naive-gate-" + UUID.randomUUID());
+        int totalClaimants = 500;
+        int peakConcurrency = 64;
+        ExecutorService pool = Executors.newFixedThreadPool(peakConcurrency);
+        try {
+            List<Future<Optional<UUID>>> futures = new ArrayList<>();
+            for (int i = 0; i < totalClaimants; i++) {
+                final String owner = "naive-gate-w" + i;
+                futures.add(pool.submit(() -> naiveClaim("t_single", owner, null)));
+            }
+            List<UUID> reported = new ArrayList<>();
+            for (Future<Optional<UUID>> f : futures) {
+                Optional<UUID> r = f.get(120, TimeUnit.SECONDS);
+                r.ifPresent(reported::add);
+            }
+            assertThat(reported)
+                    .as("all %d gate-scale naive claimants report (peak %d)", totalClaimants, peakConcurrency)
+                    .hasSize(totalClaimants);
+            Set<UUID> distinct = new HashSet<>(reported);
+            assertThat(distinct)
+                    .as("naive select-then-update collapses to the single seeded job")
+                    .hasSize(1);
+            assertThat(distinct).contains(job);
+            int doubles = reported.size() - distinct.size();
+            assertThat(doubles)
+                    .as("naive doubles over %d claims with peak concurrency %d", totalClaimants, peakConcurrency)
+                    .isGreaterThanOrEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+            pool.awaitTermination(30, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void claimIncrementsTokenAndAttemptWithDbClockAndLedger() {
         UUID job = seedQueued("t_single", "inc-" + UUID.randomUUID());
         OffsetDateTime dbBefore = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
