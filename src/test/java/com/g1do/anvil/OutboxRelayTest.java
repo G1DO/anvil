@@ -1,5 +1,9 @@
 package com.g1do.anvil;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -11,6 +15,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import javax.sql.DataSource;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,6 +32,7 @@ import com.g1do.anvil.outbox.OutboxEvent;
 import com.g1do.anvil.outbox.OutboxPublisher;
 import com.g1do.anvil.outbox.OutboxRelay;
 import com.g1do.anvil.submit.SubmitService;
+import com.zaxxer.hikari.HikariDataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -48,6 +55,9 @@ class OutboxRelayTest {
 
     @Autowired
     PlatformTransactionManager txManager;
+
+    @Autowired
+    DataSource dataSource;
 
     @BeforeEach
     void clean() {
@@ -190,6 +200,118 @@ class OutboxRelayTest {
     }
 
     @Test
+    void relayKillBetweenPublishAndMarkRepublishesSameIdentityWithSingleApply() throws Exception {
+        // System-level crash proof (issue #14): replaces the simulated
+        // RuntimeException above with a real OS kill of a relay subprocess
+        // between publish and mark.
+        //
+        // Kill mechanism: RelayCrashChild polls one unsent row, INSERTs the
+        // processed_events effect, prints PUBLISHED, then sleeps 60s instead
+        // of running UPDATE outbox SET sent_at. The parent waits until the
+        // effect is durable (SELECT COUNT(*) ... == 1), then kills the child
+        // with `kill -9 <pid>` when available (SIGKILL on Linux/WSL) and
+        // falls back to Process.destroyForcibly() (SIGKILL on Unix,
+        // TerminateProcess on Windows). Either way the OS terminates the
+        // process without running cleanup, so the mark never executes.
+        //
+        // Why post-crash state equals a real crash: the relay boundary is
+        // poll (own txn) -> publish (no txn) -> mark (separate txn, guarded
+        // by WHERE sent_at IS NULL). Both the poll read and the consumer
+        // INSERT already committed before the sleep, and no in-memory mark
+        // ever existed; killing before the mark leaves exactly sent_at NULL
+        // plus one processed_events row, the same durable state a kill -9 of
+        // the production relay would leave. Relay/CAS contracts are
+        // unchanged; only test fidelity increases.
+        submitOne("relay-kill-" + UUID.randomUUID());
+        UUID eventId = outboxIdsOrdered().get(0);
+
+        String[] coords = dbCoords();
+        String javaBin = javaBinary();
+        String classpath = System.getProperty("java.class.path");
+        Process child = new ProcessBuilder(
+                javaBin, "-cp", classpath,
+                RelayCrashChild.class.getName(),
+                coords[0], coords[1], coords[2])
+                .redirectErrorStream(true)
+                .start();
+        StringBuilder childOutput = new StringBuilder();
+        Thread drain = new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(child.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    synchronized (childOutput) {
+                        childOutput.append(line).append('\n');
+                    }
+                }
+            } catch (Exception ignored) {
+                // Best-effort diagnostics only.
+            }
+        }, "relay-crash-drain");
+        drain.setDaemon(true);
+        drain.start();
+        try {
+            // Wait until the child's publish is durable (or the child dies).
+            boolean published = false;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+            while (System.nanoTime() < deadline) {
+                Integer count = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+                        Integer.class, eventId);
+                if (count != null && count == 1) {
+                    published = true;
+                    break;
+                }
+                if (!child.isAlive()) {
+                    break;
+                }
+                Thread.sleep(100L);
+            }
+            assertThat(published)
+                    .as("crash child published before kill; output=%s", childOutput)
+                    .isTrue();
+
+            // Real kill between publish and mark; the mark never runs.
+            killNineOrDestroy(child);
+            assertThat(child.waitFor(10, TimeUnit.SECONDS))
+                    .as("killed relay child exits promptly")
+                    .isTrue();
+            assertThat(child.isAlive()).isFalse();
+            assertThat(child.exitValue())
+                    .as("killed child does not exit cleanly (SIGKILL/TerminateProcess)")
+                    .isNotZero();
+
+            // Crash before mark: no progress, single effect.
+            assertThat(outboxRow(eventId).get("sent_at")).isNull();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+                    Integer.class, eventId)).isEqualTo(1);
+
+            // Restart re-publishes the same stable identity with the header.
+            RecordingPublisher restarted = new RecordingPublisher(consumer);
+            int marked = relay.relayOnce(restarted::publish);
+            assertThat(marked).isEqualTo(1);
+            assertThat(restarted.published).hasSize(1);
+            OutboxEvent redelivered = restarted.published.peek().event();
+            assertThat(redelivered.eventId()).isEqualTo(eventId);
+            assertThat(restarted.published.peek().headers())
+                    .containsEntry("event_id", eventId.toString());
+            // Redelivery did not re-apply: single processed_events entry.
+            assertThat(restarted.applyCount.get()).isEqualTo(0);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+                    Integer.class, eventId)).isEqualTo(1);
+            assertThat(outboxRow(eventId).get("sent_at")).isNotNull();
+
+            // Idempotency still lives in the DB, not relay memory.
+            IdempotentConsumer fresh = new IdempotentConsumer(jdbc, txManager);
+            assertThat(fresh.consume(redelivered)).isFalse();
+        } finally {
+            if (child.isAlive()) {
+                child.destroyForcibly();
+            }
+        }
+    }
+
+    @Test
     void duplicatedDeliveriesYieldSingleAppliedEffect() {
         submitOne("relay-dupe-" + UUID.randomUUID());
 
@@ -313,5 +435,45 @@ class OutboxRelayTest {
                 String.class));
         assertThat(plan).contains("outbox_poll_idx");
         assertThat(plan).doesNotContain("Seq Scan");
+    }
+
+    private String[] dbCoords() {
+        if (dataSource instanceof HikariDataSource hikari
+                && hikari.getJdbcUrl() != null) {
+            String password = hikari.getPassword() == null ? "__NULL__" : hikari.getPassword();
+            return new String[] { hikari.getJdbcUrl(), hikari.getUsername(), password };
+        }
+        throw new IllegalStateException("Hikari DataSource with JDBC URL required for crash child");
+    }
+
+    private static String javaBinary() {
+        String home = System.getProperty("java.home");
+        String bin = home + File.separator + "bin" + File.separator + "java";
+        if (System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win")) {
+            bin += ".exe";
+        }
+        return bin;
+    }
+
+    private static void killNineOrDestroy(Process process) throws Exception {
+        // Prefer `kill -9` (SIGKILL, uncatchable) when the platform provides
+        // it; otherwise Process.destroyForcibly() (SIGKILL on Unix,
+        // TerminateProcess on Windows). Both terminate without running
+        // finally blocks or JDBC cleanup, matching a real crash.
+        long pid = process.pid();
+        try {
+            Process kill = new ProcessBuilder("kill", "-9", Long.toString(pid)).start();
+            kill.waitFor(5, TimeUnit.SECONDS);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (process.isAlive() && System.nanoTime() < deadline) {
+                Thread.sleep(50L);
+            }
+        } catch (Exception unavailable) {
+            // No `kill` binary (e.g. Windows): fall through to destroyForcibly.
+        }
+        if (process.isAlive()) {
+            process.destroyForcibly();
+            process.waitFor(10, TimeUnit.SECONDS);
+        }
     }
 }
