@@ -8,6 +8,23 @@ Stack: Java 25 (Temurin LTS), Spring Boot 4.1.1, Spring Web (MVC), JDBC, Validat
 
 `POST /api/documents` → `X-Tenant-Id` auth → validate → canonical CBOR → one DB transaction (document + version + job + outbox) → `JobService` claim/heartbeat/commit/reconciler → `OutboxRelay` publish + `sent_at` mark → `IdempotentConsumer`. Bytes go through `ContentStore` (filesystem + `artifacts` rows).
 
+The diagram shows how one submit fans out into the claim path and the relay path; dashed edges are background recovery and side paths.
+
+```mermaid
+flowchart TD
+    Client["HTTP client"] --> Submit["POST /api/documents<br/>auth → validate → canonical CBOR"]
+    Submit --> Txn["One DB transaction:<br/>document + version + QUEUED job + outbox row"]
+    Txn --> Claim["JobService.claim<br/>QUEUED → RUNNING<br/>fencing token + 1, attempt + 1"]
+    Claim --> Beat["heartbeat()<br/>extends live lease"]
+    Beat --> Commit["commitSucceeded / commitFailed<br/>RUNNING → SUCCEEDED / FAILED"]
+    Txn --> Relay["OutboxRelay.relayOnce<br/>poll unsent → publish → mark sent_at"]
+    Relay --> Consumer["IdempotentConsumer.consume<br/>INSERT ... ON CONFLICT DO NOTHING"]
+    Consumer --> Done["processed_events row<br/>effect applied exactly once"]
+    Claim -.-> Reconciler["reconcile()<br/>expired RUNNING → QUEUED<br/>exhausted → DEAD"]
+    Reconciler -.-> Claim
+    Submit -.-> CAS["ContentStore.put<br/>sha256-addressed bytes<br/>fsync → rename → artifacts row"]
+```
+
 ## Submit
 
 - Routes: `POST /api/documents` (aliases `/api/v1/documents`, `/documents`). Headers `X-Tenant-Id`, `Idempotency-Key`. Body `{"title","mime_type","body"}` where `body` is a JSON string treated as UTF-8 bytes for CBOR `bstr`. See `src/main/java/com/g1do/anvil/submit/SubmitController.java` and `src/main/java/com/g1do/anvil/submit/SubmitService.java`.
@@ -24,6 +41,24 @@ See `src/main/java/com/g1do/anvil/jobs/JobService.java`.
 - Heartbeat extends only a live lease held by the same owner and token (`RUNNING` plus `lease_expires_at > clock_timestamp()`).
 - `commitSucceeded/Failed` moves `RUNNING -> SUCCEEDED/FAILED` only when id plus owner plus fencing token plus `RUNNING` all match; a stale owner affects zero rows. Terminal rows (`SUCCEEDED/FAILED/DEAD`) are additionally immutable via the `job_state_guard` trigger.
 - `reconcile(tenant)` / `reconcileAll()` is the polling reconciler (intended `1s`): expired `RUNNING` with attempts left returns to `QUEUED` (reclaimable with a new token); `QUEUED` or expired `RUNNING` at or beyond `max_attempts` moves to `DEAD` and is never re-offered. Terminals are never claimable.
+
+The diagram shows the legal job lifecycle enforced by the `job_state_guard` trigger; any other transition fails in the database.
+
+```mermaid
+stateDiagram-v2
+    [*] --> QUEUED : submit
+    QUEUED --> RUNNING : claim
+    RUNNING --> QUEUED : reconciler reclaim
+    RUNNING --> SUCCEEDED : commitSucceeded
+    RUNNING --> FAILED : commitFailed
+    QUEUED --> FAILED : fail without running
+    RUNNING --> DEAD : reconciler exhausts attempts
+    QUEUED --> DEAD : reconciler exhausts queued
+    SUCCEEDED --> [*]
+    FAILED --> [*]
+    DEAD --> [*]
+```
+
 - Only the database clock (`clock_timestamp()`) decides leases; worker clocks never do. At-least-once with idempotent fenced effects; exactly-once is not asserted.
 
 ## Content store
