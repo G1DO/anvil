@@ -249,6 +249,145 @@ class JobServiceTest {
     }
 
     @Test
+    void naiveSelectThenUpdateExhibitsDoubleClaimAtGateScale() throws Exception {
+        // Gate-scale naive proof (issue #12): batched concurrency, peak 64
+        // platform threads, total 500 contended claims over a single QUEUED job.
+        // Batched variant is explicitly allowed by the issue when 500/2000 live
+        // threads would OOM CI; peak plus total are documented here and in the
+        // assertions below. Naive never leaves QUEUED (only owner changes), so
+        // every SELECT still sees the same row even when batched: all 500 report
+        // the same id, i.e. 499 doubles, satisfying gate naive >=1 /500.
+        UUID job = seedQueued("t_single", "naive-gate-" + UUID.randomUUID());
+        int totalClaimants = 500;
+        int peakConcurrency = 64;
+        ExecutorService pool = Executors.newFixedThreadPool(peakConcurrency);
+        try {
+            List<Future<Optional<UUID>>> futures = new ArrayList<>();
+            for (int i = 0; i < totalClaimants; i++) {
+                final String owner = "naive-gate-w" + i;
+                futures.add(pool.submit(() -> naiveClaim("t_single", owner, null)));
+            }
+            List<UUID> reported = new ArrayList<>();
+            for (Future<Optional<UUID>> f : futures) {
+                Optional<UUID> r = f.get(120, TimeUnit.SECONDS);
+                r.ifPresent(reported::add);
+            }
+            assertThat(reported)
+                    .as("all %d gate-scale naive claimants report (peak %d)", totalClaimants, peakConcurrency)
+                    .hasSize(totalClaimants);
+            Set<UUID> distinct = new HashSet<>(reported);
+            assertThat(distinct)
+                    .as("naive select-then-update collapses to the single seeded job")
+                    .hasSize(1);
+            assertThat(distinct).contains(job);
+            int doubles = reported.size() - distinct.size();
+            assertThat(doubles)
+                    .as("naive doubles over %d claims with peak concurrency %d", totalClaimants, peakConcurrency)
+                    .isGreaterThanOrEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+            pool.awaitTermination(30, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void atomicClaimHasZeroDoubleClaimsAtGateScale() throws Exception {
+        // Gate-scale atomic proof (issue #12): batched concurrency, peak 64
+        // platform threads, total 2000 claimants over 500 QUEUED jobs plus one
+        // SUCCEEDED, one FAILED and one DEAD terminal. Batched variant is
+        // explicitly allowed by the issue when 2000 live threads would OOM CI;
+        // peak (64) plus total (2000) are documented here and in the assertions.
+        // Claim semantics are unchanged: atomic CTE with LIMIT 20
+        // FOR UPDATE SKIP LOCKED, fencing on heartbeat/commit, clock_timestamp()
+        // only, lease_ttl=10s, max_attempts=5.
+        int queuedJobs = 500;
+        int totalClaimants = 2000;
+        int peakConcurrency = 64;
+        List<UUID> seeded = new ArrayList<>();
+        for (int i = 0; i < queuedJobs; i++) {
+            seeded.add(seedQueued("t_single", "gate-atomic-" + i + "-" + UUID.randomUUID()));
+        }
+        UUID succeeded = seedTerminal("t_single", "gate-term-s-" + UUID.randomUUID(), "SUCCEEDED");
+        UUID failed = seedTerminal("t_single", "gate-term-f-" + UUID.randomUUID(), "FAILED");
+        UUID dead = seedTerminal("t_single", "gate-term-d-" + UUID.randomUUID(), "DEAD");
+
+        // Scale-volume index proof before draining the pool.
+        jdbc.execute("ANALYZE jobs");
+        String plan = String.join("\n", jdbc.queryForList(
+                "EXPLAIN SELECT id FROM jobs WHERE tenant_id = 't_single' AND state = 'QUEUED' "
+                        + "AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp()) "
+                        + "AND attempt < max_attempts ORDER BY created_at, id LIMIT 20 FOR UPDATE SKIP LOCKED",
+                String.class));
+        assertThat(plan)
+                .as("claim uses jobs_claim_idx at gate volume (%d queued jobs)", queuedJobs)
+                .contains("jobs_claim_idx");
+        assertThat(plan).doesNotContain("Seq Scan");
+
+        // Terminals are never runnable before the scale run.
+        List<UUID> claimableBefore = jdbc.query(
+                "SELECT id FROM claimable_jobs WHERE tenant_id = 't_single'",
+                (rs, i) -> (UUID) rs.getObject("id"));
+        assertThat(claimableBefore).containsAll(seeded);
+        assertThat(claimableBefore).doesNotContain(succeeded, failed, dead);
+
+        ExecutorService pool = Executors.newFixedThreadPool(peakConcurrency);
+        try {
+            List<Future<Optional<ClaimedJob>>> futures = new ArrayList<>();
+            for (int i = 0; i < totalClaimants; i++) {
+                final String owner = "gate-atomic-w" + i;
+                futures.add(pool.submit(() -> jobs.claim("t_single", owner)));
+            }
+            List<ClaimedJob> claimed = new ArrayList<>();
+            for (Future<Optional<ClaimedJob>> f : futures) {
+                Optional<ClaimedJob> r = f.get(120, TimeUnit.SECONDS);
+                r.ifPresent(claimed::add);
+            }
+            // One success per seeded job, never the same job twice.
+            assertThat(claimed)
+                    .as("one success per seeded job over %d claimants with peak %d",
+                            totalClaimants, peakConcurrency)
+                    .hasSize(queuedJobs);
+            Set<UUID> distinctJobs = new HashSet<>();
+            for (ClaimedJob c : claimed) {
+                assertThat(distinctJobs.add(c.jobId()))
+                        .as("job %s claimed twice (peak %d, total %d)",
+                                c.jobId(), peakConcurrency, totalClaimants)
+                        .isTrue();
+            }
+            int doubles = claimed.size() - distinctJobs.size();
+            assertThat(doubles)
+                    .as("atomic doubles over %d claimants with peak %d", totalClaimants, peakConcurrency)
+                    .isZero();
+            assertThat(distinctJobs).containsExactlyInAnyOrderElementsOf(seeded);
+            assertThat(distinctJobs).doesNotContain(succeeded, failed, dead);
+
+            // Ledger: exactly one row per successful claim, no lost, no doubled.
+            Integer ledger = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM attempts WHERE tenant_id = 't_single'", Integer.class);
+            assertThat(ledger)
+                    .as("ledger holds exactly one row per successful claim")
+                    .isEqualTo(queuedJobs);
+            Integer distinctLedger = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM (SELECT DISTINCT tenant_id, job_id, attempt_number FROM attempts) s",
+                    Integer.class);
+            assertThat(distinctLedger).isEqualTo(queuedJobs);
+
+            // Pool exhausted: late claim empty; terminals still never offered.
+            assertThat(jobs.claim("t_single", "late-worker"))
+                    .as("late claim empty after gate drain")
+                    .isEmpty();
+            List<UUID> claimableAfter = jdbc.query(
+                    "SELECT id FROM claimable_jobs WHERE tenant_id = 't_single'",
+                    (rs, i) -> (UUID) rs.getObject("id"));
+            assertThat(claimableAfter).doesNotContain(succeeded, failed, dead);
+            assertThat(claimableAfter).isEmpty();
+        } finally {
+            pool.shutdownNow();
+            pool.awaitTermination(30, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void claimIncrementsTokenAndAttemptWithDbClockAndLedger() {
         UUID job = seedQueued("t_single", "inc-" + UUID.randomUUID());
         OffsetDateTime dbBefore = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
