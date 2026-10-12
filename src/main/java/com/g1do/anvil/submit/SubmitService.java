@@ -73,14 +73,17 @@ public class SubmitService {
     }
 
     private SubmitResult findExisting(String tenantId, String idempotencyKey) {
-        List<SubmitResult> rows = jdbc.query(
-                "SELECT document_id, version_id, id FROM jobs WHERE tenant_id = ? AND idempotency_key = ?",
-                (rs, i) -> new SubmitResult(
-                        (UUID) rs.getObject("document_id"),
-                        (UUID) rs.getObject("version_id"),
-                        (UUID) rs.getObject("id")),
-                tenantId, idempotencyKey);
-        return rows.isEmpty() ? null : rows.get(0);
+        return tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenantId);
+            List<SubmitResult> rows = jdbc.query(
+                    "SELECT document_id, version_id, id FROM jobs WHERE tenant_id = ? AND idempotency_key = ?",
+                    (rs, i) -> new SubmitResult(
+                            (UUID) rs.getObject("document_id"),
+                            (UUID) rs.getObject("version_id"),
+                            (UUID) rs.getObject("id")),
+                    tenantId, idempotencyKey);
+            return rows.isEmpty() ? null : rows.get(0);
+        });
     }
 
     /**

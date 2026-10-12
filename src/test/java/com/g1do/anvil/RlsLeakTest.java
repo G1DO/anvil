@@ -1,8 +1,15 @@
 package com.g1do.anvil;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import javax.sql.DataSource;
 
@@ -20,6 +27,7 @@ import com.g1do.anvil.jobs.JobService;
 import com.g1do.anvil.outbox.IdempotentConsumer;
 import com.g1do.anvil.outbox.OutboxEvent;
 import com.g1do.anvil.outbox.OutboxRelay;
+import com.g1do.anvil.submit.SubmitService;
 import com.g1do.anvil.tenant.TenantGuard;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -362,6 +370,63 @@ class RlsLeakTest {
                 String.class));
         assertThat(plan).contains("outbox_poll_idx");
         assertThat(plan).doesNotContain("Seq Scan");
+    }
+
+    @Test
+    void appSubmitIdempotentReplayReturnsWinner() throws Exception {
+        // Submit as the restricted app role (NOBYPASSRLS, RLS FORCE): the
+        // fast-path read and the UNIQUE-race re-read must both see the winner.
+        DataSourceTransactionManager appManager = new DataSourceTransactionManager(appPool);
+        SubmitService appSubmit = new SubmitService(appJdbc, appManager);
+
+        String key = "app-submit-" + UUID.randomUUID();
+        SubmitService.SubmitResult first = appSubmit.submit(TENANT_A, key, "App Doc", "text/plain",
+                "app-body");
+        SubmitService.SubmitResult second = appSubmit.submit(TENANT_A, key, "App Doc", "text/plain",
+                "app-body");
+        assertThat(second.docId()).isEqualTo(first.docId());
+        assertThat(second.versionId()).isEqualTo(first.versionId());
+        assertThat(second.jobId()).isEqualTo(first.jobId());
+
+        String raceKey = "app-race-" + UUID.randomUUID();
+        int threads = 10;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch ready = new CountDownLatch(threads);
+        CountDownLatch go = new CountDownLatch(1);
+        try {
+            List<Callable<SubmitService.SubmitResult>> tasks = new ArrayList<>();
+            for (int i = 0; i < threads; i++) {
+                tasks.add(() -> {
+                    ready.countDown();
+                    if (!go.await(30, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("start timeout");
+                    }
+                    return appSubmit.submit(TENANT_A, raceKey, "App Race", "text/plain", "race-body");
+                });
+            }
+            List<Future<SubmitService.SubmitResult>> futures = new ArrayList<>();
+            for (Callable<SubmitService.SubmitResult> task : tasks) {
+                futures.add(pool.submit(task));
+            }
+            assertThat(ready.await(30, TimeUnit.SECONDS)).isTrue();
+            go.countDown();
+            List<SubmitService.SubmitResult> results = new ArrayList<>();
+            for (Future<SubmitService.SubmitResult> future : futures) {
+                results.add(future.get(30, TimeUnit.SECONDS));
+            }
+            SubmitService.SubmitResult winner = results.get(0);
+            for (SubmitService.SubmitResult result : results) {
+                assertThat(result.docId()).isEqualTo(winner.docId());
+                assertThat(result.versionId()).isEqualTo(winner.versionId());
+                assertThat(result.jobId()).isEqualTo(winner.jobId());
+            }
+            Integer jobs = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM jobs WHERE tenant_id = ? AND idempotency_key = ?",
+                    Integer.class, TENANT_A, raceKey);
+            assertThat(jobs).isEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     @Test
