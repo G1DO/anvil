@@ -94,7 +94,7 @@ class RlsLeakTest {
     }
 
     private void truncate() {
-        jdbc.execute("TRUNCATE TABLE processed_events, outbox, attempts, jobs, document_versions, documents, artifacts");
+        jdbc.execute("TRUNCATE TABLE cap_grants, processed_events, outbox, attempts, jobs, document_versions, documents, artifacts");
     }
 
     private HikariDataSource newAppPool() {
