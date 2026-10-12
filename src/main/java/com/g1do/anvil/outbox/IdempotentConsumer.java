@@ -5,6 +5,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.g1do.anvil.tenant.TenantGuard;
+
 /**
  * Test-stub idempotent consumer (issue #6).
  *
@@ -22,6 +24,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  * to prove once-only application in this Outcome; downstream indexing,
  * search and AI side effects belong to later Outcomes and would add
  * non-idempotent side effects out of scope here.</li>
+ * <li>Tenant isolation (issue #20): the consumer transaction sets
+ * transaction-local {@code app.tenant} to the event tenant with a read-back
+ * probe; RLS {@code FORCE} enforces the tenant underneath in addition to the
+ * explicit {@code tenant_id} column.</li>
  * </ul>
  */
 @Service
@@ -56,6 +62,7 @@ public class IdempotentConsumer {
             throw new IllegalArgumentException("tenantId must not be blank");
         }
         Boolean applied = tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, event.tenantId());
             int inserted = jdbc.update(CLAIM_SQL, event.eventId(), event.tenantId(), event.jobId());
             // Test effect lives here: only when the insert won the race.
             // The processed_events row itself is the minimal durable effect.

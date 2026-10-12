@@ -10,6 +10,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.g1do.anvil.tenant.TenantGuard;
+
 /**
  * Fenced claim, heartbeat, commit and reconciler over the V1 jobs slice.
  *
@@ -40,6 +42,13 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p>Terminal jobs ({@code SUCCEEDED, FAILED, DEAD}) are never offered: claim
  * filters {@code state='QUEUED'} and the {@code job_state_guard} trigger
  * rejects any mutation of a terminal row.
+ *
+ * <p>Tenant isolation (issue #20): every transaction sets transaction-local
+ * {@code app.tenant} via {@link TenantGuard#setTenant} with a read-back probe
+ * ({@code SET LOCAL} resets on commit/rollback, so pooled reuse cannot leak),
+ * RLS {@code FORCE} policies enforce {@code tenant_id =
+ * current_setting('app.tenant', true)} underneath, and every statement keeps
+ * an explicit {@code WHERE tenant_id = ?} in addition to RLS.
  */
 @Service
 public class JobService {
@@ -145,6 +154,7 @@ public class JobService {
         String tenant = requireTenant(tenantId);
         String worker = requireOwner(owner);
         return tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
             List<ClaimedJob> rows = jdbc.query(
                     CLAIM_SQL,
                     (rs, i) -> new ClaimedJob(
@@ -175,8 +185,12 @@ public class JobService {
         String tenant = requireTenant(tenantId);
         String worker = requireOwner(owner);
         requireJobId(jobId);
-        int updated = jdbc.update(HEARTBEAT_SQL, jobId, tenant, worker, fencingToken);
-        return updated == 1;
+        Boolean ok = tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            int updated = jdbc.update(HEARTBEAT_SQL, jobId, tenant, worker, fencingToken);
+            return updated == 1;
+        });
+        return Boolean.TRUE.equals(ok);
     }
 
     /**
@@ -203,8 +217,12 @@ public class JobService {
         String tenant = requireTenant(tenantId);
         String worker = requireOwner(owner);
         requireJobId(jobId);
-        int updated = jdbc.update(COMMIT_SQL_PREFIX, targetState, jobId, tenant, worker, fencingToken);
-        return updated == 1;
+        Boolean ok = tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            int updated = jdbc.update(COMMIT_SQL_PREFIX, targetState, jobId, tenant, worker, fencingToken);
+            return updated == 1;
+        });
+        return Boolean.TRUE.equals(ok);
     }
 
     /**
@@ -216,6 +234,7 @@ public class JobService {
     public ReconcileResult reconcile(String tenantId) {
         String tenant = requireTenant(tenantId);
         return tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
             int deadQueued = jdbc.update(
                     "UPDATE jobs SET state = 'DEAD', updated_at = clock_timestamp() "
                             + "WHERE tenant_id = ? AND state = 'QUEUED' AND attempt >= max_attempts",
@@ -239,23 +258,24 @@ public class JobService {
      * Single reconciler pass across all tenants. Intended cadence is
      * {@link #RECONCILER_POLL_SECONDS}s in polling deployments; tests invoke
      * this (or {@link #reconcile(String)}) directly for determinism.
+     *
+     * <p>Each tenant reconciles in its own transaction with its own
+     * {@code SET LOCAL app.tenant}: one transaction cannot hold two tenants,
+     * so a shared global {@code UPDATE} without {@code WHERE tenant_id = ?}
+     * is never issued (issue #20).
      */
     public ReconcileResult reconcileAll() {
-        return tx.execute(status -> {
-            int deadQueued = jdbc.update(
-                    "UPDATE jobs SET state = 'DEAD', updated_at = clock_timestamp() "
-                            + "WHERE state = 'QUEUED' AND attempt >= max_attempts");
-            int deadRunning = jdbc.update(
-                    "UPDATE jobs SET state = 'DEAD', updated_at = clock_timestamp() "
-                            + "WHERE state = 'RUNNING' "
-                            + "AND lease_expires_at <= clock_timestamp() AND attempt >= max_attempts");
-            int released = jdbc.update(
-                    "UPDATE jobs SET state = 'QUEUED', owner = NULL, lease_expires_at = NULL, "
-                            + "updated_at = clock_timestamp() "
-                            + "WHERE state = 'RUNNING' "
-                            + "AND lease_expires_at <= clock_timestamp() AND attempt < max_attempts");
-            return new ReconcileResult(released, deadQueued + deadRunning);
-        });
+        List<String> tenants = jdbc.query("SELECT id FROM tenants", (rs, i) -> rs.getString("id"));
+        int released = 0;
+        int dead = 0;
+        for (String tenant : tenants) {
+            ReconcileResult one = reconcile(tenant);
+            if (one != null) {
+                released += one.releasedToQueued();
+                dead += one.markedDead();
+            }
+        }
+        return new ReconcileResult(released, dead);
     }
 
     private static String requireTenant(String tenantId) {
