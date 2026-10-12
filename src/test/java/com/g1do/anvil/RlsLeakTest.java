@@ -58,13 +58,10 @@ class RlsLeakTest {
     @BeforeEach
     void setUp() {
         // Superuser wiring (bypasses RLS by design): clean + seed two tenants.
-        jdbc.execute("DELETE FROM processed_events");
-        jdbc.execute("DELETE FROM outbox");
-        jdbc.execute("DELETE FROM attempts");
-        jdbc.execute("DELETE FROM jobs");
-        jdbc.execute("DELETE FROM document_versions");
-        jdbc.execute("DELETE FROM documents");
-        jdbc.execute("DELETE FROM artifacts");
+        // TRUNCATE (no dead tuples) so this class's seeding never bloats the
+        // shared container and flips the planner in the next class (same
+        // hazard OutboxRelayTest documents for outbox_poll_idx).
+        truncate();
         jdbc.execute("DELETE FROM tenants WHERE id NOT IN ('t_single', '" + TENANT_A + "', '" + TENANT_B + "')");
         jdbc.update("INSERT INTO tenants (id) VALUES ('t_single') ON CONFLICT DO NOTHING");
         jdbc.update("INSERT INTO tenants (id) VALUES (?) ON CONFLICT DO NOTHING", TENANT_A);
@@ -84,14 +81,12 @@ class RlsLeakTest {
             appPool.close();
             appPool = null;
         }
-        jdbc.execute("DELETE FROM processed_events");
-        jdbc.execute("DELETE FROM outbox");
-        jdbc.execute("DELETE FROM attempts");
-        jdbc.execute("DELETE FROM jobs");
-        jdbc.execute("DELETE FROM document_versions");
-        jdbc.execute("DELETE FROM documents");
-        jdbc.execute("DELETE FROM artifacts");
+        truncate();
         jdbc.execute("DELETE FROM tenants WHERE id IN ('" + TENANT_A + "', '" + TENANT_B + "')");
+    }
+
+    private void truncate() {
+        jdbc.execute("TRUNCATE TABLE processed_events, outbox, attempts, jobs, document_versions, documents, artifacts");
     }
 
     private HikariDataSource newAppPool() {
