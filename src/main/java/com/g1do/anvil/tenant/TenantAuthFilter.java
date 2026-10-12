@@ -14,11 +14,13 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 /**
- * Minimal auth for the single-tenant submit slice.
+ * Minimal auth for the API slices (submit plus fail-closed reads).
  *
  * <p>Flow: {@code X-Tenant-Id} header -&gt; lookup {@code tenants.id} -&gt; set
  * {@link TenantContext}. The transaction uses that value for all rows and the
- * idempotency dupe scope is {@code (tenant_id, idempotency_key)}.
+ * idempotency dupe scope is {@code (tenant_id, idempotency_key)}. Read
+ * surfaces (issue #22) take tenant solely from this header; any
+ * {@code tenant} query/body param is ignored upstream.
  *
  * <p>No JWT/OAuth here by design (issue #3 constraints).
  */
