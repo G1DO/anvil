@@ -410,6 +410,72 @@ public class JobService {
         return capRejected.get();
     }
 
+    /**
+     * Fetches the current valid grant for presigned-CAS issue (issue #22 P01/P06).
+     *
+     * <p>Own transaction with {@link TenantGuard#setTenant}: locks the current
+     * grant {@code FOR UPDATE} and validates {@code revoked + expires_at} with
+     * the database clock only. Missing/revoked/expired denies with
+     * {@link CapDeniedException} ({@code 403 NEEDS_APPROVAL}) and increments
+     * {@code cap_rejected}, sharing the commit-gate counter.
+     */
+    public CapGrant fetchValidCurrentGrant(String tenantId, UUID jobId) {
+        String tenant = requireTenant(tenantId);
+        requireJobId(jobId);
+        return tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            record FullGrant(UUID id, long epoch, boolean revoked, OffsetDateTime expiresAt) {
+            }
+            List<FullGrant> rows = jdbc.query(
+                    "SELECT id, epoch, revoked, expires_at FROM cap_grants "
+                            + "WHERE tenant_id = ? AND job_id = ? FOR UPDATE",
+                    (rs, i) -> new FullGrant(
+                            (UUID) rs.getObject("id"),
+                            rs.getLong("epoch"),
+                            rs.getBoolean("revoked"),
+                            rs.getObject("expires_at", OffsetDateTime.class)),
+                    tenant, jobId);
+            if (rows.isEmpty()) {
+                capRejected.incrementAndGet();
+                throw new CapDeniedException("no grant for job");
+            }
+            FullGrant row = rows.get(0);
+            OffsetDateTime now = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
+            if (row.revoked()) {
+                capRejected.incrementAndGet();
+                throw new CapDeniedException("revoked");
+            }
+            if (row.expiresAt() == null || now == null || !row.expiresAt().isAfter(now)) {
+                capRejected.incrementAndGet();
+                throw new CapDeniedException("expired");
+            }
+            return new CapGrant(row.id(), tenant, jobId, row.epoch(), row.expiresAt());
+        });
+    }
+
+    /**
+     * Validates a presented grant for presigned-CAS verify (issue #22 P03).
+     *
+     * <p>Own transaction with {@link TenantGuard#setTenant}: locks
+     * {@code WHERE id = ? AND tenant_id = ? AND job_id = ? FOR UPDATE} so a cap
+     * issued for tenant A yields zero rows for tenant B. Missing, revoked,
+     * expired, or superseded (epoch mismatch) denies with
+     * {@link CapDeniedException} ({@code 403 NEEDS_APPROVAL}) and increments
+     * {@code cap_rejected}, sharing the commit-gate counter.
+     */
+    public void checkPresentedGrant(String tenantId, UUID jobId, UUID capId, long epoch) {
+        String tenant = requireTenant(tenantId);
+        requireJobId(jobId);
+        if (capId == null) {
+            throw new IllegalArgumentException("capId must not be null");
+        }
+        tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            requirePresentedGrantValid(tenant, jobId, capId, epoch);
+            return null;
+        });
+    }
+
     private void requireCurrentGrantValid(String tenant, UUID jobId) {
         record GrantRow(long epoch, boolean revoked, OffsetDateTime expiresAt) {
         }
