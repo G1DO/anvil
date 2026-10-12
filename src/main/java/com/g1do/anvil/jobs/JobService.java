@@ -4,6 +4,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -49,6 +50,23 @@ import com.g1do.anvil.tenant.TenantGuard;
  * RLS {@code FORCE} policies enforce {@code tenant_id =
  * current_setting('app.tenant', true)} underneath, and every statement keeps
  * an explicit {@code WHERE tenant_id = ?} in addition to RLS.
+ *
+ * <p>Capability gating (issue #21): every commit requires a valid
+ * {@code cap_grants} row for {@code (tenant_id, job_id)}. The grant is checked
+ * in the same transaction as the effect, after tenant context is established
+ * and before any {@code jobs} write, with the grant row locked
+ * {@code FOR UPDATE} and evaluated with the database clock only
+ * ({@code clock_timestamp()} vs {@code expires_at}). Missing, revoked,
+ * expired, superseded (stale {@code epoch}), or cross-tenant grants deny
+ * atomically: zero job rows, {@link CapDeniedException} ({@code 403
+ * NEEDS_APPROVAL}), {@code cap_rejected} incremented. Fencing failures (wrong
+ * owner/token) still return {@code false} with no exception and no counter
+ * increment. Grants are tenant-bound via composite
+ * {@code FOREIGN KEY(tenant_id, job_id)} plus {@code WHERE tenant_id} and RLS;
+ * no cross-tenant dedup is introduced. Post-grant TOCTOU (revoke committed
+ * after the commit txn commits) is residual by definition; revoke committed
+ * before the commit's {@code FOR UPDATE} lock is acquired is always observed
+ * because the same transaction holds the row lock across check and effect.
  */
 @Service
 public class JobService {
@@ -134,8 +152,62 @@ public class JobService {
               AND state = 'RUNNING'
             """;
 
+    /**
+     * Capability issue: first grant starts at epoch 1 with a 1h DB-clock TTL;
+     * re-issue supersedes by bumping epoch and clearing revoked with a fresh
+     * TTL. Single row per (tenant, job) keeps one authoritative grant.
+     */
+    private static final String ISSUE_CAP_SQL = """
+            INSERT INTO cap_grants (tenant_id, job_id, epoch, revoked, expires_at)
+            VALUES (?, ?, 1, FALSE, clock_timestamp() + INTERVAL '1 hour')
+            ON CONFLICT (tenant_id, job_id) DO UPDATE SET
+              epoch = cap_grants.epoch + 1,
+              revoked = FALSE,
+              expires_at = clock_timestamp() + INTERVAL '1 hour',
+              updated_at = clock_timestamp()
+            RETURNING id, tenant_id, job_id, epoch, expires_at
+            """;
+
+    /**
+     * Current-grant lock for the 4-arg commit path: one authoritative row per
+     * (tenant, job), locked FOR UPDATE in the same txn as the effect.
+     */
+    private static final String SELECT_CURRENT_GRANT_SQL = """
+            SELECT epoch, revoked, expires_at
+            FROM cap_grants
+            WHERE tenant_id = ?
+              AND job_id = ?
+            FOR UPDATE
+            """;
+
+    /**
+     * Presented-capability lock for the explicit-cap commit path: the grant
+     * id plus tenant plus job must all match, locked FOR UPDATE. A cap issued
+     * for tenant A yields zero rows when presented with tenant B even when
+     * epoch/expiry are otherwise valid.
+     */
+    private static final String SELECT_PRESENTED_GRANT_SQL = """
+            SELECT epoch, revoked, expires_at
+            FROM cap_grants
+            WHERE id = ?
+              AND tenant_id = ?
+              AND job_id = ?
+            FOR UPDATE
+            """;
+
+    private static final String REVOKE_CAP_SQL = """
+            UPDATE cap_grants
+            SET revoked = TRUE,
+                updated_at = clock_timestamp()
+            WHERE tenant_id = ?
+              AND job_id = ?
+            """;
+
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
+
+    /** Rejection counter for capability-denied commits ({@code cap_rejected}). */
+    private final AtomicLong capRejected = new AtomicLong();
 
     public JobService(JdbcTemplate jdbc, PlatformTransactionManager txManager) {
         this.jdbc = jdbc;
@@ -194,23 +266,62 @@ public class JobService {
     }
 
     /**
-     * Commits a running job to {@code SUCCEEDED} with full fencing.
-     * A zombie that lost ownership (token changed or state left
-     * {@code RUNNING}) affects zero rows.
+     * Commits a running job to {@code SUCCEEDED} with full fencing plus
+     * capability gating (issue #21).
+     *
+     * <p>The current {@code cap_grants} row for {@code (tenant_id, job_id)} is
+     * locked {@code FOR UPDATE} in the same transaction after tenant context
+     * and before any {@code jobs} write; missing, revoked, or expired grants
+     * deny atomically (zero rows, {@code 403 NEEDS_APPROVAL},
+     * {@code cap_rejected} incremented). A zombie that lost ownership affects
+     * zero rows and returns {@code false} (no exception, no counter).
      *
      * @return {@code true} when exactly one row transitioned.
+     * @throws CapDeniedException ({@code 403 NEEDS_APPROVAL}) when no valid
+     *         capability authorizes this commit.
      */
     public boolean commitSucceeded(String tenantId, UUID jobId, String owner, long fencingToken) {
         return commit(tenantId, jobId, owner, fencingToken, "SUCCEEDED");
     }
 
     /**
-     * Commits a running job to {@code FAILED} with full fencing.
+     * Commits a running job to {@code FAILED} with full fencing plus
+     * capability gating (issue #21).
      *
      * @return {@code true} when exactly one row transitioned.
+     * @throws CapDeniedException ({@code 403 NEEDS_APPROVAL}) when no valid
+     *         capability authorizes this commit.
      */
     public boolean commitFailed(String tenantId, UUID jobId, String owner, long fencingToken) {
         return commit(tenantId, jobId, owner, fencingToken, "FAILED");
+    }
+
+    /**
+     * Commits to {@code SUCCEEDED} presenting an explicit capability.
+     *
+     * <p>Locks {@code WHERE id = ? AND tenant_id = ? AND job_id = ? FOR UPDATE}
+     * so a cap issued for tenant A yields zero rows for tenant B even with a
+     * valid epoch/expiry; a stale {@code capEpoch} denies as superseded.
+     *
+     * @return {@code true} when exactly one row transitioned.
+     * @throws CapDeniedException ({@code 403 NEEDS_APPROVAL}) on missing,
+     *         revoked, expired, superseded, or cross-tenant capability.
+     */
+    public boolean commitSucceeded(
+            String tenantId, UUID jobId, String owner, long fencingToken, UUID capId, long capEpoch) {
+        return commitWithCap(tenantId, jobId, owner, fencingToken, "SUCCEEDED", capId, capEpoch);
+    }
+
+    /**
+     * Commits to {@code FAILED} presenting an explicit capability.
+     *
+     * @return {@code true} when exactly one row transitioned.
+     * @throws CapDeniedException ({@code 403 NEEDS_APPROVAL}) on missing,
+     *         revoked, expired, superseded, or cross-tenant capability.
+     */
+    public boolean commitFailed(
+            String tenantId, UUID jobId, String owner, long fencingToken, UUID capId, long capEpoch) {
+        return commitWithCap(tenantId, jobId, owner, fencingToken, "FAILED", capId, capEpoch);
     }
 
     private boolean commit(String tenantId, UUID jobId, String owner, long fencingToken, String targetState) {
@@ -219,10 +330,141 @@ public class JobService {
         requireJobId(jobId);
         Boolean ok = tx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
+            requireCurrentGrantValid(tenant, jobId);
             int updated = jdbc.update(COMMIT_SQL_PREFIX, targetState, jobId, tenant, worker, fencingToken);
             return updated == 1;
         });
         return Boolean.TRUE.equals(ok);
+    }
+
+    private boolean commitWithCap(
+            String tenantId, UUID jobId, String owner, long fencingToken, String targetState,
+            UUID capId, long capEpoch) {
+        String tenant = requireTenant(tenantId);
+        String worker = requireOwner(owner);
+        requireJobId(jobId);
+        if (capId == null) {
+            throw new IllegalArgumentException("capId must not be null");
+        }
+        Boolean ok = tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            requirePresentedGrantValid(tenant, jobId, capId, capEpoch);
+            int updated = jdbc.update(COMMIT_SQL_PREFIX, targetState, jobId, tenant, worker, fencingToken);
+            return updated == 1;
+        });
+        return Boolean.TRUE.equals(ok);
+    }
+
+    /**
+     * Issues (or supersedes) the capability grant for one job.
+     *
+     * <p>First issue creates epoch 1 with
+     * {@code expires_at = clock_timestamp() + 1 hour} (DB clock only);
+     * re-issue bumps {@code epoch + 1}, clears {@code revoked}, and refreshes
+     * expiry, superseding any previously presented epoch. Tenant-scoped
+     * ({@code WHERE tenant_id} plus RLS) with a composite
+     * {@code FOREIGN KEY(tenant_id, job_id)} so a grant cannot reference
+     * another tenant's job.
+     *
+     * @return the current grant identity, epoch, and expiry.
+     */
+    public CapGrant issueCap(String tenantId, UUID jobId) {
+        String tenant = requireTenant(tenantId);
+        requireJobId(jobId);
+        return tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            List<CapGrant> rows = jdbc.query(
+                    ISSUE_CAP_SQL,
+                    (rs, i) -> new CapGrant(
+                            (UUID) rs.getObject("id"),
+                            rs.getString("tenant_id"),
+                            (UUID) rs.getObject("job_id"),
+                            rs.getLong("epoch"),
+                            rs.getObject("expires_at", OffsetDateTime.class)),
+                    tenant, jobId);
+            if (rows.isEmpty()) {
+                throw new IllegalStateException("cap issue returned no row");
+            }
+            return rows.get(0);
+        });
+    }
+
+    /**
+     * Revokes the grant for one job mid-run: the next commit in another
+     * transaction observes {@code revoked=TRUE} under {@code FOR UPDATE} and
+     * denies atomically. Idempotent; zero rows when no grant exists (the
+     * subsequent commit still denies as missing).
+     */
+    public void revokeCap(String tenantId, UUID jobId) {
+        String tenant = requireTenant(tenantId);
+        requireJobId(jobId);
+        tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            jdbc.update(REVOKE_CAP_SQL, tenant, jobId);
+            return null;
+        });
+    }
+
+    /** Rejection counter for capability-denied commits ({@code cap_rejected}). */
+    public long capRejectedCount() {
+        return capRejected.get();
+    }
+
+    private void requireCurrentGrantValid(String tenant, UUID jobId) {
+        record GrantRow(long epoch, boolean revoked, OffsetDateTime expiresAt) {
+        }
+        List<GrantRow> rows = jdbc.query(
+                SELECT_CURRENT_GRANT_SQL,
+                (rs, i) -> new GrantRow(
+                        rs.getLong("epoch"),
+                        rs.getBoolean("revoked"),
+                        rs.getObject("expires_at", OffsetDateTime.class)),
+                tenant, jobId);
+        if (rows.isEmpty()) {
+            capRejected.incrementAndGet();
+            throw new CapDeniedException("no grant for job");
+        }
+        GrantRow row = rows.get(0);
+        OffsetDateTime now = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
+        if (row.revoked()) {
+            capRejected.incrementAndGet();
+            throw new CapDeniedException("revoked");
+        }
+        if (row.expiresAt() == null || now == null || !row.expiresAt().isAfter(now)) {
+            capRejected.incrementAndGet();
+            throw new CapDeniedException("expired");
+        }
+    }
+
+    private void requirePresentedGrantValid(String tenant, UUID jobId, UUID capId, long expectedEpoch) {
+        record GrantRow(long epoch, boolean revoked, OffsetDateTime expiresAt) {
+        }
+        List<GrantRow> rows = jdbc.query(
+                SELECT_PRESENTED_GRANT_SQL,
+                (rs, i) -> new GrantRow(
+                        rs.getLong("epoch"),
+                        rs.getBoolean("revoked"),
+                        rs.getObject("expires_at", OffsetDateTime.class)),
+                capId, tenant, jobId);
+        if (rows.isEmpty()) {
+            capRejected.incrementAndGet();
+            throw new CapDeniedException("no grant for cap+tenant+job");
+        }
+        GrantRow row = rows.get(0);
+        OffsetDateTime now = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
+        if (row.epoch() != expectedEpoch) {
+            capRejected.incrementAndGet();
+            throw new CapDeniedException("superseded: presented epoch " + expectedEpoch
+                    + " != current " + row.epoch());
+        }
+        if (row.revoked()) {
+            capRejected.incrementAndGet();
+            throw new CapDeniedException("revoked");
+        }
+        if (row.expiresAt() == null || now == null || !row.expiresAt().isAfter(now)) {
+            capRejected.incrementAndGet();
+            throw new CapDeniedException("expired");
+        }
     }
 
     /**
