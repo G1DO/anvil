@@ -28,6 +28,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.g1do.anvil.tenant.TenantGuard;
+
 /**
  * Local-filesystem content-addressed store shim (issue #5).
  *
@@ -52,6 +54,12 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <li>Timings: {@code GC_grace=1h}, far longer than test time, so collection
  * is deterministic under test (tests backdate {@code created_at} or file
  * mtime to simulate age).</li>
+ * <li>Tenant isolation (issue #20): every artifacts transaction sets
+ * transaction-local {@code app.tenant} with a read-back probe; RLS
+ * {@code FORCE} enforces {@code tenant_id = current_setting('app.tenant',
+ * true)} underneath, and every statement keeps {@code WHERE tenant_id = ?}
+ * in addition to RLS. Collection iterates tenants so no pass issues a global
+ * artifacts query without a tenant.</li>
  * </ul>
  *
  * <p>Crash model: kill -9 during upload leaves only a tmp file (final name
@@ -128,7 +136,10 @@ public class ContentStore {
             try {
                 byte[] existing = Files.readAllBytes(target);
                 if (sha256Hex(existing).equals(sha)) {
-                    jdbc.update(PUT_UPSERT_SQL, tenant, sha, (long) content.length);
+                    tx.execute(status -> {
+                        TenantGuard.setTenant(jdbc, tenant);
+                        return jdbc.update(PUT_UPSERT_SQL, tenant, sha, (long) content.length);
+                    });
                     return sha;
                 }
                 // Torn tail at the final name: remove before rewriting.
@@ -161,7 +172,10 @@ public class ContentStore {
             Files.deleteIfExists(tmp);
         }
 
-        jdbc.update(PUT_UPSERT_SQL, tenant, sha, (long) content.length);
+        tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            return jdbc.update(PUT_UPSERT_SQL, tenant, sha, (long) content.length);
+        });
         return sha;
     }
 
@@ -209,7 +223,10 @@ public class ContentStore {
         if (sizeBytes < 0) {
             throw new IllegalArgumentException("sizeBytes must be >= 0");
         }
-        jdbc.update(ACQUIRE_UPSERT_SQL, tenant, sha, sizeBytes);
+        tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            return jdbc.update(ACQUIRE_UPSERT_SQL, tenant, sha, sizeBytes);
+        });
     }
 
     /**
@@ -220,7 +237,11 @@ public class ContentStore {
     public boolean release(String tenantId, String shaHex) {
         String tenant = requireTenant(tenantId);
         String sha = requireSha(shaHex);
-        return jdbc.update(RELEASE_SQL, tenant, sha) == 1;
+        Boolean ok = tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            return jdbc.update(RELEASE_SQL, tenant, sha) == 1;
+        });
+        return Boolean.TRUE.equals(ok);
     }
 
     /**
@@ -245,15 +266,31 @@ public class ContentStore {
         int rowsDeleted = 0;
         int tmpDeleted = 0;
 
-        List<Map<String, Object>> candidates = jdbc.queryForList("""
-                SELECT tenant_id, sha256 FROM artifacts
-                WHERE refcount = 0
-                  AND created_at <= clock_timestamp() - INTERVAL '1 hour'
-                """);
+        // Per-tenant candidates: one transaction cannot hold two tenants, and a
+        // global artifacts query without tenant context would fail closed (zero
+        // rows) under RLS. Tenants table has no RLS so listing is safe.
+        List<String> tenants = jdbc.query("SELECT id FROM tenants", (rs, i) -> rs.getString("id"));
+        List<Map<String, Object>> candidates = new ArrayList<>();
+        for (String listTenant : tenants) {
+            final String lt = listTenant;
+            List<Map<String, Object>> one = tx.execute(status -> {
+                TenantGuard.setTenant(jdbc, lt);
+                return jdbc.queryForList("""
+                        SELECT tenant_id, sha256 FROM artifacts
+                        WHERE tenant_id = ?
+                          AND refcount = 0
+                          AND created_at <= clock_timestamp() - INTERVAL '1 hour'
+                        """, lt);
+            });
+            if (one != null) {
+                candidates.addAll(one);
+            }
+        }
         for (Map<String, Object> candidate : candidates) {
             String tenant = (String) candidate.get("tenant_id");
             String sha = (String) candidate.get("sha256");
             Reclaim reclaim = tx.execute(status -> {
+                TenantGuard.setTenant(jdbc, tenant);
                 List<Map<String, Object>> locked = jdbc.queryForList(
                         "SELECT size_bytes FROM artifacts "
                                 + "WHERE tenant_id = ? AND sha256 = ? AND refcount = 0 "
@@ -400,10 +437,29 @@ public class ContentStore {
                     String tenant = tenantDir.getFileName().toString();
                     boolean hasRow;
                     try {
-                        Integer count = jdbc.queryForObject(
-                                "SELECT COUNT(*) FROM artifacts WHERE tenant_id = ? AND sha256 = ?",
-                                Integer.class, tenant, name);
-                        hasRow = count != null && count > 0;
+                        // Tenant-scoped existence check inside its own transaction
+                        // with SET LOCAL: without context RLS returns zero rows,
+                        // which would look like "no row" and risk deleting a live
+                        // file, so the context is mandatory here.
+                        final String checkTenant = tenant;
+                        final String checkSha = name;
+                        Integer count = tx.execute(status -> {
+                            try {
+                                TenantGuard.setTenant(jdbc, checkTenant);
+                            } catch (IllegalArgumentException badTenant) {
+                                status.setRollbackOnly();
+                                return null;
+                            }
+                            return jdbc.queryForObject(
+                                    "SELECT COUNT(*) FROM artifacts WHERE tenant_id = ? AND sha256 = ?",
+                                    Integer.class, checkTenant, checkSha);
+                        });
+                        if (count == null) {
+                            // Ambiguous (bad tenant name or rolled-back check):
+                            // retain rather than delete.
+                            continue;
+                        }
+                        hasRow = count > 0;
                     } catch (RuntimeException e) {
                         // Ambiguous reference state: retain rather than delete.
                         continue;

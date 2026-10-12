@@ -14,6 +14,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.g1do.anvil.tenant.TenantGuard;
 
 /**
  * Single-transaction idempotent submit.
@@ -72,14 +73,17 @@ public class SubmitService {
     }
 
     private SubmitResult findExisting(String tenantId, String idempotencyKey) {
-        List<SubmitResult> rows = jdbc.query(
-                "SELECT document_id, version_id, id FROM jobs WHERE tenant_id = ? AND idempotency_key = ?",
-                (rs, i) -> new SubmitResult(
-                        (UUID) rs.getObject("document_id"),
-                        (UUID) rs.getObject("version_id"),
-                        (UUID) rs.getObject("id")),
-                tenantId, idempotencyKey);
-        return rows.isEmpty() ? null : rows.get(0);
+        return tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenantId);
+            List<SubmitResult> rows = jdbc.query(
+                    "SELECT document_id, version_id, id FROM jobs WHERE tenant_id = ? AND idempotency_key = ?",
+                    (rs, i) -> new SubmitResult(
+                            (UUID) rs.getObject("document_id"),
+                            (UUID) rs.getObject("version_id"),
+                            (UUID) rs.getObject("id")),
+                    tenantId, idempotencyKey);
+            return rows.isEmpty() ? null : rows.get(0);
+        });
     }
 
     /**
@@ -89,6 +93,9 @@ public class SubmitService {
     private SubmitResult insertInTransaction(String tenantId, String idempotencyKey, String title,
             String mimeType, CanonicalCbor.Encoded encoded) {
         return tx.execute(status -> {
+            // Transaction-local tenant for pooled-connection safety: SET LOCAL
+            // resets on COMMIT/ROLLBACK so the next checkout cannot inherit it.
+            TenantGuard.setTenant(jdbc, tenantId);
             // Re-check inside the transaction so a sequential duplicate that raced the
             // outer fast-path still returns the same shape without writing.
             SubmitResult existing = findExisting(tenantId, idempotencyKey);
