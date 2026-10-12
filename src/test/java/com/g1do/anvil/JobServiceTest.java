@@ -43,6 +43,7 @@ class JobServiceTest {
 
     @BeforeEach
     void clean() {
+        jdbc.execute("DELETE FROM cap_grants");
         jdbc.execute("DELETE FROM processed_events");
         jdbc.execute("DELETE FROM outbox");
         jdbc.execute("DELETE FROM attempts");
@@ -458,6 +459,9 @@ class JobServiceTest {
     void staleFencingReceivesZeroRowsWithNoStateChange() {
         UUID job = seedQueued("t_single", "stale-" + UUID.randomUUID());
         ClaimedJob claimed = jobs.claim("t_single", "w1").orElseThrow();
+        // Capability gate (issue #21): commits require a valid grant; fencing
+        // failures below still return false (cap valid, fencing mismatched).
+        jobs.issueCap("t_single", job);
         Map<String, Object> before = jobRow(job);
 
         // Stale token on heartbeat and both commit paths: false, no mutation.
@@ -482,6 +486,9 @@ class JobServiceTest {
         ClaimedJob a = jobs.claim("t_single", "worker-A").orElseThrow();
         assertThat(a.fencingToken()).isEqualTo(1L);
         assertThat(a.attempt()).isEqualTo(1);
+        // Capability gate: single valid grant reused by both A (stale fencing)
+        // and B (winner) so this test still proves fencing, not cap denial.
+        jobs.issueCap("t_single", job);
 
         // Suspended past lease expiry (40s SIGSTOP in the issue; here the lease
         // is expired directly via the DB clock so expiry is guaranteed and the
@@ -565,6 +572,9 @@ class JobServiceTest {
         assertThat(a.jobId()).isEqualTo(job);
         assertThat(a.fencingToken()).isEqualTo(1L);
         assertThat(a.attempt()).isEqualTo(1);
+        // Capability gate: single valid grant so resumed-A still proves fencing
+        // (cap valid, fencing stale) and B still proves the winning commit.
+        jobs.issueCap("t_single", job);
         assertThat(JobService.LEASE_TTL_SECONDS).isEqualTo(10);
         OffsetDateTime leaseBefore = leaseOf(job);
         assertThat(leaseBefore).isNotNull();
@@ -781,6 +791,7 @@ class JobServiceTest {
     void commitTransitionsAreFencedAndTerminal() {
         UUID job = seedQueued("t_single", "commit-" + UUID.randomUUID());
         ClaimedJob claimed = jobs.claim("t_single", "w1").orElseThrow();
+        jobs.issueCap("t_single", job);
 
         assertThat(jobs.commitSucceeded("t_single", job, "w1", claimed.fencingToken())).isTrue();
         assertThat(jobRow(job).get("state")).isEqualTo("SUCCEEDED");
@@ -793,6 +804,7 @@ class JobServiceTest {
         UUID job2 = seedQueued("t_single", "commit-f-" + UUID.randomUUID());
         ClaimedJob claimed2 = jobs.claim("t_single", "w1").orElseThrow();
         assertThat(claimed2.jobId()).isEqualTo(job2);
+        jobs.issueCap("t_single", job2);
         assertThat(jobs.commitFailed("t_single", job2, "w1", claimed2.fencingToken())).isTrue();
         assertThat(jobRow(job2).get("state")).isEqualTo("FAILED");
     }
