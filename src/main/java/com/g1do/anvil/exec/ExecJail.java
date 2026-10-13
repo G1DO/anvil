@@ -5,12 +5,15 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
@@ -27,18 +30,29 @@ import org.springframework.stereotype.Service;
  * {@code var/exec-workspaces}). Every file access through this class resolves
  * via {@link #resolveInWorkspace}, which denies absolute paths, {@code ..}
  * segments, {@code %} (encoded traversal), and null bytes with
- * {@link SecurityException}, and denies anything that normalizes outside the
- * workspace. The tenant name itself follows the same directory-escape rules as
- * {@code ContentStore} ({@code /, \, .., %} and reserved names rejected).</li>
+ * {@link SecurityException}, denies anything that normalizes outside the
+ * workspace, and denies any path with a symlink component (fail-closed: even
+ * a symlink pointing inside still denies). The tenant name itself follows the
+ * same directory-escape rules as {@code ContentStore} ({@code /, \, .., %}
+ * and reserved names rejected).</li>
  * <li>Forked child: {@link #run} launches a real child {@link Process} with its
  * working directory set to the tenant workspace. There is no in-process
- * untrusted execution path.</li>
+ * untrusted execution path. Shell interpreters ({@code sh}, {@code bash},
+ * {@code dash}, {@code ash}, {@code zsh}, {@code ksh}, {@code fish},
+ * {@code csh}, {@code tcsh}, {@code pwsh}/{@code powershell}) are denied, every
+ * operand containing an absolute path, a {@code ..} segment, or {@code %} is
+ * denied, workspace executables (relative-with-slash or absolute inside the
+ * workspace) are denied, and operands resolving through a symlink are denied.
+ * Stdout/stderr capture is capped at {@value #MAX_CAPTURE_BYTES} bytes per
+ * stream (truncated + flag).</li>
  * <li>Clean environment ({@code env -i} equivalent): the child's environment is
  * cleared before launch; only {@code PATH=/usr/bin:/bin},
  * {@code ANVIL_TENANT=<tenant>}, and explicitly passed {@code extraEnv} entries
  * survive. Parent secrets and cross-tenant tokens are never inherited.
  * {@code ANVIL_TENANT} and {@code PATH} cannot be overridden via
- * {@code extraEnv}.</li>
+ * {@code extraEnv} (ignored); loader/debug keys ({@code LD_*}, {@code DYLD_*},
+ * {@code PYTHON*}, {@code PERL*}, {@code RUBY*}, {@code NODE_*}, {@code IFS},
+ * {@code BASH_ENV}, {@code ENV}, {@code ZDOTDIR}) are denied.</li>
  * <li>Cross-tenant invisibility at the API layer:
  * {@link #readWorkspaceFile(String, String, String)} denies with a
  * caller-scoped {@link NoSuchFileException} (no content, no oracle) when
@@ -47,12 +61,13 @@ import org.springframework.stereotype.Service;
  * </ul>
  *
  * <p>Residual (explicitly out of scope for v1): no mount, user, or network
- * namespace is created, so this class alone does not make the OS kernel deny a
- * raw {@code ../sibling} or {@code /tmp} access from arbitrary shell. Untrusted
- * callers must route every file operand through {@link #resolveInWorkspace} /
- * {@link #readWorkspaceFile} and must execute {@code argv} directly (no shell)
- * or with validated workspace-relative operands only. Full containerization,
- * nftables DROP, DNS-rebind hardening, and non-canonical IP decoding are
+ * namespace is created, so the OS kernel still permits a raw
+ * {@code ../sibling} or {@code /tmp} access from arbitrary native code once it
+ * runs (interpreter {@code -c} strings, workspace binaries, or {@code /proc}
+ * bypass the argv allowlist; use is restricted to trusted callers composing
+ * direct {@code argv} with validated workspace-relative operands). TOCTOU
+ * between symlink check and use remains; full containerization,
+ * nftables DROP, DNS-rebind hardening, and IP decoding are
  * deferred; network egress from the untrusted path is separately default-denied
  * by {@link JailEgress}.
  */
@@ -65,7 +80,14 @@ public class ExecJail {
     /** Default execution timeout when the caller passes {@code null}. */
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
 
+    /** Max captured bytes per stream; beyond this output is truncated (flag set). */
+    public static final int MAX_CAPTURE_BYTES = 1024 * 1024;
+
     private static final Pattern ENV_KEY = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*$");
+
+    private static final Set<String> SHELL_BASENAMES = Set.of(
+            "sh", "bash", "dash", "ash", "zsh", "ksh", "fish", "csh", "tcsh",
+            "pwsh", "powershell");
 
     private final Path root;
 
@@ -93,9 +115,10 @@ public class ExecJail {
      *
      * @throws IllegalArgumentException when tenant or path is blank/null.
      * @throws SecurityException when the path is absolute, contains a
-     *         {@code ..} segment, contains {@code %} or a null byte, or
-     *         normalizes outside the workspace (read-only-root enforcement at
-     *         the API layer: only the workspace is writable/addressable).
+     *         {@code ..} segment, contains {@code %} or a null byte,
+     *         normalizes outside the workspace, or traverses a symlink
+     *         (read-only-root enforcement at the API layer: only the workspace
+     *         is writable/addressable, with no symlink escape).
      */
     public Path resolveInWorkspace(String tenantId, String userPath) throws IOException {
         String tenant = requireTenant(tenantId);
@@ -127,13 +150,14 @@ public class ExecJail {
         if (!resolved.startsWith(workspace)) {
             throw new SecurityException("path escapes workspace");
         }
+        assertNoSymlinkEscape(workspace, resolved);
         return resolved;
     }
 
     /**
      * Writes {@code content} to a workspace-relative path, creating parents.
      *
-     * @throws SecurityException when the path escapes the workspace.
+     * @throws SecurityException when the path escapes the workspace or traverses a symlink.
      */
     public void writeWorkspaceFile(String tenantId, String relativePath, byte[] content)
             throws IOException {
@@ -146,6 +170,12 @@ public class ExecJail {
         if (parent != null) {
             Files.createDirectories(parent);
         }
+        // Re-check after mkdirs: a parent could have been swapped for a symlink.
+        Path workspace = workspaceDir(tenant);
+        assertNoSymlinkEscape(workspace, target);
+        if (Files.isSymbolicLink(target)) {
+            throw new SecurityException("path traverses symlink");
+        }
         Files.write(target, content,
                 java.nio.file.StandardOpenOption.CREATE,
                 java.nio.file.StandardOpenOption.TRUNCATE_EXISTING);
@@ -157,7 +187,7 @@ public class ExecJail {
      * oracle), mirroring the CAS gateway.
      *
      * @throws NoSuchFileException when the tenants differ or the file is absent.
-     * @throws SecurityException when the path escapes the workspace.
+     * @throws SecurityException when the path escapes the workspace or traverses a symlink.
      */
     public byte[] readWorkspaceFile(String callerTenant, String resourceTenant, String relativePath)
             throws IOException {
@@ -168,6 +198,9 @@ public class ExecJail {
             throw new NoSuchFileException("workspaces/" + caller + "/" + rel);
         }
         Path target = resolveInWorkspace(caller, relativePath);
+        if (Files.isSymbolicLink(target)) {
+            throw new SecurityException("path traverses symlink");
+        }
         try {
             return Files.readAllBytes(target);
         } catch (NoSuchFileException e) {
@@ -183,16 +216,25 @@ public class ExecJail {
      * {@code argv}. Its working directory is the tenant workspace, its
      * environment is cleared first ({@code env -i} equivalent) and then set to
      * exactly {@code PATH}, {@code ANVIL_TENANT}, plus validated
-     * {@code extraEnv} entries.
+     * {@code extraEnv} entries. Shell interpreters are denied, every operand
+     * with an absolute path, a {@code ..} segment, or {@code %} is denied,
+     * workspace executables are denied, and operands traversing a symlink are
+     * denied. Stdout/stderr are capped at {@value #MAX_CAPTURE_BYTES} bytes per
+     * stream (truncated + flag).
      *
      * @param tenantId authenticated tenant scoping the workspace.
      * @param argv command plus args, executed directly without a shell.
      * @param extraEnv explicit extra variables (allowlist); {@code null} means none.
      *        Keys must match {@code [A-Za-z_][A-Za-z0-9_]*}; {@code ANVIL_TENANT}
-     *        and {@code PATH} entries are ignored (forced).
+     *        and {@code PATH} entries are ignored (forced); loader/debug keys
+     *        ({@code LD_*}, {@code DYLD_*}, {@code PYTHON*}, {@code PERL*},
+     *        {@code RUBY*}, {@code NODE_*}, {@code IFS}, {@code BASH_ENV},
+     *        {@code ENV}, {@code ZDOTDIR}) are denied.
      * @param timeout how long to wait; {@code null} means {@link #DEFAULT_TIMEOUT}.
-     * @return captured exit code, stdout, and stderr.
+     * @return captured exit code, stdout, stderr, and truncation flag.
      * @throws IllegalStateException when the child exceeds the timeout (killed).
+     * @throws SecurityException when argv escapes the workspace, uses a shell,
+     *         targets a workspace executable, or traverses a symlink.
      */
     public JailResult run(String tenantId, List<String> argv, Map<String, String> extraEnv,
             Duration timeout) throws IOException, InterruptedException {
@@ -217,6 +259,14 @@ public class ExecJail {
         }
 
         Path workspace = workspaceDir(tenant);
+        Path realWorkspace;
+        try {
+            realWorkspace = workspace.toRealPath();
+        } catch (IOException e) {
+            realWorkspace = workspace.toAbsolutePath().normalize();
+        }
+        assertArgvJailed(workspace, realWorkspace, argv);
+
         ProcessBuilder builder = new ProcessBuilder(argv);
         builder.directory(workspace.toFile());
         Map<String, String> env = builder.environment();
@@ -239,13 +289,16 @@ public class ExecJail {
                 if (key.equals("ANVIL_TENANT") || key.equals("PATH")) {
                     continue;
                 }
+                if (isBlockedEnvKey(key)) {
+                    throw new IllegalArgumentException("extraEnv key denied: " + key);
+                }
                 env.put(key, value);
             }
         }
 
         Process process = builder.start();
-        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
-        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+        CappedOutputStream stdout = new CappedOutputStream(MAX_CAPTURE_BYTES);
+        CappedOutputStream stderr = new CappedOutputStream(MAX_CAPTURE_BYTES);
         Thread outDrain = drain(process.getInputStream(), stdout);
         Thread errDrain = drain(process.getErrorStream(), stderr);
         outDrain.start();
@@ -267,7 +320,8 @@ public class ExecJail {
         errDrain.join(5_000L);
         String out = stdout.toString(StandardCharsets.UTF_8);
         String err = stderr.toString(StandardCharsets.UTF_8);
-        return new JailResult(process.exitValue(), out, err);
+        return new JailResult(process.exitValue(), out, err,
+                stdout.isTruncated() || stderr.isTruncated());
     }
 
     private static Thread drain(InputStream in, ByteArrayOutputStream out) {
@@ -280,6 +334,185 @@ public class ExecJail {
         }, "exec-jail-drain");
         thread.setDaemon(true);
         return thread;
+    }
+
+    /**
+     * Fail-closed symlink guard: denies any symlink component between the
+     * workspace (exclusive) and {@code resolved} (inclusive), and denies when
+     * the longest existing prefix canonicalizes outside the real workspace.
+     */
+    private static void assertNoSymlinkEscape(Path workspace, Path resolved) throws IOException {
+        Path cur = resolved;
+        while (cur != null && cur.startsWith(workspace) && !cur.equals(workspace)) {
+            if (Files.isSymbolicLink(cur)) {
+                throw new SecurityException("path traverses symlink");
+            }
+            cur = cur.getParent();
+        }
+        Path existing = resolved;
+        while (existing != null && existing.startsWith(workspace)
+                && !Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
+            existing = existing.getParent();
+        }
+        if (existing == null || !existing.startsWith(workspace)) {
+            return;
+        }
+        Path realWorkspace;
+        try {
+            realWorkspace = workspace.toRealPath();
+        } catch (IOException e) {
+            throw new SecurityException("path escapes workspace via symlink");
+        }
+        if (Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
+            Path realExisting;
+            try {
+                realExisting = existing.toRealPath();
+            } catch (NoSuchFileException gone) {
+                return;
+            } catch (IOException e) {
+                throw new SecurityException("path escapes workspace via symlink");
+            }
+            if (!realExisting.startsWith(realWorkspace)) {
+                throw new SecurityException("path escapes workspace via symlink");
+            }
+        }
+        if (Files.exists(resolved, LinkOption.NOFOLLOW_LINKS)) {
+            Path realTarget;
+            try {
+                realTarget = resolved.toRealPath();
+            } catch (NoSuchFileException gone) {
+                return;
+            } catch (IOException e) {
+                throw new SecurityException("path escapes workspace via symlink");
+            }
+            if (!realTarget.startsWith(realWorkspace)) {
+                throw new SecurityException("path escapes workspace via symlink");
+            }
+        }
+    }
+
+    /**
+     * API-layer argv confinement (no kernel namespace in v1): denies shell
+     * interpreters, absolute/{@code ..}/{@code %} operands, workspace
+     * executables, and operands traversing a symlink.
+     */
+    private static void assertArgvJailed(Path workspace, Path realWorkspace, List<String> argv)
+            throws IOException {
+        String cmd = argv.get(0);
+        String base;
+        try {
+            Path cmdPathTmp = Paths.get(cmd);
+            Path fileName = cmdPathTmp.getFileName();
+            base = (fileName == null ? cmd : fileName.toString()).toLowerCase(Locale.ROOT);
+        } catch (Exception e) {
+            throw new SecurityException("unresolvable command");
+        }
+        if (SHELL_BASENAMES.contains(base)) {
+            throw new SecurityException("shell execution denied");
+        }
+        try {
+            Path cmdPath = Paths.get(cmd);
+            if (!cmdPath.isAbsolute() && cmd.contains("/")) {
+                Path candidate = workspace.resolve(cmdPath).normalize();
+                if (candidate.startsWith(workspace)) {
+                    throw new SecurityException("workspace executables denied");
+                }
+            } else if (cmdPath.isAbsolute()) {
+                Path normCmd = cmdPath.normalize();
+                if (normCmd.startsWith(workspace) || normCmd.startsWith(realWorkspace)) {
+                    throw new SecurityException("workspace executables denied");
+                }
+                if (Files.exists(normCmd, LinkOption.NOFOLLOW_LINKS)) {
+                    try {
+                        Path realCmd = normCmd.toRealPath();
+                        if (realCmd.startsWith(realWorkspace)) {
+                            throw new SecurityException("workspace executables denied");
+                        }
+                    } catch (NoSuchFileException gone) {
+                        // Dangling link outside the workspace: let exec fail naturally.
+                    }
+                }
+            }
+        } catch (SecurityException se) {
+            throw se;
+        } catch (Exception e) {
+            throw new SecurityException("unresolvable command");
+        }
+        for (int i = 1; i < argv.size(); i++) {
+            String arg = argv.get(i);
+            if (arg.contains("%")) {
+                throw new SecurityException("argv contains encoded traversal");
+            }
+            Path p;
+            try {
+                p = Paths.get(arg);
+            } catch (Exception e) {
+                throw new SecurityException("unresolvable argv");
+            }
+            if (p.isAbsolute()) {
+                throw new SecurityException("argv escapes workspace");
+            }
+            for (Path part : p) {
+                if (part.toString().equals("..")) {
+                    throw new SecurityException("argv escapes workspace");
+                }
+            }
+            try {
+                Path candidate = workspace.resolve(p).normalize();
+                if (candidate.startsWith(workspace)) {
+                    assertNoSymlinkEscape(workspace, candidate);
+                }
+            } catch (SecurityException se) {
+                throw new SecurityException("argv traverses symlink");
+            }
+        }
+    }
+
+    private static boolean isBlockedEnvKey(String key) {
+        if (key.equals("IFS") || key.equals("ENV") || key.equals("BASH_ENV")
+                || key.equals("ZDOTDIR")) {
+            return true;
+        }
+        return key.startsWith("LD_") || key.startsWith("DYLD_")
+                || key.startsWith("PYTHON") || key.startsWith("PERL")
+                || key.startsWith("RUBY") || key.startsWith("NODE_");
+    }
+
+    /** Capped capture: truncates beyond {@link #MAX_CAPTURE_BYTES} and flags it. */
+    private static final class CappedOutputStream extends ByteArrayOutputStream {
+        private final int max;
+        private boolean truncated;
+
+        CappedOutputStream(int max) {
+            this.max = max;
+        }
+
+        @Override
+        public synchronized void write(int b) {
+            if (size() < max) {
+                super.write(b);
+            } else {
+                truncated = true;
+            }
+        }
+
+        @Override
+        public synchronized void write(byte[] b, int off, int len) {
+            int remaining = max - size();
+            if (remaining <= 0) {
+                truncated = true;
+                return;
+            }
+            int toWrite = Math.min(remaining, len);
+            super.write(b, off, toWrite);
+            if (toWrite < len) {
+                truncated = true;
+            }
+        }
+
+        synchronized boolean isTruncated() {
+            return truncated;
+        }
     }
 
     static String requireTenant(String tenantId) {
