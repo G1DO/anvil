@@ -350,7 +350,7 @@ public class ReadService {
     }
 
     static String toPrefixLike(String prefix) {
-        if (prefix == null) {
+        if (prefix == null || prefix.isBlank()) {
             return "%";
         }
         String trimmed = prefix;

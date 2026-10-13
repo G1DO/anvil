@@ -117,7 +117,9 @@ public class CasPresignedService {
     /**
      * Issues a presigned token with an explicit expiry (DB-clock epoch seconds).
      * Public for the P04 expired-URL proof: callers mint an already-expired token
-     * with a valid signature, then verify it denies as expired.
+     * with a valid signature, then verify it denies as expired. Future expiry is
+     * capped to the database clock plus {@link #TTL_SECONDS} so this hatch cannot
+     * mint bearer tokens that verify beyond the documented TTL.
      */
     public String issueAtExpiry(String tenantId, UUID jobId, String shaHex, long expiryEpoch) {
         String tenant = ContentStore.requireTenant(tenantId);
@@ -142,7 +144,10 @@ public class CasPresignedService {
         // Current grant must be valid; shares cap_rejected on denial.
         CapGrant grant = jobs.fetchValidCurrentGrant(tenant, jobId);
 
-        return mint(tenant, sha, jobId, grant.capId(), grant.epoch(), expiryEpoch);
+        // Cap future expiry to the documented TTL so this P04 proof hatch cannot
+        // mint year-lived bearer tokens; past expiry still mints (expired deny).
+        long cappedExpiry = Math.min(expiryEpoch, dbNowEpoch() + TTL_SECONDS);
+        return mint(tenant, sha, jobId, grant.capId(), grant.epoch(), cappedExpiry);
     }
 
     /**
