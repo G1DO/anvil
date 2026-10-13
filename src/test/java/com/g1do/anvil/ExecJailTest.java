@@ -102,24 +102,32 @@ class ExecJailTest {
 
     @Test
     void envClean() throws Exception {
-        assumeUnixShell();
+        Assumptions.assumeTrue(Files.isExecutable(Path.of("/usr/bin/printenv"))
+                || Files.isExecutable(Path.of("/bin/printenv")), "requires printenv");
+        Assumptions.assumeTrue(Files.isExecutable(Path.of("/usr/bin/env"))
+                || Files.isExecutable(Path.of("/bin/env")), "requires env");
+
+        String printenv = Files.isExecutable(Path.of("/usr/bin/printenv"))
+                ? "/usr/bin/printenv" : "/bin/printenv";
+        String envBin = Files.isExecutable(Path.of("/usr/bin/env"))
+                ? "/usr/bin/env" : "/bin/env";
 
         // The jailed child sees exactly its tenant id, not the parent environment.
         JailResult tenantProbe = jail.run(TENANT_A,
-                List.of("/bin/sh", "-c", "printenv ANVIL_TENANT"),
+                List.of(printenv, "ANVIL_TENANT"),
                 Map.of(), Duration.ofSeconds(10));
         assertThat(tenantProbe.exitCode()).isEqualTo(0);
         assertThat(tenantProbe.stdout().trim()).isEqualTo(TENANT_A);
 
         JailResult pathProbe = jail.run(TENANT_A,
-                List.of("/bin/sh", "-c", "printenv PATH"),
+                List.of(printenv, "PATH"),
                 Map.of(), Duration.ofSeconds(10));
         assertThat(pathProbe.exitCode()).isEqualTo(0);
         assertThat(pathProbe.stdout().trim()).isEqualTo(ExecJail.SAFE_PATH);
 
         // HOME is present in virtually every parent environment but must not leak.
         JailResult envProbe = jail.run(TENANT_A,
-                List.of("/bin/sh", "-c", "env"),
+                List.of(envBin),
                 Map.of(), Duration.ofSeconds(10));
         assertThat(envProbe.exitCode()).isEqualTo(0);
         assertThat(envProbe.stdout()).contains("ANVIL_TENANT=" + TENANT_A);
@@ -132,12 +140,12 @@ class ExecJailTest {
 
         // Explicit allowlist entries survive; forced entries cannot be overridden.
         JailResult allowProbe = jail.run(TENANT_A,
-                List.of("/bin/sh", "-c", "printenv ANVIL_OK"),
+                List.of(printenv, "ANVIL_OK"),
                 Map.of("ANVIL_OK", "yes"), Duration.ofSeconds(10));
         assertThat(allowProbe.stdout().trim()).isEqualTo("yes");
 
         JailResult forcedProbe = jail.run(TENANT_A,
-                List.of("/bin/sh", "-c", "printenv ANVIL_TENANT"),
+                List.of(printenv, "ANVIL_TENANT"),
                 Map.of("ANVIL_TENANT", "evil"), Duration.ofSeconds(10));
         assertThat(forcedProbe.stdout().trim()).isEqualTo(TENANT_A);
     }
@@ -221,7 +229,6 @@ class ExecJailTest {
 
     @Test
     void crossTenantFileInvisible() throws Exception {
-        assumeUnixShell();
         Assumptions.assumeTrue(Files.isExecutable(Path.of("/bin/ls")), "requires /bin/ls");
         Assumptions.assumeTrue(Files.isExecutable(Path.of("/bin/cat")), "requires /bin/cat");
 
@@ -263,18 +270,177 @@ class ExecJailTest {
 
     @Test
     void controlExecutionPasses() throws Exception {
-        assumeUnixShell();
+        Assumptions.assumeTrue(Files.isExecutable(Path.of("/bin/cat")), "requires /bin/cat");
+        Assumptions.assumeTrue(Files.isExecutable(Path.of("/bin/cp")), "requires /bin/cp");
 
         assertThat(jail.workspaceDir(TENANT_A)).isNotEqualTo(jail.workspaceDir(TENANT_B));
 
         jail.writeWorkspaceFile(TENANT_A, "input.txt",
                 "hello".getBytes(StandardCharsets.UTF_8));
+        JailResult copy = jail.run(TENANT_A,
+                List.of("/bin/cp", "input.txt", "out.txt"),
+                Map.of(), Duration.ofSeconds(10));
+        assertThat(copy.exitCode()).isEqualTo(0);
         JailResult result = jail.run(TENANT_A,
-                List.of("/bin/sh", "-c", "cat input.txt > out.txt && cat out.txt"),
+                List.of("/bin/cat", "out.txt"),
                 Map.of(), Duration.ofSeconds(10));
         assertThat(result.exitCode()).isEqualTo(0);
         assertThat(result.stdout()).isEqualTo("hello");
         assertThat(jail.readWorkspaceFile(TENANT_A, TENANT_A, "out.txt"))
                 .isEqualTo("hello".getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void adversarialChildDenied() throws Exception {
+        Assumptions.assumeTrue(Files.isExecutable(Path.of("/bin/cat")), "requires /bin/cat");
+
+        jail.writeWorkspaceFile(TENANT_A, "secret-a.txt",
+                "alpha-secret".getBytes(StandardCharsets.UTF_8));
+        jail.writeWorkspaceFile(TENANT_B, "secret-b.txt",
+                "bravo-secret".getBytes(StandardCharsets.UTF_8));
+
+        // Direct cross-tenant read via ../ denies at the API layer (argv validation).
+        assertThatThrownBy(() -> jail.run(TENANT_A,
+                List.of("/bin/cat", "../" + TENANT_B + "/secret-b.txt"), Map.of(),
+                Duration.ofSeconds(10)))
+                .isInstanceOf(SecurityException.class);
+        // Absolute read of another tenant's file denies.
+        assertThatThrownBy(() -> jail.run(TENANT_A,
+                List.of("/bin/cat", tempDir.resolve(TENANT_B + "/secret-b.txt").toString()),
+                Map.of(), Duration.ofSeconds(10)))
+                .isInstanceOf(SecurityException.class);
+        // Absolute read of /etc/passwd denies.
+        assertThatThrownBy(() -> jail.run(TENANT_A,
+                List.of("/bin/cat", "/etc/passwd"), Map.of(), Duration.ofSeconds(10)))
+                .isInstanceOf(SecurityException.class);
+        // Shell interpreters deny (no shell with untrusted argv).
+        assertThatThrownBy(() -> jail.run(TENANT_A,
+                List.of("/bin/sh", "-c", "cat secret-a.txt"), Map.of(),
+                Duration.ofSeconds(10)))
+                .isInstanceOf(SecurityException.class);
+        // Writes outside the workspace deny and create nothing outside.
+        assertThatThrownBy(() -> jail.run(TENANT_A,
+                List.of("/usr/bin/touch", "../evil-from-child"), Map.of(),
+                Duration.ofSeconds(10)))
+                .isInstanceOf(SecurityException.class);
+        assertThatThrownBy(() -> jail.run(TENANT_A,
+                List.of("/usr/bin/touch", "/tmp/pwn-jail-test"), Map.of(),
+                Duration.ofSeconds(10)))
+                .isInstanceOf(SecurityException.class);
+        assertThat(tempDir.resolve("evil-from-child")).doesNotExist();
+        assertThat(Path.of("/tmp/pwn-jail-test")).doesNotExist();
+        // Workspace executables deny (relative-with-slash and absolute-inside).
+        assertThatThrownBy(() -> jail.run(TENANT_A,
+                List.of("./evil"), Map.of(), Duration.ofSeconds(10)))
+                .isInstanceOf(SecurityException.class);
+        assertThatThrownBy(() -> jail.run(TENANT_A,
+                List.of(jail.workspaceDir(TENANT_A).resolve("evil").toString()),
+                Map.of(), Duration.ofSeconds(10)))
+                .isInstanceOf(SecurityException.class);
+        // Nothing leaked: sibling secret never appears in any child output.
+        JailResult listing = jail.run(TENANT_A,
+                List.of("/bin/ls", "-1"), Map.of(), Duration.ofSeconds(10));
+        assertThat(listing.stdout()).doesNotContain("bravo-secret");
+    }
+
+    @Test
+    void symlinkEscapeDenied() throws Exception {
+        jail.writeWorkspaceFile(TENANT_B, "secret-b.txt",
+                "bravo-secret".getBytes(StandardCharsets.UTF_8));
+        Path workspaceA = jail.workspaceDir(TENANT_A);
+        Path workspaceB = jail.workspaceDir(TENANT_B);
+
+        // Link-to-sibling denies on resolve, read, and write.
+        Files.createSymbolicLink(workspaceA.resolve("link-sibling"),
+                Path.of("../" + TENANT_B));
+        assertThatThrownBy(() -> jail.resolveInWorkspace(TENANT_A, "link-sibling/secret-b.txt"))
+                .isInstanceOf(SecurityException.class);
+        assertThatThrownBy(() -> jail.readWorkspaceFile(TENANT_A, TENANT_A,
+                "link-sibling/secret-b.txt"))
+                .isInstanceOf(SecurityException.class);
+        assertThatThrownBy(() -> jail.writeWorkspaceFile(TENANT_A,
+                "link-sibling/evil.txt", "x".getBytes(StandardCharsets.UTF_8)))
+                .isInstanceOf(SecurityException.class);
+        assertThatThrownBy(() -> jail.run(TENANT_A,
+                List.of("/bin/cat", "link-sibling/secret-b.txt"), Map.of(),
+                Duration.ofSeconds(10)))
+                .isInstanceOf(SecurityException.class);
+        assertThat(workspaceB.resolve("evil.txt")).doesNotExist();
+
+        // Link-to-/tmp denies.
+        Files.createSymbolicLink(workspaceA.resolve("link-tmp"), Path.of("/tmp"));
+        assertThatThrownBy(() -> jail.resolveInWorkspace(TENANT_A, "link-tmp/x"))
+                .isInstanceOf(SecurityException.class);
+        assertThatThrownBy(() -> jail.readWorkspaceFile(TENANT_A, TENANT_A, "link-tmp/x"))
+                .isInstanceOf(SecurityException.class);
+
+        // Parent-dir symlink denies children beneath it.
+        Files.createDirectories(workspaceA.resolve("real"));
+        Files.createSymbolicLink(workspaceA.resolve("link-parent"), Path.of("real"));
+        // Sanity: the link itself was created, but any path through it denies
+        // fail-closed (even though it points inside).
+        assertThatThrownBy(() -> jail.resolveInWorkspace(TENANT_A, "link-parent/file.txt"))
+                .isInstanceOf(SecurityException.class);
+
+        // Final-component symlink to a sibling file denies.
+        Files.createSymbolicLink(workspaceA.resolve("evil-link"),
+                Path.of("../" + TENANT_B + "/secret-b.txt"));
+        assertThatThrownBy(() -> jail.readWorkspaceFile(TENANT_A, TENANT_A, "evil-link"))
+                .isInstanceOf(SecurityException.class);
+    }
+
+    @Test
+    void dangerousEnvDenied() {
+        Assumptions.assumeTrue(Files.isExecutable(Path.of("/bin/cat")), "requires /bin/cat");
+        for (String key : List.of("LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
+                "PYTHONPATH", "PERL5LIB", "RUBYLIB", "NODE_OPTIONS", "IFS", "BASH_ENV",
+                "ENV", "ZDOTDIR")) {
+            assertThatThrownBy(() -> jail.run(TENANT_A,
+                    List.of("/bin/cat", "secret-a.txt"), Map.of(key, "evil"),
+                    Duration.ofSeconds(10)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("denied");
+        }
+    }
+
+    @Test
+    void outputCapped() throws Exception {
+        Assumptions.assumeTrue(Files.isExecutable(Path.of("/bin/cat")), "requires /bin/cat");
+        byte[] big = new byte[2 * 1024 * 1024];
+        java.util.Arrays.fill(big, (byte) 'x');
+        jail.writeWorkspaceFile(TENANT_A, "big.bin", big);
+        JailResult result = jail.run(TENANT_A,
+                List.of("/bin/cat", "big.bin"), Map.of(), Duration.ofSeconds(15));
+        assertThat(result.exitCode()).isEqualTo(0);
+        assertThat(result.truncated()).isTrue();
+        assertThat(result.stdout().length()).isEqualTo(ExecJail.MAX_CAPTURE_BYTES);
+    }
+
+    @Test
+    void egressNonCanonicalDenied() {
+        // Single-integer and hex-integer forms deny even when allowlisted.
+        assertThatThrownBy(() -> JailEgress.checkAllowed("http://2130706433/",
+                java.util.Set.of("2130706433")))
+                .isInstanceOf(EgressDeniedException.class);
+        assertThatThrownBy(() -> JailEgress.checkAllowed("http://0x7f000001/",
+                java.util.Set.of("0x7f000001")))
+                .isInstanceOf(EgressDeniedException.class);
+        // Expanded loopback/unspecified deny even when allowlisted.
+        assertThatThrownBy(() -> JailEgress.checkAllowed("http://[0:0:0:0:0:0:0:1]/",
+                java.util.Set.of("0:0:0:0:0:0:0:1")))
+                .isInstanceOf(EgressDeniedException.class);
+        assertThatThrownBy(() -> JailEgress.checkAllowed("http://[0:0:0:0:0:0:0:0]/",
+                java.util.Set.of("0:0:0:0:0:0:0:0")))
+                .isInstanceOf(EgressDeniedException.class);
+        // IPv4-mapped IPv6 denies even when allowlisted.
+        assertThatThrownBy(() -> JailEgress.checkAllowed("http://[::ffff:127.0.0.1]/",
+                java.util.Set.of("::ffff:127.0.0.1")))
+                .isInstanceOf(EgressDeniedException.class);
+        assertThatThrownBy(() -> JailEgress.checkAllowed("http://[::ffff:10.0.0.1]/",
+                java.util.Set.of("::ffff:10.0.0.1")))
+                .isInstanceOf(EgressDeniedException.class);
+        assertThat(JailEgress.isBlockedTarget("http://2130706433/")).isTrue();
+        assertThat(JailEgress.isBlockedTarget("http://[0:0:0:0:0:0:0:1]/")).isTrue();
+        assertThat(JailEgress.isBlockedTarget("http://[::ffff:127.0.0.1]/")).isTrue();
     }
 }
