@@ -343,6 +343,17 @@ class ReadIsolationTest {
     }
 
     @Test
+    void s04_blankPrefixMatchesAllLikeEmpty() {
+        List<ReadService.DocumentRow> all = reads.searchDocuments(TENANT_A, null, 100, null);
+        List<ReadService.DocumentRow> blank = reads.searchDocuments(TENANT_A, "   ", 100, null);
+        assertThat(blank).as("blank prefix matches all caller rows").hasSameSizeAs(all);
+        assertThat(blank.stream().map(ReadService.DocumentRow::id))
+                .containsExactlyInAnyOrderElementsOf(
+                        all.stream().map(ReadService.DocumentRow::id).toList());
+        assertThat(blank).allSatisfy(r -> assertThat(r.tenantId()).isEqualTo(TENANT_A));
+    }
+
+    @Test
     void s05_omittedTenantParamDefaultsToHeaderFailClosed() throws Exception {
         MvcResult result = mockMvc.perform(get("/api/documents")
                         .header("X-Tenant-Id", TENANT_A)
@@ -649,6 +660,27 @@ class ReadIsolationTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
                         .isEqualTo(403));
+    }
+
+    @Test
+    void p04_farFutureExpiryCappedToTtl() throws Exception {
+        UUID jobA = presignedJob(TENANT_A);
+        jobs.issueCap(TENANT_A, jobA);
+        byte[] own = "p04-cap-own".getBytes(StandardCharsets.UTF_8);
+        String shaOwn = tempStore.put(TENANT_A, own);
+
+        long farFuture = Instant.now().getEpochSecond() + 365L * 24 * 3600;
+        String token = presigned.issueAtExpiry(TENANT_A, jobA, shaOwn, farFuture);
+        String[] parts = token.split("\\.", -1);
+        JsonNode payload = jsonMapper.readTree(Base64.getUrlDecoder().decode(parts[0]));
+        long exp = payload.get("exp").asLong();
+        long dbNow = jdbc.queryForObject("SELECT clock_timestamp()", java.time.OffsetDateTime.class)
+                .toEpochSecond();
+        // Capped to DB now + 60s (tolerance for the two DB-clock reads), not a year out.
+        assertThat(exp).isLessThanOrEqualTo(dbNow + CasPresignedService.TTL_SECONDS + 5);
+        assertThat(exp).isGreaterThan(dbNow);
+        // Capped token still authorizes short-term with the capped expiry.
+        assertThat(presigned.authorize(TENANT_A, token).expiresAtEpoch()).isEqualTo(exp);
     }
 
     @Test
