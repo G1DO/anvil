@@ -19,8 +19,12 @@ import java.util.Set;
  * and {@code *.localhost}, well-known metadata names, IPv4 loopback
  * ({@code 127/8}), private ({@code 10/8}, {@code 172.16/12}, {@code 192.168/16}),
  * link-local ({@code 169.254/16}), {@code 0.0.0.0/8}, IPv6 loopback
- * ({@code ::1}), unspecified ({@code ::}), link-local ({@code fe80::/10}),
- * unique-local ({@code fc00::/7}), and multicast ({@code ff00::/8}). Only
+ * ({@code ::1} plus expanded {@code 0:0:0:0:0:0:0:1}), unspecified
+ * ({@code ::} plus expanded {@code 0:0:0:0:0:0:0:0}), link-local
+ * ({@code fe80::/10}), unique-local ({@code fc00::/7}), multicast
+ * ({@code ff00::/8}), IPv4-mapped IPv6 ({@code ::ffff:/96}), and non-canonical
+ * numeric forms (single-integer like {@code 2130706433}, hex integer like
+ * {@code 0x7f000001}, hex-dotted like {@code 0x7f.0.0.1}). Only
  * {@code http}/{@code https} schemes are considered; anything else denies. URLs
  * with userinfo ({@code http://user@host}) deny.</li>
  * <li>Redirects are never followed: {@link #newClient()} builds a
@@ -176,6 +180,18 @@ public final class JailEgress {
                 || h.equals("metadata")) {
             return true;
         }
+        // Fail-closed non-canonical numeric forms (denied without decoding):
+        // single-integer (2130706433), hex integer (0x7f000001), and hex-dotted
+        // (0x7f.0.0.1) encodings never reach DNS as allowlisted names.
+        if (h.matches("^[0-9]+$")) {
+            return true;
+        }
+        if (h.matches("(?i)^0x[0-9a-f]+$")) {
+            return true;
+        }
+        if (h.matches("(?i)^[0-9a-fx.]+$") && h.toLowerCase(Locale.ROOT).contains("0x")) {
+            return true;
+        }
         // IPv4 literal (canonical dotted-decimal only; anything else that looks
         // like digits-and-dots but does not parse is blocked fail-closed, which
         // also denies decimal/octal/hex/integer encodings without decoding them).
@@ -252,6 +268,16 @@ public final class JailEgress {
         if (h.equals("::1") || h.equals("::")) {
             return true;
         }
+        // IPv4-mapped IPv6 (any ::ffff:/0:0:0:0:0:ffff: form hides an IPv4
+        // target): denied without decoding the inner address.
+        if (h.startsWith("::ffff:") || h.startsWith("0:0:0:0:0:ffff:")) {
+            return true;
+        }
+        // Expanded loopback/unspecified (0:0:0:0:0:0:0:1, 0:0:0:0:0:0:0:0,
+        // including zero-padded groups): denied like their compressed forms.
+        if (isExpandedLoopbackOrUnspecified(h)) {
+            return true;
+        }
         // fe80::/10 link-local covers fe80-febf; check the top nibble textually.
         if (h.startsWith("fe80") || h.startsWith("fe81") || h.startsWith("fe82")
                 || h.startsWith("fe83") || h.startsWith("fe84") || h.startsWith("fe85")
@@ -276,5 +302,54 @@ public final class JailEgress {
             return true;
         }
         return false;
+    }
+
+    private static boolean isExpandedLoopbackOrUnspecified(String h) {
+        if (h.contains("::") || !h.contains(":")) {
+            return false;
+        }
+        String addr = h;
+        int dot = addr.indexOf('.');
+        if (dot >= 0) {
+            // Embedded-IPv4 expanded form (e.g. 0:0:0:0:0:ffff:1.2.3.4) is
+            // already covered by the mapped prefix above; any other dotted
+            // colon form is non-canonical here.
+            return addr.startsWith("0:0:0:0:0:ffff:");
+        }
+        String[] groups = addr.split(":", -1);
+        if (groups.length != 8) {
+            return false;
+        }
+        for (int i = 0; i < 7; i++) {
+            if (!isZeroGroup(groups[i])) {
+                return false;
+            }
+        }
+        try {
+            int last = Integer.parseInt(groups[7].isEmpty() ? "0" : groups[7], 16);
+            return last == 0 || last == 1;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private static boolean isZeroGroup(String group) {
+        if (group.isEmpty()) {
+            return false;
+        }
+        if (group.length() > 4) {
+            return false;
+        }
+        for (int i = 0; i < group.length(); i++) {
+            char c = group.charAt(i);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                return false;
+            }
+        }
+        try {
+            return Integer.parseInt(group, 16) == 0;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 }
