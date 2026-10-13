@@ -213,6 +213,43 @@ public class ContentStore {
     }
 
     /**
+     * Authenticated content read for issue #22 (C01/C02/C06).
+     *
+     * <p>Contract: {@code callerTenant} is the authenticated caller (from
+     * {@code X-Tenant-Id}); {@code resourceTenant} is the namespace being read.
+     * The call denies without content when {@code caller != resource} (C01, C06
+     * direct-FS bypass), when no {@code artifacts} row exists for
+     * {@code (caller, sha)} under RLS (C02), or when the file is absent. All
+     * such denials throw {@link NoSuchFileException} with the caller-scoped
+     * address so a cross-tenant probe is indistinguishable from a missing
+     * address (no existence oracle). Traversal ({@code ../}, {@code %2e%2e},
+     * double-encoding) is rejected by {@link #requireTenant}/
+     * {@link #requireSha} with {@link IllegalArgumentException} (C03/C04).
+     * The raw {@link #get} stays available for crash recovery (rowless files
+     * remain hash-readable); this gateway adds RLS + tenant-match on top.
+     */
+    public byte[] getForCaller(String callerTenant, String resourceTenant, String shaHex)
+            throws IOException {
+        String caller = requireTenant(callerTenant);
+        String resource = requireTenant(resourceTenant);
+        String sha = requireSha(shaHex);
+        if (!caller.equals(resource)) {
+            throw new NoSuchFileException(address(caller, sha));
+        }
+        Boolean hasRow = tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, caller);
+            Integer count = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM artifacts WHERE tenant_id = ? AND sha256 = ?",
+                    Integer.class, caller, sha);
+            return count != null && count > 0;
+        });
+        if (!Boolean.TRUE.equals(hasRow)) {
+            throw new NoSuchFileException(address(caller, sha));
+        }
+        return get(caller, sha);
+    }
+
+    /**
      * Increments the reference count for {@code (tenant, sha)}, creating the
      * row with {@code refcount = 1} when absent. Live (referenced) rows are
      * never collected.
@@ -546,6 +583,11 @@ public class ContentStore {
         String tenant = tenantId.trim();
         if (tenant.contains("/") || tenant.contains("\\") || tenant.contains("..")) {
             throw new IllegalArgumentException("tenantId escapes its directory");
+        }
+        // Encoded traversal (issue #22 C04): reject '%' so '%2e%2e', '%252e' and
+        // any double-encoding never reaches the filesystem, even before decoding.
+        if (tenant.contains("%")) {
+            throw new IllegalArgumentException("tenantId contains encoded traversal");
         }
         if (tenant.equals(".") || tenant.equalsIgnoreCase("null")) {
             throw new IllegalArgumentException("tenantId is reserved");
