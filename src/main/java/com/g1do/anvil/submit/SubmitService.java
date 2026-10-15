@@ -14,6 +14,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.g1do.anvil.audit.AuditChain;
 import com.g1do.anvil.tenant.TenantGuard;
 
 /**
@@ -138,6 +139,13 @@ public class SubmitService {
                     "INSERT INTO outbox (id, tenant_id, job_id, doc_id, version_id, type, sha256, payload) "
                             + "VALUES (?, ?, ?, ?, ?, 'job.committed', ?, ?::jsonb)",
                     outboxId, tenantId, jobId, docId, versionId, encoded.sha256Hex(), payload);
+
+            // Same-transaction audit: submit is seq 0 (GENESIS). Duplicate
+            // resubmits return above without appending, so the chain never forks.
+            AuditChain.append(jdbc, tenantId, jobId, AuditChain.TYPE_SUBMIT, Map.of(
+                    "doc_id", docId.toString(),
+                    "version_id", versionId.toString(),
+                    "sha256", encoded.sha256Hex()));
 
             return new SubmitResult(docId, versionId, jobId);
         });
