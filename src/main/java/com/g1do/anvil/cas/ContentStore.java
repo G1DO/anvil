@@ -28,6 +28,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.g1do.anvil.audit.AuditChain;
 import com.g1do.anvil.tenant.TenantGuard;
 
 /**
@@ -177,6 +178,56 @@ public class ContentStore {
             return jdbc.update(PUT_UPSERT_SQL, tenant, sha, (long) content.length);
         });
         return sha;
+    }
+
+    /**
+     * Job-scoped durable put with audit (issue #28).
+     *
+     * <p>Same durability as {@link #put}: tmp-write -&gt; fsync -&gt; atomic
+     * rename -&gt; fsync dir, then one DB transaction does the {@code artifacts}
+     * upsert plus the {@code cas.put} audit ({@code artifact_sha} link) for
+     * {@code jobId}. Crash between file and row leaves a rowless file swept by
+     * GC; crash between row and audit is impossible (same transaction, no
+     * orphan). The raw {@link #put} stays unaudited for non-job content.
+     */
+    public String putForJob(String tenantId, UUID jobId, byte[] content) throws IOException {
+        String tenant = requireTenant(tenantId);
+        requireJobId(jobId);
+        requireContent(content);
+        String sha = sha256Hex(content);
+        ensureFileDurably(tenant, sha, content);
+        tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            jdbc.update(PUT_UPSERT_SQL, tenant, sha, (long) content.length);
+            AuditChain.append(jdbc, tenant, jobId, AuditChain.TYPE_CAS_PUT,
+                    Map.of("artifact_sha", sha, "size_bytes", (long) content.length));
+            return null;
+        });
+        return sha;
+    }
+
+    /**
+     * Links an existing artifact to a job with audit (issue #28).
+     *
+     * <p>One DB transaction: {@code acquire} (refcount + 1, pinning the bytes
+     * for the job) plus the {@code cas.put} audit ({@code artifact_sha} link).
+     * Use after {@link #put} when the bytes already exist, or to pin a shared
+     * SHA for a job without rewriting bytes.
+     */
+    public void linkArtifactToJob(String tenantId, UUID jobId, String shaHex, long sizeBytes) {
+        String tenant = requireTenant(tenantId);
+        requireJobId(jobId);
+        String sha = requireSha(shaHex);
+        if (sizeBytes < 0) {
+            throw new IllegalArgumentException("sizeBytes must be >= 0");
+        }
+        tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            jdbc.update(ACQUIRE_UPSERT_SQL, tenant, sha, sizeBytes);
+            AuditChain.append(jdbc, tenant, jobId, AuditChain.TYPE_CAS_PUT,
+                    Map.of("artifact_sha", sha, "size_bytes", sizeBytes));
+            return null;
+        });
     }
 
     /**
@@ -609,6 +660,55 @@ public class ContentStore {
     private static void requireContent(byte[] content) {
         if (content == null) {
             throw new IllegalArgumentException("content must not be null");
+        }
+    }
+
+    private static void requireJobId(UUID jobId) {
+        if (jobId == null) {
+            throw new IllegalArgumentException("jobId must not be null");
+        }
+    }
+
+    /**
+     * Ensures the final file exists durably without touching the database.
+     * Shared by {@link #put} and {@link #putForJob} so both keep the mandatory
+     * tmp-write -&gt; fsync -&gt; rename -&gt; fsync-dir order.
+     */
+    private void ensureFileDurably(String tenant, String sha, byte[] content) throws IOException {
+        Path tenantDir = tenantDir(tenant);
+        Files.createDirectories(tenantDir);
+        Path target = tenantDir.resolve(sha);
+        if (Files.isRegularFile(target)) {
+            try {
+                byte[] existing = Files.readAllBytes(target);
+                if (sha256Hex(existing).equals(sha)) {
+                    return;
+                }
+                Files.deleteIfExists(target);
+                fsyncDirectory(tenantDir);
+            } catch (NoSuchFileException gone) {
+                // Raced with collection; fall through to write.
+            }
+        }
+        Path tmp = tenantDir.resolve(TMP_PREFIX + UUID.randomUUID() + ".part");
+        try (FileChannel channel = FileChannel.open(tmp,
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+            channel.write(ByteBuffer.wrap(content));
+            channel.force(true);
+        } catch (IOException e) {
+            Files.deleteIfExists(tmp);
+            throw e;
+        }
+        try {
+            try {
+                Files.move(tmp, target,
+                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException notAtomic) {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            fsyncDirectory(tenantDir);
+        } finally {
+            Files.deleteIfExists(tmp);
         }
     }
 }

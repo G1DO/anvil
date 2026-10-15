@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.g1do.anvil.audit.AuditChain;
 import com.g1do.anvil.tenant.TenantGuard;
 
 /**
@@ -242,6 +243,10 @@ public class JobService {
             ClaimedJob claimed = rows.get(0);
             jdbc.update(INSERT_ATTEMPT_SQL,
                     tenant, claimed.jobId(), claimed.attempt(), worker, claimed.fencingToken());
+            // Same-transaction audit: attempt/owner/token/lease excluded from
+            // payload by contract; heartbeat is never logged.
+            AuditChain.append(jdbc, tenant, claimed.jobId(), AuditChain.TYPE_CLAIM,
+                    java.util.Map.of("state", "RUNNING"));
             return Optional.of(claimed);
         });
     }
@@ -332,6 +337,11 @@ public class JobService {
             TenantGuard.setTenant(jdbc, tenant);
             requireCurrentGrantValid(tenant, jobId);
             int updated = jdbc.update(COMMIT_SQL_PREFIX, targetState, jobId, tenant, worker, fencingToken);
+            if (updated == 1) {
+                // Same-transaction audit; fencing misses (0 rows) never append.
+                AuditChain.append(jdbc, tenant, jobId, AuditChain.TYPE_COMMIT,
+                        java.util.Map.of("outcome", targetState));
+            }
             return updated == 1;
         });
         return Boolean.TRUE.equals(ok);
@@ -350,6 +360,10 @@ public class JobService {
             TenantGuard.setTenant(jdbc, tenant);
             requirePresentedGrantValid(tenant, jobId, capId, capEpoch);
             int updated = jdbc.update(COMMIT_SQL_PREFIX, targetState, jobId, tenant, worker, fencingToken);
+            if (updated == 1) {
+                AuditChain.append(jdbc, tenant, jobId, AuditChain.TYPE_COMMIT,
+                        java.util.Map.of("outcome", targetState));
+            }
             return updated == 1;
         });
         return Boolean.TRUE.equals(ok);
@@ -385,7 +399,11 @@ public class JobService {
             if (rows.isEmpty()) {
                 throw new IllegalStateException("cap issue returned no row");
             }
-            return rows.get(0);
+            CapGrant grant = rows.get(0);
+            // Same-transaction audit: epoch link for replay.
+            AuditChain.append(jdbc, tenant, jobId, AuditChain.TYPE_CAP_ISSUE,
+                    java.util.Map.of("epoch", grant.epoch(), "cap_id", grant.capId().toString()));
+            return grant;
         });
     }
 
@@ -400,7 +418,15 @@ public class JobService {
         requireJobId(jobId);
         tx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
-            jdbc.update(REVOKE_CAP_SQL, tenant, jobId);
+            List<Long> epochs = jdbc.query(
+                    "SELECT epoch FROM cap_grants WHERE tenant_id = ? AND job_id = ? FOR UPDATE",
+                    (rs, i) -> rs.getLong("epoch"), tenant, jobId);
+            int updated = jdbc.update(REVOKE_CAP_SQL, tenant, jobId);
+            if (updated == 1 && !epochs.isEmpty()) {
+                // Same-transaction audit with the revoked epoch.
+                AuditChain.append(jdbc, tenant, jobId, AuditChain.TYPE_CAP_REVOKE,
+                        java.util.Map.of("epoch", epochs.get(0)));
+            }
             return null;
         });
     }
@@ -543,22 +569,34 @@ public class JobService {
         String tenant = requireTenant(tenantId);
         return tx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
-            int deadQueued = jdbc.update(
+            // DEAD transitions are audited as commit/DEAD in the same txn;
+            // reclaim to QUEUED and empty polls are never logged (issue #28).
+            List<UUID> deadQueuedIds = jdbc.query(
                     "UPDATE jobs SET state = 'DEAD', updated_at = clock_timestamp() "
-                            + "WHERE tenant_id = ? AND state = 'QUEUED' AND attempt >= max_attempts",
-                    tenant);
-            int deadRunning = jdbc.update(
+                            + "WHERE tenant_id = ? AND state = 'QUEUED' AND attempt >= max_attempts "
+                            + "RETURNING id",
+                    (rs, i) -> (UUID) rs.getObject("id"), tenant);
+            List<UUID> deadRunningIds = jdbc.query(
                     "UPDATE jobs SET state = 'DEAD', updated_at = clock_timestamp() "
                             + "WHERE tenant_id = ? AND state = 'RUNNING' "
-                            + "AND lease_expires_at <= clock_timestamp() AND attempt >= max_attempts",
-                    tenant);
+                            + "AND lease_expires_at <= clock_timestamp() AND attempt >= max_attempts "
+                            + "RETURNING id",
+                    (rs, i) -> (UUID) rs.getObject("id"), tenant);
             int released = jdbc.update(
                     "UPDATE jobs SET state = 'QUEUED', owner = NULL, lease_expires_at = NULL, "
                             + "updated_at = clock_timestamp() "
                             + "WHERE tenant_id = ? AND state = 'RUNNING' "
                             + "AND lease_expires_at <= clock_timestamp() AND attempt < max_attempts",
                     tenant);
-            return new ReconcileResult(released, deadQueued + deadRunning);
+            for (UUID deadId : deadQueuedIds) {
+                AuditChain.append(jdbc, tenant, deadId, AuditChain.TYPE_COMMIT,
+                        java.util.Map.of("outcome", "DEAD"));
+            }
+            for (UUID deadId : deadRunningIds) {
+                AuditChain.append(jdbc, tenant, deadId, AuditChain.TYPE_COMMIT,
+                        java.util.Map.of("outcome", "DEAD"));
+            }
+            return new ReconcileResult(released, deadQueuedIds.size() + deadRunningIds.size());
         });
     }
 

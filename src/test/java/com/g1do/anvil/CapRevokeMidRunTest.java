@@ -42,6 +42,7 @@ class CapRevokeMidRunTest {
 
     @BeforeEach
     void clean() {
+        jdbc.execute("TRUNCATE TABLE audit_events");
         jdbc.execute("DELETE FROM cap_grants");
         jdbc.execute("DELETE FROM processed_events");
         jdbc.execute("DELETE FROM outbox");

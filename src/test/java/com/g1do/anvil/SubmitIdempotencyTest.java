@@ -50,6 +50,7 @@ class SubmitIdempotencyTest {
 
     @BeforeEach
     void clean() {
+        jdbc.execute("TRUNCATE TABLE audit_events");
         jdbc.execute("DELETE FROM processed_events");
         jdbc.execute("DELETE FROM outbox");
         jdbc.execute("DELETE FROM attempts");

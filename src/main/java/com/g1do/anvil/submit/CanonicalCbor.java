@@ -57,6 +57,23 @@ public final class CanonicalCbor {
     public record Encoded(byte[] cbor, String sha256Hex) {
     }
 
+    /**
+     * Canonical CBOR bytes for an audit payload map (issue #28).
+     *
+     * <p>Uses the same mapper (SORT_PROPERTIES_ALPHABETICALLY +
+     * ORDER_MAP_ENTRIES_BY_KEYS) so key order and map implementation never
+     * affect the hash. Callers must exclude owner, fencing_token,
+     * lease_expires_at, attempt, timestamps and tenant context before calling;
+     * see {@code AuditChain} which enforces this.
+     */
+    public static byte[] encodeMap(java.util.Map<String, ?> payload) {
+        try {
+            return MAPPER.writeValueAsBytes(payload == null ? java.util.Map.of() : payload);
+        } catch (Exception e) {
+            throw new IllegalStateException("canonical CBOR payload encoding failed", e);
+        }
+    }
+
     public static Encoded encode(String title, String mimeType, byte[] body) {
         try {
             byte[] cbor = MAPPER.writeValueAsBytes(new CanonicalForm(title, mimeType, body));

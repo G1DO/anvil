@@ -49,6 +49,7 @@ class ContentStoreTest {
 
     @BeforeEach
     void clean() throws Exception {
+        jdbc.execute("TRUNCATE TABLE audit_events");
         jdbc.execute("DELETE FROM processed_events");
         jdbc.execute("DELETE FROM outbox");
         jdbc.execute("DELETE FROM attempts");
