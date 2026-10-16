@@ -22,6 +22,16 @@ Capability-secure, deterministically replayable execution fabric. Current state:
 
 Postgres comes automatically: `@ServiceConnection PostgreSQLContainer` in tests, Boot Dev Services on local run.
 
+One-command prod-like start/verify (mirrors prod deps):
+
+```bash
+docker compose up --build
+curl -s localhost:8080/healthz
+curl -s localhost:8080/readyz
+```
+
+Task verbs (same names CI calls): `task dev|test|test:int|migrate|build|verify` (see `Taskfile.yml`).
+
 ## Documentation
 
 - `docs/architecture.md` — how the implemented system works (submit, fenced claim, content store, outbox relay, database, execution jail, verification proofs, timings).
@@ -35,10 +45,11 @@ Postgres comes automatically: `@ServiceConnection PostgreSQLContainer` in tests,
 
 ## Layout
 
-- `src/main/java/com/g1do/anvil` — application entry plus `tenant/` (X-Tenant-Id auth), `submit/` (CBOR, service, controller), `jobs/` (fenced claim, heartbeat, capability-gated commit, reconciler), `cas/` (crash-safe content store, refcount, garbage collection, tenant-scoped gateway, TTL-60s presigned URLs), `read/` (tenant-isolated direct-ID fetches, title-prefix search, search controller), `audit/` (append-only hash chain writer plus tenant-isolated per-job read API), `exec/` (minimal execution jail, default-deny egress, redirect-never client), and `outbox/` (loss-free relay, idempotent consumer)
-- `src/main/resources` — config + migrations
-- `src/test` — `contextLoads`, schema proof, submit idempotency proof, fenced claim plus gate-scale and zombie proofs, content-store crash/GC plus real-kill proofs, outbox relay ghost/dedup/concurrency plus real-kill proof, tenant-isolation leak proof, capability-revoke mid-run proof, cross-tenant read matrix proof (direct-ID/search/CAS/presigned, 0 leaks), execution-jail proof (RO-root/env/egress/redirect/cross-tenant/control), audit-chain proof plus audit-read isolation proof (own-tenant order, cross-tenant deny-without-oracle, forged-tenant ignored, cursor replay 0 rows, `401`, RLS proof), plus the Testcontainers configuration
-- `docs/` — architecture and decisions; `.github/workflows/ci.yml` runs `./mvnw -B -ntp test` on Java 25
+- `src/main/java/com/g1do/anvil` — application entry plus `tenant/` (X-Tenant-Id auth), `submit/` (CBOR, service, controller), `jobs/` (fenced claim, heartbeat, capability-gated commit, reconciler), `cas/` (crash-safe content store, refcount, garbage collection, tenant-scoped gateway, TTL-60s presigned URLs), `read/` (tenant-isolated direct-ID fetches, title-prefix search, search controller), `audit/` (append-only hash chain writer plus tenant-isolated per-job read API), `exec/` (minimal execution jail, default-deny egress, redirect-never client), `health/` (`/healthz` liveness, `/readyz` readiness, correlation IDs), and `outbox/` (loss-free relay, idempotent consumer)
+- `src/main/resources` — config + migrations + `logback-spring.xml` (JSON logs with correlation, no secrets)
+- `Dockerfile` (multistage minimal unprivileged) + `docker-compose.yml` (real `postgres:18` + app)
+- `src/test` — `contextLoads`, schema proof, submit idempotency proof, fenced claim plus gate-scale and zombie proofs, content-store crash/GC plus real-kill proofs, outbox relay ghost/dedup/concurrency plus real-kill proof, tenant-isolation leak proof, capability-revoke mid-run proof, cross-tenant read matrix proof (direct-ID/search/CAS/presigned, 0 leaks), execution-jail proof (RO-root/env/egress/redirect/cross-tenant/control), audit-chain proof plus audit-read isolation proof (own-tenant order, cross-tenant deny-without-oracle, forged-tenant ignored, cursor replay 0 rows, `401`, RLS proof), health probe proof (`/healthz` no-auth, `/readyz` DB check, correlation echo), plus the Testcontainers configuration
+- `docs/` — architecture and decisions; `.github/workflows/ci.yml` gate (`lint/types/unit/schema/SAST/secrets/build` + filtered `integration/e2e/contract-check`) on Java 25
 
 ## Explicitly deferred (not created yet)
 

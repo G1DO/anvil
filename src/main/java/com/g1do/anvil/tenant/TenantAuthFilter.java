@@ -25,7 +25,7 @@ import jakarta.servlet.http.HttpServletResponse;
  * <p>No JWT/OAuth here by design (issue #3 constraints).
  */
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE)
+@Order(Ordered.HIGHEST_PRECEDENCE + 1)
 public class TenantAuthFilter extends OncePerRequestFilter {
 
     private final JdbcTemplate jdbc;
