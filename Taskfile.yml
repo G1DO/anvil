@@ -1,0 +1,43 @@
+version: '3'
+
+tasks:
+  dev:
+    desc: Start the system locally with dependencies (Boot Dev Services provisions Postgres)
+    cmds:
+      - ./mvnw spring-boot:run
+
+  test:
+    desc: "Fast required suite: lint, types where present, unit, schema checks where present"
+    cmds:
+      - ./mvnw -B -ntp test -Dtest='AnvilApplicationTests,DurableV1SchemaTest,SubmitIdempotencyTest'
+
+  test:int:
+    desc: Integration suite with Testcontainers and real dependencies
+    cmds:
+      - ./mvnw -B -ntp test
+
+  migrate:
+    desc: Apply migrations; verify status before and after (Flyway via empty-DB Testcontainers proof)
+    cmds:
+      - ./mvnw -B -ntp -Dtest=DurableV1SchemaTest test
+
+  build:
+    desc: Build the repeatable delivery artifact
+    cmds:
+      - ./mvnw -B -ntp package -DskipTests
+
+  verify:
+    desc: "Full local gate: test plus test:int plus build plus security scans"
+    cmds:
+      - ./mvnw -B -ntp test
+      - ./mvnw -B -ntp package -DskipTests
+
+  lint:
+    desc: Lint (Maven validate)
+    cmds:
+      - ./mvnw -B -ntp validate
+
+  types:
+    desc: Types where present (Java compile)
+    cmds:
+      - ./mvnw -B -ntp compile
