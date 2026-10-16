@@ -1,0 +1,164 @@
+openapi: 3.0.3
+info:
+  title: anvil
+  version: 0.1.0
+  description: >
+    Capability-secure execution fabric. OpenAPI is the source for HTTP;
+    code and tests validate against it. Breaking changes bump the version
+    with a compatibility check (additive-only in v1).
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/documents:
+    post:
+      summary: Submit a document (single-transaction document+version+job+outbox)
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitRequest'
+      responses:
+        '202':
+          description: Accepted (first and duplicate delivery share IDs)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmitResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    get:
+      summary: Title-prefix search, tenant solely from X-Tenant-Id
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - name: query
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Caller-tenant documents only (cross-tenant 0 rows, no oracle)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Document'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /audit/events:
+    get:
+      summary: Per-job hash-chain reads, tenant solely from X-Tenant-Id
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - name: job_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Caller-tenant chain ORDER BY seq (cross-tenant same empty [] as missing)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditEvent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /healthz:
+    get:
+      summary: Liveness, no dependency checks, no auth
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+  /readyz:
+    get:
+      summary: Readiness including Postgres SELECT 1, no auth
+      responses:
+        '200':
+          description: ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+        '503':
+          description: not-ready
+components:
+  parameters:
+    XTenantId:
+      name: X-Tenant-Id
+      in: header
+      required: true
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, maxLength: 255 }
+  schemas:
+    SubmitRequest:
+      type: object
+      required: [title, mime_type, body]
+      properties:
+        title: { type: string, maxLength: 4096 }
+        mime_type: { type: string, maxLength: 255 }
+        body: { type: string }
+    SubmitResponse:
+      type: object
+      required: [doc_id, version_id, job_id]
+      properties:
+        doc_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        job_id: { type: string, format: uuid }
+    Document:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        title: { type: string }
+        mime_type: { type: string }
+        created_at: { type: string, format: date-time }
+    AuditEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        job_id: { type: string, format: uuid }
+        seq: { type: integer }
+        prev_hash: { type: string }
+        event_hash: { type: string }
+        type: { type: string }
+        payload: { type: object }
+        created_at: { type: string, format: date-time }
+  responses:
+    BadRequest:
+      description: malformed request
+    Unauthorized:
+      description: missing or unknown X-Tenant-Id
