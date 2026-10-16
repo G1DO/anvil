@@ -46,7 +46,7 @@ tasks:
       - python3 scripts/contract_check.py
 
   diagrams:
-    desc: "Validate Structurizr workspace and c1/c2/c3 links (same check CI runs)"
+    desc: "Optional local check: Structurizr workspace links (does not parse DSL — render to verify)"
     cmds:
       - python3 scripts/diagrams_check.py
 
