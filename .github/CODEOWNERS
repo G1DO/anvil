@@ -1,0 +1,21 @@
+# CODEOWNERS: sensitive paths need a second person when one is available.
+# Solo-safe: checks only, never require approval (author cannot approve own PR).
+# Paths adapted to real layout (src/main/java + Flyway migration path).
+
+/src/main/java/com/g1do/anvil/tenant/** @G1DO
+/src/main/java/com/g1do/anvil/jobs/** @G1DO
+/src/main/java/com/g1do/anvil/cas/** @G1DO
+/src/main/java/com/g1do/anvil/read/** @G1DO
+/src/main/java/com/g1do/anvil/audit/** @G1DO
+/src/main/java/com/g1do/anvil/outbox/** @G1DO
+/src/main/java/com/g1do/anvil/submit/** @G1DO
+/src/main/java/com/g1do/anvil/exec/** @G1DO
+/src/main/resources/db/migration/** @G1DO
+/src/main/resources/application.yaml @G1DO
+/docs/contracts/** @G1DO
+/openapi/** @G1DO
+Dockerfile @G1DO
+docker-compose.yml @G1DO
+
+# Fallback owner for unmatched paths.
+* @G1DO
