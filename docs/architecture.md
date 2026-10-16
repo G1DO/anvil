@@ -123,6 +123,14 @@ See `src/main/java/com/g1do/anvil/audit/AuditChain.java`, `src/main/resources/db
 - `AuditChainTest`: immutable per-job hash chain on containerized Postgres — migration shape (`UNIQUE(job_id, prev_hash)` fork guard, composite FK, `RLS FORCE`/policy, migrator ownership, app `SELECT+INSERT` only, immutable trigger), full `submit→claim→cap.issue→cas.put→commit` chain hash-linked via the canonical mapper (deterministic key order, forbidden keys absent), duplicate resubmit no fork, `heartbeat`/reclaim/empty-poll/`sent_at` not logged (`DEAD` and `cap.revoke` logged), `UPDATE`/`DELETE` rejected (superuser trigger + restricted-pool grants), duplicate `prev_hash` rejected, cross-tenant FK rejected, effect+append crash atomicity (rollback leaves no orphan; denied commit appends nothing), missing context 0 rows.
 - `AuditReadIsolationTest`: tenant-isolated audit reads on containerized Postgres — own-tenant `seq`-ordered chain with hash linkage, cross-tenant `job_id` empty same-as-missing (service + HTTP `200 []`), forged `tenant`/`tenant_id` ignored, foreign cursor replay 0 rows (service + HTTP), missing/unknown tenant `401`, malformed `job_id`/cursor `400`, limit default/cap plus re-check unit proof, RLS `FORCE`/policy catalog proof.
 
+## Health and observability
+
+See `src/main/java/com/g1do/anvil/health/HealthController.java`, `CorrelationIdFilter.java`, `src/main/resources/logback-spring.xml`, `Dockerfile`, `docker-compose.yml`.
+
+- `GET /healthz` is liveness with no dependency checks; `GET /readyz` is readiness with `SELECT 1` on Postgres (200 ready, 503 not-ready). Both bypass `X-Tenant-Id` auth. Startup probe: same `/readyz` where orchestration requires it.
+- Logs are structured JSON (Logstash encoder) with `correlationId` from `X-Request-Id`/`X-Correlation-Id` or generated UUID, echoed as `X-Correlation-Id`; no secrets in logs.
+- `Dockerfile` is multistage minimal unprivileged (`temurin:25-jre`, user `anvil:10001`). `docker-compose.yml` mirrors prod (real `postgres:18` + app). One-command start: `docker compose up --build`; one-command verify: `curl localhost:8080/healthz` then `curl localhost:8080/readyz`. No manual setup beyond Docker.
+
 ## Timings and limits
 
 `lease_ttl=10s, heartbeat_every=3s, claim LIMIT 20, max_attempts=5, reconciler_poll=1s, relay LIMIT 100, GC_grace=1h, cap_ttl=1h, presigned_ttl=60s, search_default_limit=20, search_max_limit=100, audit_read_default_limit=20, audit_read_max_limit=100, exec_default_timeout=30s, jail_PATH=/usr/bin:/bin, jail_capture_cap=1MiB/stream, egress default-deny, http NEVER`. `clock_timestamp()` is the only lease/cap/presigned clock. Polling first; no broker, Redis, or external queue.

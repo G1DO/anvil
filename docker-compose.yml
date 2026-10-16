@@ -1,0 +1,33 @@
+# Mirrors production dependencies (real Postgres) so local, Testcontainers,
+# and CI exercise the same services. One command starts, one verifies.
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: anvil
+      POSTGRES_USER: anvil
+      POSTGRES_PASSWORD: anvil
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anvil -d anvil"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/anvil
+      SPRING_DATASOURCE_USERNAME: anvil
+      SPRING_DATASOURCE_PASSWORD: anvil
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
