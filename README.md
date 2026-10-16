@@ -1,6 +1,6 @@
 # anvil
 
-Capability-secure, deterministically replayable execution fabric. Current state: V1 durable schema plus idempotent transactional submit plus fenced claim/heartbeat/capability-gated commit/reconciler plus crash-safe content store with safe garbage collection plus loss-free outbox relay with idempotent consumer plus DB-enforced tenant isolation plus fail-closed cross-tenant reads (direct-ID, title-prefix search, CAS gateway, TTL-60s presigned URLs) plus minimal execution jail (forked child, per-tenant workspace, cleaned env, default-deny egress, redirect-never).
+Capability-secure, deterministically replayable execution fabric. Current state: V1 durable schema plus idempotent transactional submit plus fenced claim/heartbeat/capability-gated commit/reconciler plus crash-safe content store with safe garbage collection plus loss-free outbox relay with idempotent consumer plus DB-enforced tenant isolation plus fail-closed cross-tenant reads (direct-ID, title-prefix search, CAS gateway, TTL-60s presigned URLs) plus immutable per-job hash-chained audit log with tenant-isolated read API plus minimal execution jail (forked child, per-tenant workspace, cleaned env, default-deny egress, redirect-never).
 
 ## Stack
 
@@ -35,9 +35,9 @@ Postgres comes automatically: `@ServiceConnection PostgreSQLContainer` in tests,
 
 ## Layout
 
-- `src/main/java/com/g1do/anvil` — application entry plus `tenant/` (X-Tenant-Id auth), `submit/` (CBOR, service, controller), `jobs/` (fenced claim, heartbeat, capability-gated commit, reconciler), `cas/` (crash-safe content store, refcount, garbage collection, tenant-scoped gateway, TTL-60s presigned URLs), `read/` (tenant-isolated direct-ID fetches, title-prefix search, search controller), `exec/` (minimal execution jail, default-deny egress, redirect-never client), and `outbox/` (loss-free relay, idempotent consumer)
+- `src/main/java/com/g1do/anvil` — application entry plus `tenant/` (X-Tenant-Id auth), `submit/` (CBOR, service, controller), `jobs/` (fenced claim, heartbeat, capability-gated commit, reconciler), `cas/` (crash-safe content store, refcount, garbage collection, tenant-scoped gateway, TTL-60s presigned URLs), `read/` (tenant-isolated direct-ID fetches, title-prefix search, search controller), `audit/` (append-only hash chain writer plus tenant-isolated per-job read API), `exec/` (minimal execution jail, default-deny egress, redirect-never client), and `outbox/` (loss-free relay, idempotent consumer)
 - `src/main/resources` — config + migrations
-- `src/test` — `contextLoads`, schema proof, submit idempotency proof, fenced claim plus gate-scale and zombie proofs, content-store crash/GC plus real-kill proofs, outbox relay ghost/dedup/concurrency plus real-kill proof, tenant-isolation leak proof, capability-revoke mid-run proof, cross-tenant read matrix proof (direct-ID/search/CAS/presigned, 0 leaks), execution-jail proof (RO-root/env/egress/redirect/cross-tenant/control), plus the Testcontainers configuration
+- `src/test` — `contextLoads`, schema proof, submit idempotency proof, fenced claim plus gate-scale and zombie proofs, content-store crash/GC plus real-kill proofs, outbox relay ghost/dedup/concurrency plus real-kill proof, tenant-isolation leak proof, capability-revoke mid-run proof, cross-tenant read matrix proof (direct-ID/search/CAS/presigned, 0 leaks), execution-jail proof (RO-root/env/egress/redirect/cross-tenant/control), audit-chain proof plus audit-read isolation proof (own-tenant order, cross-tenant deny-without-oracle, forged-tenant ignored, cursor replay 0 rows, `401`, RLS proof), plus the Testcontainers configuration
 - `docs/` — architecture and decisions; `.github/workflows/ci.yml` runs `./mvnw -B -ntp test` on Java 25
 
 ## Explicitly deferred (not created yet)
