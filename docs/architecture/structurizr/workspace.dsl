@@ -1,6 +1,8 @@
 workspace "ANVIL" "Capability-secure, deterministically replayable execution fabric." {
 
     model {
+        !identifiers hierarchical
+
         tenantClient = person "Tenant client" "Sends X-Tenant-Id plus Idempotency-Key. Tenant is the sole authority for reads and writes."
         operator = person "Operator" "Runs compose up, probes /healthz plus /readyz, tails JSON logs by correlationId."
 
