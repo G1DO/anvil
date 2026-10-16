@@ -37,10 +37,12 @@ public class TenantAuthFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        // Only enforce on the submit slice; leave any future/other paths alone.
+        // Enforce on the submit slice, fail-closed reads, and the audit read API;
+        // leave any future/other paths alone.
         return !(path.startsWith("/api/") || path.startsWith("/v1/")
                 || path.equals("/documents") || path.startsWith("/documents/")
-                || path.equals("/submit") || path.startsWith("/submit/"));
+                || path.equals("/submit") || path.startsWith("/submit/")
+                || path.equals("/audit") || path.startsWith("/audit/"));
     }
 
     @Override
