@@ -5,9 +5,9 @@ workspace "ANVIL" "Capability-secure, deterministically replayable execution fab
         operator = person "Operator" "Runs compose up, probes /healthz plus /readyz, tails JSON logs by correlationId."
 
         anvil = softwareSystem "ANVIL" "Capability-secure, deterministically replayable execution fabric." {
-            api = container "API service" "Spring Boot 4.1, Java 25" "Auth, validate, canonical CBOR, single-txn submit, direct-ID reads, title-prefix search, audit reads, presigned URLs, health probes."
-            workers = container "Workers" "JobService, OutboxRelay, reconciler" "Fenced claim and heartbeat, capability-gated commit, relay publish plus sent_at mark, idempotent consumer, lease reconcile."
-            jail = container "Exec jail" "Forked child per tenant" "Per-tenant workspace only, cleared env, default-deny egress, redirect-never HTTP."
+            api = container "API service" "Auth, validate, canonical CBOR, single-txn submit, direct-ID reads, title-prefix search, audit reads, presigned URLs, health probes." "Spring Boot 4.1, Java 25"
+            workers = container "Workers" "Fenced claim and heartbeat, capability-gated commit, relay publish plus sent_at mark, idempotent consumer, lease reconcile." "JobService, OutboxRelay, reconciler"
+            jail = container "Exec jail" "Per-tenant workspace only, cleared env, default-deny egress, redirect-never HTTP." "Forked child per tenant"
         }
 
         postgres = softwareSystem "PostgreSQL 18" "Source of truth, queue, and outbox. Flyway V1-V4, RLS FORCE, anvil_app NOSUPERUSER NOBYPASSRLS."

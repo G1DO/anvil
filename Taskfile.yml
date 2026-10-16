@@ -45,6 +45,11 @@ tasks:
     cmds:
       - python3 scripts/contract_check.py
 
+  diagrams:
+    desc: "Validate Structurizr workspace and c1/c2/c3 links (same check CI runs)"
+    cmds:
+      - python3 scripts/diagrams_check.py
+
   lint:
     desc: Lint (Maven validate)
     cmds:

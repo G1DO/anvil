@@ -10,7 +10,7 @@ Canonical C1/C2 diagram source: `workspace.dsl` in this directory.
 ## Render
 
 ```bash
-docker run -it --rm -p 8080:8080 -v "$PWD:/usr/local/structurizr" structurizr/lite
+docker run -it --rm -p 8080:8080 -v "$PWD:/usr/local/structurizr" structurizr/lite:2025.11.08
 ```
 
-Then open Structurizr Lite and load `workspace.dsl`.
+Then open Structurizr Lite and load `workspace.dsl`. Image tag is pinned; bump only after rendering the views against the new tag.
