@@ -26,6 +26,7 @@ jobs:
               - 'src/main/java/com/g1do/anvil/outbox/**'
               - 'src/main/java/com/g1do/anvil/submit/**'
               - 'src/main/java/com/g1do/anvil/exec/**'
+              - 'src/main/java/com/g1do/anvil/health/**'
               - 'src/main/resources/db/migration/**'
               - 'src/main/resources/application.yaml'
               - 'src/test/java/**'
