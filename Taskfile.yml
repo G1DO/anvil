@@ -7,12 +7,12 @@ tasks:
       - ./mvnw spring-boot:run
 
   test:
-    desc: "Fast required suite: lint, types where present, unit, schema checks where present"
+    desc: "Quick gate subset (fast feedback; not the full suite — use test:int for full)"
     cmds:
       - ./mvnw -B -ntp test -Dtest='AnvilApplicationTests,DurableV1SchemaTest,SubmitIdempotencyTest'
 
   test:int:
-    desc: Integration suite with Testcontainers and real dependencies
+    desc: "Full suite with Testcontainers and real dependencies (covers the quick subset)"
     cmds:
       - ./mvnw -B -ntp test
 
@@ -27,10 +27,23 @@ tasks:
       - ./mvnw -B -ntp package -DskipTests
 
   verify:
-    desc: "Full local gate: test plus test:int plus build plus security scans"
+    desc: "Full local gate: lint + types + migrate + test:int + build (SAST/secrets run in CI)"
     cmds:
-      - ./mvnw -B -ntp test
-      - ./mvnw -B -ntp package -DskipTests
+      - task lint
+      - task types
+      - task migrate
+      - task test:int
+      - task build
+
+  e2e:
+    desc: "End-to-end operability probe (HealthControllerTest: /healthz no-auth, /readyz DB check)"
+    cmds:
+      - ./mvnw -B -ntp test -Dtest='HealthControllerTest'
+
+  contract-check:
+    desc: "Validate OpenAPI source and version (same check CI runs)"
+    cmds:
+      - python3 scripts/contract_check.py
 
   lint:
     desc: Lint (Maven validate)
