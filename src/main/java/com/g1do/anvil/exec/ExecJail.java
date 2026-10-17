@@ -267,7 +267,7 @@ public class ExecJail {
         }
         assertArgvJailed(workspace, realWorkspace, argv);
 
-        ProcessBuilder builder = new ProcessBuilder(argv);
+        ProcessBuilder builder = new ProcessBuilder(argv); // nosemgrep: java.lang.security.audit.command-injection-process-builder.command-injection-process-builder -- argv validated by assertArgvJailed (no shell, no absolute/.. bus, no workspace executables), cwd=tenant workspace, cleared env
         builder.directory(workspace.toFile());
         Map<String, String> env = builder.environment();
         env.clear();

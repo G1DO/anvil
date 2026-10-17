@@ -33,6 +33,9 @@ build/
 .vscode/
 
 # Structurizr Lite runtime artifacts (workspace copies + search index)
-workspace.dsl
-workspace.json
-.structurizr/
+# Lite data dir is repo root; workspace lives in docs/architecture/ via STRUCTURIZR_WORKSPACE_PATH.
+/workspace.dsl
+/workspace.json
+/.structurizr/
+docs/architecture/workspace.json
+docs/architecture/.structurizr/

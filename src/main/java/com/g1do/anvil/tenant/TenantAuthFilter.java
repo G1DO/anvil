@@ -56,7 +56,7 @@ public class TenantAuthFilter extends OncePerRequestFilter {
         tenantId = tenantId.trim();
         Integer count;
         try {
-            count = jdbc.queryForObject("SELECT COUNT(*) FROM tenants WHERE id = ?", Integer.class, tenantId);
+            count = jdbc.queryForObject("SELECT COUNT(*) FROM tenants WHERE id = ?", Integer.class, tenantId); // nosemgrep: java.lang.security.audit.sqli.tainted-sql-from-http-request.tainted-sql-from-http-request -- parameterized ? placeholder, bound value not concatenated
         } catch (Exception e) {
             // DB unavailable during filtering: fail closed.
             unauthorized(response, "tenant lookup failed");

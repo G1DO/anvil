@@ -12,27 +12,21 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history for oasdiff baseline
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '25'
           cache: maven
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
       - uses: arduino/setup-task@v2
         with:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - run: pip install pyyaml
-      - run: task test
-      - run: task test:int
-      - run: task test:e2e
-      - run: task test:contract
-      - run: task build
-      - run: task check:sast
-      - run: task check:secrets
-      - run: task check:audit
-      - run: task check:hygiene
-      - run: task diagrams
+      - name: Install oasdiff 1.33.0 pinned (checksum via checksums.txt per install.sh)
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh -o /tmp/install-oasdiff.sh
+          INSTALL_DIR="$HOME/.local/bin" version=1.33.0 sh /tmp/install-oasdiff.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: task verify
