@@ -31,3 +31,8 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Structurizr Lite runtime artifacts (workspace copies + search index)
+workspace.dsl
+workspace.json
+.structurizr/
