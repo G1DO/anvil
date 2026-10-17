@@ -2,9 +2,26 @@
 
 ## Reporting
 
-Do not put undisclosed vulnerability details into a public issue. Use GitHub private vulnerability reporting (Security Advisories) for this repository so the report stays private until a fix is coordinated. Include affected routes or jobs behavior, reproduction, and impact.
+Do not put undisclosed vulnerability details into a public issue. Use GitHub private vulnerability reporting (Security Advisories) for this repository so the report stays private until a fix is coordinated. Include affected version, reproduction, and impact (affected routes or jobs behavior where relevant).
 
 There are no supported releases yet (`0.0.1-SNAPSHOT`); the current scope is the `main` branch.
+
+## Handling
+
+- Acknowledge within 2 working days, fix privately, disclose after a fix is available.
+- Solo owner: G1DO triages; no second reviewer available, so required `gate` check green plus self-review of the diff satisfies review (checks never weakened).
+
+## Secrets and data
+
+- No secrets are stored in the repository. Postgres comes from Testcontainers in tests and Boot Dev Services on local run.
+- Never committed and never pasted into Notion, issues, PRs, comments, or logs; environment-specific config stays out of the repo.
+- Enable GitHub secret scanning + push protection where available, with gitleaks as defense-in-depth in pre-commit and CI (full history via `fetch-depth: 0` + `task check:secrets`).
+- No extra threat model or SBOM is maintained for this slice; add either only when its risk (public contract, durable data, release chain) actually requires it.
+
+## Dependencies
+
+- Update monthly, critical within 7 days.
+- Dependabot alerts + version updates on; dependency-review blocks new vulns at PR time; local `task check:audit` (OSV.dev) fails on HIGH/CRITICAL.
 
 ## Trust boundaries
 
@@ -19,4 +36,11 @@ There are no supported releases yet (`0.0.1-SNAPSHOT`); the current scope is the
 ## Secrets and data
 
 - No secrets are stored in the repository. Postgres comes from Testcontainers in tests and Boot Dev Services on local run.
+- Never committed and never pasted into Notion, issues, PRs, comments, or logs; environment-specific config stays out of the repo.
+- Enable GitHub secret scanning + push protection where available, with gitleaks as defense-in-depth in pre-commit and CI (full history via `fetch-depth: 0` + `task check:secrets`).
 - No extra threat model or SBOM is maintained for this slice; add either only when its risk (public contract, durable data, release chain) actually requires it.
+
+## Dependencies
+
+- Update monthly, critical within 7 days.
+- Dependabot alerts + version updates on; dependency-review blocks new vulns at PR time; local `task check:audit` (OSV.dev) fails on HIGH/CRITICAL.

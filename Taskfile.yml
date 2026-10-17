@@ -7,7 +7,7 @@ tasks:
       - ./mvnw spring-boot:run
 
   test:
-    desc: "Quick gate subset (fast feedback; not the full suite — use test:int for full)"
+    desc: "Quick gate subset for speed (split-verb allowance per Starter §CI: unit subset only; lint/types/schema in separate CI jobs; full suite in test:int)"
     cmds:
       - ./mvnw -B -ntp test -Dtest='AnvilApplicationTests,DurableV1SchemaTest,SubmitIdempotencyTest'
 
@@ -15,6 +15,16 @@ tasks:
     desc: "Full suite with Testcontainers and real dependencies (covers the quick subset)"
     cmds:
       - ./mvnw -B -ntp test
+
+  test:e2e:
+    desc: "End-to-end operability probe (HealthControllerTest: /healthz no-auth, /readyz DB check)"
+    cmds:
+      - ./mvnw -B -ntp test -Dtest='HealthControllerTest'
+
+  e2e:
+    desc: "Alias for test:e2e (legacy name; use test:e2e)"
+    cmds:
+      - task test:e2e
 
   migrate:
     desc: Apply migrations; verify status before and after (Flyway via empty-DB Testcontainers proof)
@@ -26,29 +36,57 @@ tasks:
     cmds:
       - ./mvnw -B -ntp package -DskipTests
 
+  test:contract:
+    desc: "Contract version + compat (oasdiff ERR semantics + schemathesis-style validation) where versioned contract exists"
+    cmds:
+      - python3 scripts/contract_check.py
+
+  contract-check:
+    desc: "Alias for test:contract (legacy name; use test:contract)"
+    cmds:
+      - task test:contract
+
+  check:sast:
+    desc: "Static analysis (Python pattern gate; CodeQL runs in CI as primary SAST); fail on findings"
+    cmds:
+      - python3 scripts/sast_check.py
+
+  check:secrets:
+    desc: "Secrets scan (pattern + entropy; gitleaks full-history runs in CI as defense-in-depth); fail on findings"
+    cmds:
+      - python3 scripts/secrets_check.py
+
+  check:audit:
+    desc: "Dependency audit via OSV.dev (Maven) + Dependabot/review in CI; fail on HIGH/CRITICAL"
+    cmds:
+      - python3 scripts/audit_check.py
+
+  check:hygiene:
+    desc: "Placeholders, path alignment, no echo/print/placeholder stubs"
+    cmds:
+      - python3 scripts/hygiene_check.py
+
+  diagrams:
+    desc: "Local pointer check where workspace.dsl exists (DSL validity in editor via VSCode extension / Lite preview, not CI; reviewer checks Notion path+version)"
+    cmds:
+      - python3 scripts/diagrams_check.py
+
   verify:
-    desc: "Full local gate: lint + types + migrate + test:int + build (SAST/secrets run in CI)"
+    desc: "Full local gate: test + test:int + test:e2e + test:contract + build + contract/security/diagram checks"
     cmds:
       - task lint
       - task types
       - task migrate
+      - task test
       - task test:int
+      - task test:e2e
+      - task test:contract
       - task build
-
-  e2e:
-    desc: "End-to-end operability probe (HealthControllerTest: /healthz no-auth, /readyz DB check)"
-    cmds:
-      - ./mvnw -B -ntp test -Dtest='HealthControllerTest'
-
-  contract-check:
-    desc: "Validate OpenAPI source and version (same check CI runs)"
-    cmds:
-      - python3 scripts/contract_check.py
-
-  diagrams:
-    desc: "Optional local check: Structurizr workspace links (does not parse DSL — render to verify)"
-    cmds:
-      - python3 scripts/diagrams_check.py
+      - task check:sast
+      - task check:secrets
+      - task check:audit
+      - task check:hygiene
+      - task diagrams
 
   lint:
     desc: Lint (Maven validate)
