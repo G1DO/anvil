@@ -1,0 +1,12 @@
+stateDiagram-v2
+    [*] --> QUEUED : submit
+    QUEUED --> RUNNING : claim
+    RUNNING --> QUEUED : reconciler reclaim
+    RUNNING --> SUCCEEDED : commitSucceeded
+    RUNNING --> FAILED : commitFailed
+    QUEUED --> FAILED : fail without running
+    RUNNING --> DEAD : reconciler exhausts attempts
+    QUEUED --> DEAD : reconciler exhausts queued
+    SUCCEEDED --> [*]
+    FAILED --> [*]
+    DEAD --> [*]

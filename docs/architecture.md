@@ -6,8 +6,8 @@ Stack: Java 25 (Temurin LTS), Spring Boot 4.1.1, Spring Web (MVC), JDBC, Validat
 
 ## Map
 
-- C1 context (actors, externals, boundaries, entry contract): `docs/architecture/c1.md`, diagram Structurizr `C1-SystemContext` in `docs/architecture/structurizr/workspace.dsl`.
-- C2 containers (modules, jobs, store, reads, outbox, jail, database, health): `docs/architecture/c2.md`, diagram Structurizr `C2-Containers` in `docs/architecture/structurizr/workspace.dsl`.
+- C1 context (actors, externals, boundaries, entry contract): `docs/architecture/c1.md`, diagram Structurizr `C1-SystemContext` in `docs/architecture/workspace.dsl`.
+- C2 containers (modules, jobs, store, reads, outbox, jail, database, health): `docs/architecture/c2.md`, diagram Structurizr `C2-Containers` in `docs/architecture/workspace.dsl`.
 - C3 per slice (only the container under change): `docs/architecture/slices/o3/c3.md` (O3 audit log and replay source).
 - Decisions: `docs/decisions/` (0001 durable schema, 0002 fenced claim, 0003 CAS, 0004 outbox, 0005 tenant isolation, 0006 capabilities, 0007 fail-closed reads, 0008 jail, 0009 audit chain).
 - Contracts: `docs/contracts/http.md`, source `openapi/openapi.yaml` (0.1.0).

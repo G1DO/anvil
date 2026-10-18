@@ -1,0 +1,7 @@
+# oasdiff err-ignore file (file-based ignore for intentional breaking changes).
+# Per https://www.oasdiff.com/docs/breaking-changes (Ignoring Specific Breaking Changes):
+# use --err-ignore <file> for ERRORS. Each active line holds method plus path,
+# or the components keyword, plus the change description.
+# Keep this file comments-only while additive-only. To allow an intentional break,
+# append one line per break in singleline form (see oasdiff breaking --format singleline).
+# No version-bump enforcement; intentional breaks require an ignore line here.

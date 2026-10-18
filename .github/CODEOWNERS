@@ -13,6 +13,7 @@
 /src/main/resources/db/migration/** @G1DO
 /src/main/resources/application.yaml @G1DO
 /docs/contracts/** @G1DO
+/docs/architecture/** @G1DO
 /openapi/** @G1DO
 /.github/ @G1DO
 Dockerfile @G1DO

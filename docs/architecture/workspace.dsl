@@ -1,3 +1,8 @@
+// Canonical C1/C2 source: docs/architecture/workspace.dsl (sole source for C1/C2).
+// Render via Structurizr Lite pinned structurizr/lite:2025.11.08:
+//   docker run -it --rm -p 8080:8080 -v "$PWD:/usr/local/structurizr" -e STRUCTURIZR_WORKSPACE_PATH=docs/architecture structurizr/lite:2025.11.08
+// Validate via Structurizr CLI (docs.structurizr.com/cli/installation, /cli/validate):
+//   docker run --rm -v "$PWD:/usr/local/structurizr" structurizr/cli:2025.11.09 validate -workspace docs/architecture/workspace.dsl
 workspace "ANVIL" "Capability-secure, deterministically replayable execution fabric." {
 
     model {
