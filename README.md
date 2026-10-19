@@ -34,14 +34,14 @@ Task verbs (same names CI calls): `task dev|test|build|test:contract|check:sast|
 
 ## Documentation
 
-- `docs/architecture.md` — how the implemented system works (submit, fenced claim, content store, outbox relay, database, execution jail, verification proofs, timings).
+- `docs/architecture/README.md` — how the implemented system works (submit, fenced claim, content store, outbox relay, database, execution jail, verification proofs, timings).
 - `docs/decisions/` — accepted architecturally significant records (V1 schema guard, fenced claim, crash-safe CAS, loss-free outbox, DB-enforced tenant isolation, capability-gated commits, fail-closed reads, minimal execution jail).
 - `CONTRIBUTING.md` — how to work in this repository (setup, commands, branch → PR → `main`, docs updates, review).
 - `SECURITY.md` — how to report vulnerabilities and where the trust boundaries are.
 
 ## Tests
 
-`./mvnw test` boots the full context against containerized Postgres. Green means the stack is proven: V1 schema guard, submit idempotency, fenced claim plus gate-scale contention and zombie resume, content-store crash/GC plus real-kill proofs, outbox relay ghost/dedup/concurrency plus real-kill proof, DB-enforced tenant isolation plus capability-gated commit (revoke/expire/supersede/cross-tenant denials) plus fail-closed cross-tenant reads (28-case direct-ID/search/CAS/presigned matrix, 0 leaks) plus minimal execution jail (RO-root/env/egress/redirect/cross-tenant invisibility with allowed-tenant control). See `docs/architecture.md` for what each suite proves.
+`./mvnw test` boots the full context against containerized Postgres. Green means the stack is proven: V1 schema guard, submit idempotency, fenced claim plus gate-scale contention and zombie resume, content-store crash/GC plus real-kill proofs, outbox relay ghost/dedup/concurrency plus real-kill proof, DB-enforced tenant isolation plus capability-gated commit (revoke/expire/supersede/cross-tenant denials) plus fail-closed cross-tenant reads (28-case direct-ID/search/CAS/presigned matrix, 0 leaks) plus minimal execution jail (RO-root/env/egress/redirect/cross-tenant invisibility with allowed-tenant control). See `docs/architecture/README.md` for what each suite proves.
 
 ## Layout
 

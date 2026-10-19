@@ -45,9 +45,13 @@ tasks:
       - grep -r -E '@ORG[/]|\|\|[ ]true|echo[ ]placeholder|TODO[ ]CI|assertTrue\(true\)' Taskfile.yml .github && exit 1 || exit 0
 
   diagrams:
-    desc: "Structurizr CLI validate + fail on pasted mermaid (off-the-shelf)"
+    desc: "Mermaid-cli validate + fail on pasted mermaid (off-the-shelf)"
     cmds:
-      - docker run --rm -v "$PWD:/usr/local/structurizr" structurizr/cli:2025.11.09 validate -workspace docs/architecture/workspace.dsl
+      - |
+        for f in docs/architecture/*.mmd docs/architecture/detail/*.mmd docs/architecture/slices/*/*.mmd; do
+          [ -e "$f" ] || continue;
+          docker run --rm -v "$PWD:/src" -w /src minlag/mermaid-cli:11.4.2 mmdc -i "/src/$f" -o /tmp/anvil-mmd.svg || exit 1;
+        done
       - grep -r --include='*.md' '```mermaid' docs/ && exit 1 || exit 0
 
   verify:

@@ -32,10 +32,7 @@ build/
 ### VS Code ###
 .vscode/
 
-# Structurizr Lite runtime artifacts (workspace copies + search index)
-# Lite data dir is repo root; workspace lives in docs/architecture/ via STRUCTURIZR_WORKSPACE_PATH.
-/workspace.dsl
-/workspace.json
+# Mermaid-cli render artifacts (task diagrams validates .mmd sources)
+/tmp/anvil-mmd.svg
+# Legacy local runtime dirt (root-owned search index, untracked)
 /.structurizr/
-docs/architecture/workspace.json
-docs/architecture/.structurizr/
