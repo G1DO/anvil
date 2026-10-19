@@ -1,0 +1,19 @@
+flowchart TB
+    tenantClient["Tenant client<br/>X-Tenant-Id + Idempotency-Key"]
+    operator["Operator<br/>compose up, health probes, logs"]
+    subgraph anvil["ANVIL"]
+        api["API service<br/>auth, validate, CBOR, submit, reads, audit, URLs, health"]
+        workers["Workers<br/>claim, heartbeat, commit, relay, reconcile"]
+        jail["Exec jail<br/>per-tenant workspace, cleared env, deny egress"]
+    end
+    postgres["PostgreSQL 18<br/>source of truth, queue, outbox"]
+    casStore["CAS store<br/>per-tenant content, hash-verified reads"]
+    execWorkspaces["Exec workspaces<br/>per-tenant writable directories"]
+    tenantClient -->|POST documents, reads, audit reads| api
+    operator -->|probes, logs| api
+    api -->|JDBC, tenant context, RLS| postgres
+    workers -->|claim, heartbeat, commit, relay, reconcile| postgres
+    api -->|put and get, torn tails removed| casStore
+    workers -->|put and link, refcount GC| casStore
+    workers -->|run tenant argv env timeout| jail
+    jail -->|resolveInWorkspace only| execWorkspaces

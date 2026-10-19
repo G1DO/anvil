@@ -1,0 +1,12 @@
+flowchart TB
+    tenantClient["Tenant client<br/>X-Tenant-Id + Idempotency-Key"]
+    operator["Operator<br/>compose up, health probes, logs by correlationId"]
+    anvil["ANVIL<br/>Capability-secure, deterministically replayable execution fabric"]
+    postgres["PostgreSQL 18<br/>Source of truth, queue, outbox"]
+    casStore["CAS store<br/>per-tenant content, hash-verified reads"]
+    execWorkspaces["Exec workspaces<br/>per-tenant writable directories"]
+    tenantClient -->|POST documents, reads, audit reads| anvil
+    operator -->|health probes, logs| anvil
+    anvil -->|JDBC, tenant context, RLS| postgres
+    anvil -->|put and get, torn tails removed| casStore
+    anvil -->|resolveInWorkspace only| execWorkspaces
