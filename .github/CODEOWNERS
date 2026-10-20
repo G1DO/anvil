@@ -12,9 +12,8 @@
 /src/main/java/com/g1do/anvil/exec/** @G1DO
 /src/main/resources/db/migration/** @G1DO
 /src/main/resources/application.yaml @G1DO
-/docs/contracts/** @G1DO
 /docs/architecture/** @G1DO
-/openapi/** @G1DO
+/contracts/** @G1DO
 /.github/ @G1DO
 Dockerfile @G1DO
 docker-compose.yml @G1DO

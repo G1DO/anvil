@@ -21,8 +21,8 @@ tasks:
     cmds:
       - |
         git rev-parse --verify origin/main >/dev/null || { echo "contract: origin/main not found"; exit 1; }
-        git show origin/main:openapi/openapi.yaml > /tmp/anvil-base.yaml || { echo "contract: openapi/openapi.yaml not on main, skipping"; exit 0; }
-        oasdiff breaking --fail-on ERR --err-ignore openapi/oasdiff-ignore.txt /tmp/anvil-base.yaml openapi/openapi.yaml
+        git show origin/main:contracts/openapi.yaml > /tmp/anvil-base.yaml 2>/dev/null || git show origin/main:openapi/openapi.yaml > /tmp/anvil-base.yaml || { echo "contract: openapi.yaml not on main, skipping"; exit 0; }
+        oasdiff breaking --fail-on ERR --err-ignore contracts/oasdiff-ignore.txt /tmp/anvil-base.yaml contracts/openapi.yaml
 
   check:sast:
     desc: "SAST via Semgrep registry p/default --error (off-the-shelf; CodeQL runs in CI as advisory)"
@@ -48,7 +48,7 @@ tasks:
     desc: "Mermaid-cli validate + fail on pasted mermaid (off-the-shelf)"
     cmds:
       - |
-        for f in docs/architecture/*.mmd docs/architecture/detail/*.mmd docs/architecture/slices/*/*.mmd; do
+        for f in docs/architecture/*.mmd; do
           [ -e "$f" ] || continue;
           docker run --rm -v "$PWD:/src" -w /src minlag/mermaid-cli:11.4.2 mmdc -i "/src/$f" -o /tmp/anvil-mmd.svg || exit 1;
         done

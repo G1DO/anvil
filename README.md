@@ -34,14 +34,15 @@ Task verbs (same names CI calls): `task dev|test|build|test:contract|check:sast|
 
 ## Documentation
 
-- `docs/architecture/README.md` — how the implemented system works (submit, fenced claim, content store, outbox relay, database, execution jail, verification proofs, timings).
+- `docs/architecture/c1.mmd`, `c2.mmd`, `c3-audit-chain.mmd`, `job-lifecycle.mmd` — system context, containers, O3 audit slice, job lifecycle (Mermaid sources, validated with mermaid-cli).
+- `docs/architecture/data-model.md` — tables, RLS, indexes, audit chain shape (SQL in `src/main/resources/db/migration/` is canonical).
 - `docs/decisions/` — accepted architecturally significant records (V1 schema guard, fenced claim, crash-safe CAS, loss-free outbox, DB-enforced tenant isolation, capability-gated commits, fail-closed reads, minimal execution jail).
 - `CONTRIBUTING.md` — how to work in this repository (setup, commands, branch → PR → `main`, docs updates, review).
 - `SECURITY.md` — how to report vulnerabilities and where the trust boundaries are.
 
 ## Tests
 
-`./mvnw test` boots the full context against containerized Postgres. Green means the stack is proven: V1 schema guard, submit idempotency, fenced claim plus gate-scale contention and zombie resume, content-store crash/GC plus real-kill proofs, outbox relay ghost/dedup/concurrency plus real-kill proof, DB-enforced tenant isolation plus capability-gated commit (revoke/expire/supersede/cross-tenant denials) plus fail-closed cross-tenant reads (28-case direct-ID/search/CAS/presigned matrix, 0 leaks) plus minimal execution jail (RO-root/env/egress/redirect/cross-tenant invisibility with allowed-tenant control). See `docs/architecture/README.md` for what each suite proves.
+`./mvnw test` boots the full context against containerized Postgres. Green means the stack is proven: V1 schema guard, submit idempotency, fenced claim plus gate-scale contention and zombie resume, content-store crash/GC plus real-kill proofs, outbox relay ghost/dedup/concurrency plus real-kill proof, DB-enforced tenant isolation plus capability-gated commit (revoke/expire/supersede/cross-tenant denials) plus fail-closed cross-tenant reads (28-case direct-ID/search/CAS/presigned matrix, 0 leaks) plus minimal execution jail (RO-root/env/egress/redirect/cross-tenant invisibility with allowed-tenant control). See `src/test/java/com/g1do/anvil/` for what each suite proves and `docs/decisions/` for why.
 
 ## Layout
 
