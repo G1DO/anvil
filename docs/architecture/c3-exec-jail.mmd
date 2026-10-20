@@ -1,0 +1,17 @@
+flowchart TB
+    subgraph jail["Exec jail"]
+        run["ExecJail run<br/>fork child in tenant workspace"]
+        resolve["resolveInWorkspace<br/>deny absolute dotdot encoded symlink"]
+        env["clean env<br/>PATH + ANVIL_TENANT only"]
+        caps["output caps<br/>1MiB stdout stderr + timeout 30s"]
+        read["readWorkspaceFile<br/>caller equals resource else deny"]
+        egress["JailEgress<br/>default-deny + redirect NEVER"]
+    end
+    ws["Exec workspaces<br/>per-tenant writable dirs"]
+    run --> resolve
+    run --> env
+    run --> caps
+    run --> egress
+    read --> resolve
+    resolve -->|tenant root only| ws
+    run -->|workdir tenant| ws

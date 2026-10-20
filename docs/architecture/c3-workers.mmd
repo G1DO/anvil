@@ -1,0 +1,29 @@
+flowchart TB
+    subgraph workers["Workers"]
+        claim["JobService claim<br/>LIMIT 20 SKIP LOCKED + token"]
+        beat["JobService heartbeat<br/>owner token live lease"]
+        commit["JobService commit<br/>cap gate + fenced write"]
+        recon["JobService reconciler<br/>expire to QUEUED or DEAD"]
+        cap["JobService caps<br/>issue revoke FOR UPDATE"]
+        relay["OutboxRelay<br/>poll unsent LIMIT 100 + mark sent"]
+        consumer["IdempotentConsumer<br/>processed_events dedup"]
+        chain["AuditChain append<br/>same txn as effect"]
+        store["ContentStore<br/>put link refcount GC"]
+    end
+    pg["PostgreSQL 18<br/>jobs attempts cap_grants outbox audit_events artifacts"]
+    cas["CAS store<br/>tenants tenant sha"]
+    claim -->|SELECT UPDATE| pg
+    beat -->|fenced UPDATE| pg
+    commit -->|cap check + UPDATE| pg
+    recon -->|reclaim deaden| pg
+    cap -->|cap_grants| pg
+    relay -->|poll mark| pg
+    consumer -->|INSERT ON CONFLICT| pg
+    chain -->|SELECT INSERT only| pg
+    store -->|artifacts row| pg
+    claim --> chain
+    commit --> chain
+    cap --> chain
+    store --> chain
+    store -->|tmp fsync rename| cas
+    relay --> consumer

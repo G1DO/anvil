@@ -1,0 +1,39 @@
+classDiagram
+    class JobService {
+        +claim() Optional
+        +heartbeat() boolean
+        +commitSucceeded() boolean
+        +commitFailed() boolean
+        +issueCap() CapGrant
+        +revokeCap() void
+        +reconcileAll() ReconcileResult
+    }
+    class ClaimedJob {
+        +jobId() UUID
+        +owner() String
+        +fencingToken() long
+    }
+    class CapGrant {
+        +capId() UUID
+        +epoch() int
+        +expiresAt() time
+    }
+    class CapDeniedException {
+        +needsApproval() boolean
+    }
+    class ReconcileResult {
+        +releasedToQueued() int
+        +markedDead() int
+    }
+    class AuditChain {
+        +append() void
+    }
+    class TenantGuard {
+        +setTenant() void
+    }
+    JobService --> ClaimedJob
+    JobService --> CapGrant
+    JobService --> ReconcileResult
+    JobService --> CapDeniedException
+    JobService --> AuditChain
+    JobService --> TenantGuard
