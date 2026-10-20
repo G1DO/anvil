@@ -1,0 +1,32 @@
+classDiagram
+    class ContentStore {
+        +putForJob() String
+        +linkArtifactToJob() void
+        +getForCaller() bytes
+        +acquire() void
+        +release() void
+        +collectGarbage() GcResult
+    }
+    class CasPresignedService {
+        +issue() String
+        +authorize() void
+        +fetch() bytes
+    }
+    class GcResult {
+        +filesDeleted() int
+        +bytesReclaimed() long
+    }
+    class CorruptContentException {
+        +tornTail() boolean
+    }
+    class AuditChain {
+        +append() void
+    }
+    class TenantGuard {
+        +setTenant() void
+    }
+    ContentStore --> GcResult
+    ContentStore --> CorruptContentException
+    ContentStore --> AuditChain
+    ContentStore --> TenantGuard
+    CasPresignedService --> TenantGuard

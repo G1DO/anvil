@@ -1,0 +1,23 @@
+classDiagram
+    class OutboxRelay {
+        +relayOnce() int
+        +POLL_LIMIT() int
+    }
+    class OutboxEvent {
+        +eventId() UUID
+        +tenantId() String
+        +jobId() UUID
+    }
+    class OutboxPublisher {
+        +publish() void
+    }
+    class IdempotentConsumer {
+        +consume() boolean
+    }
+    class TenantGuard {
+        +setTenant() void
+    }
+    OutboxRelay --> OutboxEvent
+    OutboxRelay --> OutboxPublisher
+    OutboxRelay --> TenantGuard
+    IdempotentConsumer --> OutboxEvent

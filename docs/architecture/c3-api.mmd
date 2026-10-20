@@ -1,0 +1,29 @@
+flowchart TB
+    client["Tenant client<br/>X-Tenant-Id + Idempotency-Key"]
+    subgraph api["API service"]
+        filter["TenantAuthFilter<br/>X-Tenant-Id check + TenantContext"]
+        submitCtrl["SubmitController<br/>POST documents - 202 IDs"]
+        submitSvc["SubmitService<br/>validate + canonical CBOR + one txn"]
+        searchCtrl["DocumentSearchController<br/>GET documents query limit cursor"]
+        readSvc["ReadService<br/>direct-ID + title-prefix + recheck"]
+        auditCtrl["AuditEventsController<br/>GET audit events job limit cursor"]
+        auditRead["AuditReadService<br/>caller-tenant chain ORDER BY seq"]
+        casPre["CasPresignedService<br/>HMAC URLs TTL 60s"]
+        health["HealthController<br/>healthz readyz + correlation"]
+    end
+    pg["PostgreSQL 18<br/>RLS FORCE + tenant context"]
+    cas["CAS store<br/>tenants tenant sha"]
+    client -->|POST GET audit| filter
+    filter --> submitCtrl
+    filter --> searchCtrl
+    filter --> auditCtrl
+    submitCtrl --> submitSvc
+    searchCtrl --> readSvc
+    auditCtrl --> auditRead
+    submitSvc -->|JDBC SET LOCAL + RLS| pg
+    readSvc -->|JDBC SET LOCAL + RLS| pg
+    auditRead -->|JDBC SET LOCAL + RLS| pg
+    casPre -->|authorize fetch| pg
+    health -->|SELECT 1| pg
+    submitSvc -->|put get| cas
+    casPre -->|signed get| cas

@@ -1,0 +1,21 @@
+classDiagram
+    class ExecJail {
+        +run() JailResult
+        +resolveInWorkspace() Path
+        +readWorkspaceFile() bytes
+    }
+    class JailResult {
+        +exitCode() int
+        +stdout() String
+        +truncated() boolean
+    }
+    class JailEgress {
+        +checkAllowed() void
+        +client() HttpClient
+    }
+    class EgressDeniedException {
+        +reason() String
+    }
+    ExecJail --> JailResult
+    ExecJail --> JailEgress
+    JailEgress --> EgressDeniedException
