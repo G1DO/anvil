@@ -1,0 +1,36 @@
+sequenceDiagram
+    autonumber
+    participant W as Worker JobService
+    participant D as Postgres
+    participant U as AuditChain
+    participant R as OutboxRelay
+    participant P as Publisher
+    participant K as IdempotentConsumer
+    loop every 1s reconciler
+        W->>D: BEGIN plus SET LOCAL app tenant
+        W->>D: deaden QUEUED attempts exhausted
+        W->>D: deaden RUNNING expired attempts exhausted
+        W->>D: release RUNNING expired to QUEUED
+        W->>U: append commit DEAD per dead id only
+        U->>D: INSERT audit_events commit DEAD
+        D-->>W: COMMIT released plus dead counts
+    end
+    W->>D: heartbeat owner token live lease only
+    D-->>W: true or false no audit
+    loop poll relay
+        R->>D: poll outbox sent IS NULL LIMIT 100 SKIP LOCKED
+        D-->>R: batch OutboxEvent with event_id
+        R->>P: publish event with event_id header
+        alt publish throws
+            R->>D: skip mark republish later
+        else publish ok
+            R->>D: UPDATE outbox SET sent_at in new txn
+            P->>K: consume event_id
+            K->>D: INSERT processed_events ON CONFLICT DO NOTHING
+            alt first time
+                D-->>K: true apply once
+            else redelivery
+                D-->>K: false skip duplicate
+            end
+        end
+    end
