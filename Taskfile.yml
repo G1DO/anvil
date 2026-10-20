@@ -21,8 +21,8 @@ tasks:
     cmds:
       - |
         git rev-parse --verify origin/main >/dev/null || { echo "contract: origin/main not found"; exit 1; }
-        git show origin/main:openapi/openapi.yaml > /tmp/anvil-base.yaml || { echo "contract: openapi/openapi.yaml not on main, skipping"; exit 0; }
-        oasdiff breaking --fail-on ERR --err-ignore openapi/oasdiff-ignore.txt /tmp/anvil-base.yaml openapi/openapi.yaml
+        git show origin/main:contracts/openapi.yaml > /tmp/anvil-base.yaml 2>/dev/null || git show origin/main:openapi/openapi.yaml > /tmp/anvil-base.yaml || { echo "contract: openapi.yaml not on main, skipping"; exit 0; }
+        oasdiff breaking --fail-on ERR --err-ignore contracts/oasdiff-ignore.txt /tmp/anvil-base.yaml contracts/openapi.yaml
 
   check:sast:
     desc: "SAST via Semgrep registry p/default --error (off-the-shelf; CodeQL runs in CI as advisory)"
