@@ -1,0 +1,45 @@
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant A as API SubmitService
+    participant D as Postgres
+    participant U as AuditChain
+    participant W as Worker JobService
+    participant S as ContentStore
+    C->>A: POST documents with tenant and idempotency key
+    A->>D: validate tenant and fields plus encode CBOR
+    A->>D: fast-path findExisting by tenant and key
+    alt duplicate key
+        D-->>A: existing doc version job IDs
+        A-->>C: 202 replay same IDs
+    else new submit
+        A->>D: BEGIN plus SET LOCAL app tenant
+        A->>D: INSERT documents
+        A->>D: INSERT document_versions sha CBOR
+        A->>D: INSERT jobs QUEUED
+        A->>D: INSERT outbox job committed
+        A->>U: append submit seq 0 GENESIS
+        U->>D: INSERT audit_events submit
+        D-->>A: COMMIT doc version job IDs
+        A-->>C: 202 new IDs
+    end
+    W->>D: claim QUEUED LIMIT 20 SKIP LOCKED
+    D-->>W: RUNNING job plus token attempt lease
+    W->>U: append claim RUNNING
+    U->>D: INSERT audit_events claim
+    W->>D: issueCap epoch 1 TTL 1h FOR UPDATE
+    W->>U: append cap issue epoch
+    U->>D: INSERT audit_events cap issue
+    W->>S: putForJob plus linkArtifactToJob
+    S->>D: upsert artifacts plus append cas put
+    W->>D: commit with cap check FOR UPDATE
+    alt cap invalid or revoked or expired
+        D-->>W: 403 NEEDS APPROVAL zero rows
+    else cap valid plus fence match
+        D->>D: UPDATE jobs SUCCEEDED or FAILED
+        W->>U: append commit outcome
+        U->>D: INSERT audit_events commit
+        D-->>W: commit true
+    else fence mismatch zombie
+        D-->>W: false zero rows no audit
+    end

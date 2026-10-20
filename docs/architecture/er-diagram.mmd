@@ -1,0 +1,99 @@
+erDiagram
+    tenants ||--o{ documents : scopes
+    tenants ||--o{ document_versions : scopes
+    tenants ||--o{ jobs : scopes
+    tenants ||--o{ attempts : scopes
+    tenants ||--o{ artifacts : scopes
+    tenants ||--o{ outbox : scopes
+    tenants ||--o{ processed_events : scopes
+    tenants ||--o{ cap_grants : scopes
+    tenants ||--o{ audit_events : scopes
+    documents ||--o{ document_versions : has
+    documents ||--o{ jobs : feeds
+    document_versions ||--o{ jobs : pins
+    jobs ||--o{ attempts : claims
+    jobs ||--o{ outbox : emits
+    jobs ||--o{ cap_grants : gates
+    jobs ||--o{ audit_events : trails
+    outbox ||--o{ processed_events : dedups
+    tenants {
+        TEXT id PK
+        TIMESTAMPTZ created_at
+    }
+    documents {
+        UUID id PK
+        TEXT tenant_id FK
+        TEXT title
+        TEXT mime_type
+        TIMESTAMPTZ created_at
+    }
+    document_versions {
+        UUID id PK
+        TEXT tenant_id FK
+        UUID document_id FK
+        INT version_number
+        TEXT sha256
+        BYTEA canonical_cbor
+    }
+    jobs {
+        UUID id PK
+        TEXT tenant_id FK
+        UUID document_id FK
+        UUID version_id FK
+        TEXT idempotency_key
+        TEXT state
+        INT attempt
+        INT max_attempts
+        TEXT owner
+        BIGINT fencing_token
+        TIMESTAMPTZ lease_expires_at
+    }
+    attempts {
+        UUID id PK
+        TEXT tenant_id FK
+        UUID job_id FK
+        INT attempt_number
+        TEXT owner
+        BIGINT fencing_token
+        TEXT outcome
+    }
+    artifacts {
+        TEXT tenant_id PK
+        TEXT sha256 PK
+        BIGINT size_bytes
+        INT refcount
+    }
+    outbox {
+        UUID id PK
+        TEXT tenant_id FK
+        UUID job_id FK
+        UUID doc_id
+        UUID version_id
+        TEXT type
+        TEXT sha256
+        JSONB payload
+        TIMESTAMPTZ sent_at
+    }
+    processed_events {
+        UUID event_id PK
+        TEXT tenant_id FK
+        UUID job_id
+    }
+    cap_grants {
+        UUID id PK
+        TEXT tenant_id FK
+        UUID job_id FK
+        BIGINT epoch
+        BOOLEAN revoked
+        TIMESTAMPTZ expires_at
+    }
+    audit_events {
+        UUID id PK
+        TEXT tenant_id FK
+        UUID job_id FK
+        BIGINT seq
+        TEXT prev_hash
+        TEXT event_hash
+        TEXT type
+        JSONB payload
+    }
