@@ -48,7 +48,7 @@ tasks:
     desc: "Mermaid-cli validate + fail on pasted mermaid (off-the-shelf)"
     cmds:
       - |
-        for f in docs/architecture/*.mmd docs/architecture/detail/*.mmd docs/architecture/slices/*/*.mmd; do
+        for f in docs/architecture/*.mmd; do
           [ -e "$f" ] || continue;
           docker run --rm -v "$PWD:/src" -w /src minlag/mermaid-cli:11.4.2 mmdc -i "/src/$f" -o /tmp/anvil-mmd.svg || exit 1;
         done

@@ -1,0 +1,12 @@
+flowchart TB
+    submit["SubmitService<br/>validate + canonical CBOR + one txn"]
+    claim["JobService claim/commit<br/>fenced token + cap gate + reconciler"]
+    chain["AuditChain append<br/>same txn as effect"]
+    pg["audit_events<br/>UNIQUE seq + prev_hash fork guard<br/>immutable trigger + RLS"]
+    readapi["AuditReadService<br/>caller-tenant chain ORDER BY seq"]
+    replay["Replay endpoint open #30<br/>input_sha + output_sha + match"]
+    submit -->|submit event| chain
+    claim -->|claim commit cap cas events| chain
+    chain -->|SELECT+INSERT only| pg
+    pg -->|WHERE tenant job RLS + recheck| readapi
+    readapi -->|clean chain| replay
