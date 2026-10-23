@@ -73,7 +73,7 @@ class OutboxRelayTest {
     }
 
     private void truncate() {
-        jdbc.execute("TRUNCATE TABLE audit_events, cap_grants, processed_events, outbox, attempts, jobs, document_versions, documents, artifacts");
+        jdbc.execute("TRUNCATE TABLE job_checkpoints, audit_events, cap_grants, processed_events, outbox, attempts, jobs, document_versions, documents, artifacts");
         jdbc.execute("DELETE FROM tenants WHERE id <> 't_single'");
         jdbc.update("INSERT INTO tenants (id) VALUES ('t_single') ON CONFLICT DO NOTHING");
     }

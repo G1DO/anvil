@@ -84,6 +84,34 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /audit/replay:
+    get:
+      summary: Deterministic replay from immutable log, tenant solely from X-Tenant-Id
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - name: job_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Caller-tenant recompute {input_sha,output_sha,match} (non-terminal match:false)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: missing or cross-tenant job_id (same message, no bytes, no oracle)
   /healthz:
     get:
       summary: Liveness, no dependency checks, no auth
@@ -157,6 +185,13 @@ components:
         type: { type: string }
         payload: { type: object }
         created_at: { type: string, format: date-time }
+    ReplayResult:
+      type: object
+      required: [input_sha, output_sha, match]
+      properties:
+        input_sha: { type: string }
+        output_sha: { type: string }
+        match: { type: boolean }
   responses:
     BadRequest:
       description: malformed request
