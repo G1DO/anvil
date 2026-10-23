@@ -51,6 +51,9 @@ public final class AuditChain {
     /** Genesis predecessor for seq 0. */
     public static final String GENESIS = "GENESIS";
 
+    /** Checkpoint interval: one job_checkpoints row every 100 events (issue #30). */
+    public static final int CHECKPOINT_INTERVAL = 100;
+
     public static final String TYPE_SUBMIT = "submit";
     public static final String TYPE_CLAIM = "claim";
     public static final String TYPE_COMMIT = "commit";
@@ -110,6 +113,14 @@ public final class AuditChain {
                 "INSERT INTO audit_events (tenant_id, job_id, seq, prev_hash, event_hash, type, payload) "
                         + "VALUES (?, ?, ?, ?, ?, ?, ?::jsonb)",
                 tenant, jobId, seq, prevHash, eventHash, cleanType, payloadJson);
+        // Checkpoint hook (issue #30): every 100 events per job, same txn.
+        // sha is the chain event_hash at the boundary (seq % 100 == 0, seq > 0),
+        // not output_sha. Immutable + RLS mirror audit_events (V5).
+        if (seq > 0 && seq % CHECKPOINT_INTERVAL == 0) {
+            jdbc.update(
+                    "INSERT INTO job_checkpoints (tenant_id, job_id, seq, sha) VALUES (?, ?, ?, ?)",
+                    tenant, jobId, seq, eventHash);
+        }
         return eventHash;
     }
 
