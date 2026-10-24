@@ -1,0 +1,14 @@
+flowchart TB
+    operator["Operator<br/>compose up, probes, logs"]
+    subgraph host["Compose host"]
+        app["App image<br/>unprivileged, EXPOSE 8080<br/>healthz liveness, readyz PG check"]
+        db["PostgreSQL 18<br/>pg_isready healthcheck<br/>interval 5s, retries 10"]
+        pgdata["Volume pgdata<br/>/var/lib/postgresql/data"]
+    end
+    logs["JSON logs<br/>correlationId, no secrets"]
+    operator -->|compose up --build| app
+    operator -->|curl :8080/healthz :8080/readyz| app
+    operator -->|reads| logs
+    app -->|JDBC db:5432 depends_on healthy| db
+    app -->|emits| logs
+    db -->|persists| pgdata
