@@ -1,0 +1,9 @@
+variant=BROKEN_LEASE seed=12661571 run=1
+seed-variant=BROKEN_LEASE
+expire
+commit(A,t0)=false (fenced)
+claim(A) t1 [broken: no lease]
+commit(A,t0)=false (fenced)
+reconcileRelease
+claim(A) t2 [broken: no lease]
+VIOLATION double-holder A + B
