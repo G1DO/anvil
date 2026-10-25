@@ -1,0 +1,39 @@
+flowchart TB
+    subgraph model["Fencing-only model docs-faults-fencing.tla"]
+        claimM["claim QUEUED to RUNNING token+1"]
+        beatM["heartbeat owner token live lease"]
+        commitM["commit fenced terminal"]
+        reconM["reconcile release or DEAD"]
+        relayM["relay publish then mark sent"]
+        consumeM["consumer INSERT ON CONFLICT"]
+    end
+    subgraph sim["Deterministic sim FenceSimTest"]
+        bf["broken fence ignores token"]
+        bl["broken lease double claim"]
+        br["broken relay mark before publish"]
+    end
+    subgraph pg["Containerized PG 18 FaultProofTest"]
+        susp["suspend past lease 0 rows ledger 2"]
+        kill["kill -9 publish-mark restart dedupe 1"]
+        dupe["dupe delivery apply once"]
+    end
+    subgraph prod["Production fencing JobService OutboxRelay"]
+        claim["JobService claim LIMIT 20 SKIP LOCKED"]
+        beat["JobService heartbeat live lease"]
+        commit["JobService commit cap gate fenced"]
+        recon["JobService reconciler 1s"]
+        relay["OutboxRelay poll 100 mark sent"]
+        consumer["IdempotentConsumer processed_events"]
+    end
+    claimM --> claim
+    beatM --> beat
+    commitM --> commit
+    reconM --> recon
+    relayM --> relay
+    consumeM --> consumer
+    bf -.->|caught run 0| claim
+    bl -.->|caught run 1| claim
+    br -.->|caught run 0| relay
+    susp -->|proves| claim
+    kill -->|proves| relay
+    dupe -->|proves| consumer
