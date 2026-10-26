@@ -30,7 +30,7 @@ curl -s localhost:8080/healthz
 curl -s localhost:8080/readyz
 ```
 
-Task verbs (same names CI calls): `task dev|test|build|test:contract|check:sast|check:secrets|check:audit|check:hygiene|diagrams|verify` (see `Taskfile.yml`).
+Task verbs (same commands CI runs): `task dev|test|build|test:contract|check:sast|check:secrets|check:audit|check:hygiene|diagrams|verify` (see `Taskfile.yml`). CI job keys differ from verb names; commands match: `test→task test`, `sast→task build + task check:sast`, `secrets-scan→task check:secrets`, `audit→task check:audit`, `build→task build`, `contract-check→task test:contract`, `arch-validate→task diagrams`, `hygiene→task check:hygiene`, nightly `verify→task verify`; `task dev` is local-only.
 
 ## Documentation
 
