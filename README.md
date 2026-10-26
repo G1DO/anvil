@@ -34,7 +34,7 @@ Task verbs (same commands CI runs): `task dev|test|build|test:contract|check:sas
 
 ## Documentation
 
-- `docs/architecture/index.md` — canonical view list (C1/C2/C3/detail, data, deployment; Mermaid sources validated with mermaid-cli).
+- `docs/architecture/index.md` — repo handbook index and canonical view list (C1/C2/C3/detail, data, deployment; Mermaid sources validated with mermaid-cli).
 - `docs/architecture/data-model.md` — tables, RLS, indexes, audit chain shape (SQL in `src/main/resources/db/migration/` is canonical).
 - `docs/decisions/` — accepted architecturally significant records (V1 schema guard, fenced claim, crash-safe CAS, loss-free outbox, DB-enforced tenant isolation, capability-gated commits, fail-closed reads, minimal execution jail).
 - `CONTRIBUTING.md` — how to work in this repository (setup, commands, branch → PR → `main`, docs updates, review).
