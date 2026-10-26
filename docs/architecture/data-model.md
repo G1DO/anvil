@@ -26,4 +26,4 @@ Source files: `src/main/resources/db/migration/V1__durable_v1_schema.sql` throug
 ## Verify (catalogs, not prose)
 - `flyway info`; `\d jobs` / `\d audit_events` / `\d job_checkpoints`; `select * from pg_policies where tablename in (...)`; `select * from pg_indexes where tablename in (...)`.
 - Views: `active_jobs`, `claimable_jobs` (lease predicate `clock_timestamp()`), `unclaimed_outbox`.
-- Residuals: post-grant TOCTOU by definition; `cap_grants` expiry window is one hour per `V3` comment; see `docs/decisions/0001-durable-v1-schema.md`, `0005-db-enforced-tenant-isolation.md`, `0009-immutable-audit-chain.md`, `0010-deterministic-replay.md`, and `docs/security/threat-model.md`. Diagrams: `c1.mmd`, `c2.mmd`, `c3-audit-chain.mmd`, `job-lifecycle.mmd`.
+- Residuals: post-grant TOCTOU by definition; `cap_grants` expiry window is one hour per `V3` comment; see `docs/decisions/0001-durable-v1-schema.md`, `0005-db-enforced-tenant-isolation.md`, `0009-immutable-audit-chain.md`, `0010-deterministic-replay.md`, and `docs/security/threat-model.md`. Diagrams: canonical list in `index.md` (`c1.mmd`, `c2.mmd`, C3/detail, data, deployment).
