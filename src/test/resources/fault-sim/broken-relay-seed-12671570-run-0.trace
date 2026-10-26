@@ -1,0 +1,9 @@
+variant=BROKEN_RELAY seed=12671570 run=0
+seed-variant=BROKEN_RELAY
+commit(B,t0)=false (fenced)
+claim(A) t1
+commit(B,t0)=false (fenced)
+expire
+reconcileRelease
+mark(sent) before publish [broken]
+publish THROW after mark -> VIOLATION loss (sent but never applied)

@@ -1,0 +1,13 @@
+variant=BROKEN_FENCE seed=12651570 run=0
+seed-variant=BROKEN_FENCE
+publish(evt-1)
+mark(evt-1)
+consume(evt-1) applied once
+consume(evt-1) deduped
+consume(evt-1) deduped
+claim(A) t1
+publish(evt-1)
+mark(evt-1)
+consume(evt-1) deduped
+expire
+VIOLATION zombie-commit(B,stale t0) overwrote holder A t1
