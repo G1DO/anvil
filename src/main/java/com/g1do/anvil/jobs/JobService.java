@@ -6,12 +6,14 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.g1do.anvil.audit.AuditChain;
+import com.g1do.anvil.observe.SaturationSignals;
 import com.g1do.anvil.tenant.TenantGuard;
 
 /**
@@ -206,13 +208,21 @@ public class JobService {
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
+    private final SaturationSignals signals;
 
     /** Rejection counter for capability-denied commits ({@code cap_rejected}). */
     private final AtomicLong capRejected = new AtomicLong();
 
     public JobService(JdbcTemplate jdbc, PlatformTransactionManager txManager) {
+        this(jdbc, txManager, null);
+    }
+
+    @Autowired
+    public JobService(JdbcTemplate jdbc, PlatformTransactionManager txManager,
+            SaturationSignals signals) {
         this.jdbc = jdbc;
         this.tx = new TransactionTemplate(txManager);
+        this.signals = signals;
     }
 
     /**
@@ -226,29 +236,36 @@ public class JobService {
     public Optional<ClaimedJob> claim(String tenantId, String owner) {
         String tenant = requireTenant(tenantId);
         String worker = requireOwner(owner);
-        return tx.execute(status -> {
-            TenantGuard.setTenant(jdbc, tenant);
-            List<ClaimedJob> rows = jdbc.query(
-                    CLAIM_SQL,
-                    (rs, i) -> new ClaimedJob(
-                            (UUID) rs.getObject("id"),
-                            worker,
-                            rs.getLong("fencing_token"),
-                            rs.getInt("attempt"),
-                            rs.getObject("lease_expires_at", OffsetDateTime.class)),
-                    tenant, worker, tenant);
-            if (rows.isEmpty()) {
-                return Optional.<ClaimedJob>empty();
+        long start = System.nanoTime();
+        try {
+            return tx.execute(status -> {
+                TenantGuard.setTenant(jdbc, tenant);
+                List<ClaimedJob> rows = jdbc.query(
+                        CLAIM_SQL,
+                        (rs, i) -> new ClaimedJob(
+                                (UUID) rs.getObject("id"),
+                                worker,
+                                rs.getLong("fencing_token"),
+                                rs.getInt("attempt"),
+                                rs.getObject("lease_expires_at", OffsetDateTime.class)),
+                        tenant, worker, tenant);
+                if (rows.isEmpty()) {
+                    return Optional.<ClaimedJob>empty();
+                }
+                ClaimedJob claimed = rows.get(0);
+                jdbc.update(INSERT_ATTEMPT_SQL,
+                        tenant, claimed.jobId(), claimed.attempt(), worker, claimed.fencingToken());
+                // Same-transaction audit: attempt/owner/token/lease excluded from
+                // payload by contract; heartbeat is never logged.
+                AuditChain.append(jdbc, tenant, claimed.jobId(), AuditChain.TYPE_CLAIM,
+                        java.util.Map.of("state", "RUNNING"));
+                return Optional.of(claimed);
+            });
+        } finally {
+            if (signals != null) {
+                signals.recordClaimNanos(System.nanoTime() - start);
             }
-            ClaimedJob claimed = rows.get(0);
-            jdbc.update(INSERT_ATTEMPT_SQL,
-                    tenant, claimed.jobId(), claimed.attempt(), worker, claimed.fencingToken());
-            // Same-transaction audit: attempt/owner/token/lease excluded from
-            // payload by contract; heartbeat is never logged.
-            AuditChain.append(jdbc, tenant, claimed.jobId(), AuditChain.TYPE_CLAIM,
-                    java.util.Map.of("state", "RUNNING"));
-            return Optional.of(claimed);
-        });
+        }
     }
 
     /**
