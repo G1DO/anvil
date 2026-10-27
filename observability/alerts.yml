@@ -1,5 +1,5 @@
 groups:
-  - name: anvil-saturation-33
+  - name: anvil-saturation
     interval: 15s
     rules:
       - alert: QueueBurn

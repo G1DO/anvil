@@ -1,58 +1,93 @@
 # anvil
 
-Capability-secure, deterministically replayable execution fabric. Current state: V1 durable schema plus idempotent transactional submit plus fenced claim/heartbeat/capability-gated commit/reconciler plus crash-safe content store with safe garbage collection plus loss-free outbox relay with idempotent consumer plus DB-enforced tenant isolation plus fail-closed cross-tenant reads (direct-ID, title-prefix search, CAS gateway, TTL-60s presigned URLs) plus immutable per-job hash-chained audit log with tenant-isolated read API plus minimal execution jail (forked child, per-tenant workspace, cleaned env, default-deny egress, redirect-never).
+A multi-tenant job service whose results can be trusted after crashes and audited after the fact.
 
-## Stack
+## Problem and users
 
-- Java 25 (Temurin LTS), Spring Boot 4.1.1, Maven wrapper
-- Runtime: Spring Web (MVC), JDBC, Validation, Flyway, PostgreSQL driver
-- Tests: Testcontainers (spins up `postgres:18`)
+Teams that run work on behalf of many tenants hit three problems:
 
-## Prerequisites
+- **Crashes cause lost or doubled work.** A worker crash, a worker that resumes after its lease expired (a "zombie"), or a relay crash between publishing an event and recording it can lose a job or apply it twice.
+- **Tenants leak into each other.** Shared connections, cached query plans or a guessable ID can show one tenant another tenant's data, or reveal that it exists.
+- **Results can't be checked.** Nobody can prove afterwards what a job did, or detect that its record was altered.
 
-- Java 25
-- Docker running — tests fail without it (Testcontainers provisions Postgres, no local install needed)
+ANVIL is for:
 
-## Quickstart
+- **Tenant clients** that submit documents and jobs over HTTP (`X-Tenant-Id`, `Idempotency-Key`), read their documents, and read or replay their jobs' audit chains.
+- **Operators** who run the service and watch its health and saturation signals.
+
+## Guarantees
+
+Each guarantee links to the tests that prove it. All tests run against real PostgreSQL in containers.
+
+1. **No lost work, no double effect.** Execution is at-least-once with fenced, idempotent effects; it is never exactly-once.
+   - A duplicate submit returns the same IDs and creates one job: [`SubmitIdempotencyTest`](src/test/java/com/g1do/anvil/SubmitIdempotencyTest.java).
+   - Two workers never claim the same job. A stale or zombie worker affects 0 rows. Terminal jobs are never re-run: [`JobServiceTest`](src/test/java/com/g1do/anvil/JobServiceTest.java), [`DurableV1SchemaTest`](src/test/java/com/g1do/anvil/DurableV1SchemaTest.java).
+   - A relay crash between publish and mark-sent re-publishes the same event, which applies once: [`OutboxRelayTest`](src/test/java/com/g1do/anvil/OutboxRelayTest.java).
+   - Content survives a crash during write or garbage collection, and a torn file is never served: [`ContentStoreTest`](src/test/java/com/g1do/anvil/ContentStoreTest.java).
+2. **No tenant can read or change another tenant's data, or learn that it exists.**
+   - The database enforces isolation even with pooled connections and cached plans: [`RlsLeakTest`](src/test/java/com/g1do/anvil/RlsLeakTest.java).
+   - A 28-case matrix over direct IDs, search, content addresses and presigned URLs shows 0 leaks: [`ReadIsolationTest`](src/test/java/com/g1do/anvil/ReadIsolationTest.java). The same holds for audit reads: [`AuditReadIsolationTest`](src/test/java/com/g1do/anvil/AuditReadIsolationTest.java).
+   - Revoking a capability mid-run blocks the commit (0 rows, `403 NEEDS_APPROVAL`): [`CapRevokeMidRunTest`](src/test/java/com/g1do/anvil/CapRevokeMidRunTest.java).
+   - Jailed execution can't see another tenant's files or reach the network: [`ExecJailTest`](src/test/java/com/g1do/anvil/ExecJailTest.java).
+3. **Any job can be replayed bit-for-bit from its audit chain, and tampering is detected.**
+   - Every effect is recorded in an append-only, hash-linked chain in the same transaction: [`AuditChainTest`](src/test/java/com/g1do/anvil/AuditChainTest.java).
+   - `GET /audit/replay` returns `{input_sha, output_sha, match: true}` for an intact chain. A corrupted, dropped or re-linked event gives a mismatch. Checkpoint replay gives the same result: [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java).
+4. **Fencing holds under real faults.**
+   - A deterministic simulator catches each seeded fencing break in under 500 runs: [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
+   - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java). It mirrors [`docs/faults/fencing.tla`](docs/faults/fencing.tla); the model-checker output is in [`docs/faults/tlc-output.log`](docs/faults/tlc-output.log).
+   - Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
+5. **Saturation is visible.** Queue age, claim latency and pool wait are exported without tenant data. The burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
+
+Not yet guaranteed: a database restore with measured recovery time and data loss (#34).
+
+## How to run
+
+You need Java 25, Docker and [Task](https://taskfile.dev).
 
 ```bash
-./mvnw test
-./mvnw spring-boot:run
+task dev       # run locally; Spring Boot Dev Services starts Postgres
+task test      # full suite against Testcontainers Postgres (also compiles with lint)
+task verify    # everything the gate runs
 ```
 
-Postgres comes automatically: `@ServiceConnection PostgreSQLContainer` in tests, Boot Dev Services on local run.
-
-One-command prod-like start/verify (mirrors prod deps):
+To run the stack the way it's deployed:
 
 ```bash
 docker compose up --build
-curl -s localhost:8080/healthz
-curl -s localhost:8080/readyz
+curl -s localhost:8080/healthz    # liveness
+curl -s localhost:8080/readyz     # readiness (checks the database)
 ```
 
-Task verbs (same commands CI runs): `task dev|test|build|test:contract|check:sast|check:secrets|check:audit|check:hygiene|diagrams|verify` (see `Taskfile.yml`). CI job keys differ from verb names; commands match: `test→task test`, `sast→task build + task check:sast`, `secrets-scan→task check:secrets`, `audit→task check:audit`, `build→task build`, `contract-check→task test:contract`, `arch-validate→task diagrams`, `hygiene→task check:hygiene`, nightly `verify→task verify`; `task dev` is local-only.
+Compose reads `POSTGRES_PASSWORD` from your environment or an untracked `.env`; the names are in `.env.example`. With nothing set it uses a local-only default.
 
-## Documentation
+To run one test class: `./mvnw -B -ntp -Dtest=JobServiceTest test`.
 
-- `docs/architecture/index.md` — repo handbook index and canonical view list (C1/C2/C3/detail, data, deployment; Mermaid sources validated with mermaid-cli).
-- `docs/architecture/data-model.md` — tables, RLS, indexes, audit chain shape (SQL in `src/main/resources/db/migration/` is canonical).
-- `docs/decisions/` — accepted architecturally significant records (V1 schema guard, fenced claim, crash-safe CAS, loss-free outbox, DB-enforced tenant isolation, capability-gated commits, fail-closed reads, minimal execution jail).
-- `CONTRIBUTING.md` — how to work in this repository (setup, commands, branch → PR → `main`, docs updates, review).
-- `SECURITY.md` — how to report vulnerabilities and where the trust boundaries are.
+HTTP API (spec in `contracts/openapi.yaml`):
 
-## Tests
+| Route | What it does |
+| --- | --- |
+| `POST /api/documents` | Submit a document |
+| `GET /api/documents?query=&limit=&cursor=` | Title-prefix search |
+| `GET /audit/events?job_id=` | A job's audit chain |
+| `GET /audit/replay?job_id=` | Replay a job |
+| `GET /observe/saturation`, `GET /metrics` | Saturation signals |
+| `GET /healthz`, `GET /readyz` | Health probes |
 
-`./mvnw test` boots the full context against containerized Postgres. Green means the stack is proven: V1 schema guard, submit idempotency, fenced claim plus gate-scale contention and zombie resume, content-store crash/GC plus real-kill proofs, outbox relay ghost/dedup/concurrency plus real-kill proof, DB-enforced tenant isolation plus capability-gated commit (revoke/expire/supersede/cross-tenant denials) plus fail-closed cross-tenant reads (28-case direct-ID/search/CAS/presigned matrix, 0 leaks) plus minimal execution jail (RO-root/env/egress/redirect/cross-tenant invisibility with allowed-tenant control). See `src/test/java/com/g1do/anvil/` for what each suite proves and `docs/decisions/` for why.
+## Where things are
 
-## Layout
+| What | Where |
+| --- | --- |
+| Code | `src/main/java/com/g1do/anvil/` |
+| Tests | `src/test/java/com/g1do/anvil/` |
+| Migrations (schema) | `src/main/resources/db/migration/` |
+| API contract | `contracts/openapi.yaml` |
+| Intentional breaks | `contracts/oasdiff-ignore.txt` (API), `contracts/schema-breaks.txt` (schema) |
+| Exact dependency versions | `pom.xml`: Spring Boot BOM plus explicit versions, no ranges |
+| Alert rules | `observability/alerts.yml` |
+| Architecture diagrams | [`docs/architecture/`](docs/architecture/README.md) |
+| Decisions | [`docs/decisions/`](docs/decisions/) |
+| Threat model | [`docs/threat-model.md`](docs/threat-model.md) |
+| Fault evidence (model, traces, burn snapshots, logs) | [`docs/faults/`](docs/faults/) |
+| Gate | `.github/workflows/gate.yml`, which runs the same `task` commands as `Taskfile.yml` |
 
-- `src/main/java/com/g1do/anvil` — application entry plus `tenant/` (X-Tenant-Id auth), `submit/` (CBOR, service, controller), `jobs/` (fenced claim, heartbeat, capability-gated commit, reconciler), `cas/` (crash-safe content store, refcount, garbage collection, tenant-scoped gateway, TTL-60s presigned URLs), `read/` (tenant-isolated direct-ID fetches, title-prefix search, search controller), `audit/` (append-only hash chain writer plus tenant-isolated per-job read API), `exec/` (minimal execution jail, default-deny egress, redirect-never client), `health/` (`/healthz` liveness, `/readyz` readiness, correlation IDs), and `outbox/` (loss-free relay, idempotent consumer)
-- `src/main/resources` — config + migrations + `logback-spring.xml` (JSON logs with correlation, no secrets)
-- `Dockerfile` (multistage minimal unprivileged) + `docker-compose.yml` (real `postgres:18` + app)
-- `src/test` — `contextLoads`, schema proof, submit idempotency proof, fenced claim plus gate-scale and zombie proofs, content-store crash/GC plus real-kill proofs, outbox relay ghost/dedup/concurrency plus real-kill proof, tenant-isolation leak proof, capability-revoke mid-run proof, cross-tenant read matrix proof (direct-ID/search/CAS/presigned, 0 leaks), execution-jail proof (RO-root/env/egress/redirect/cross-tenant/control), audit-chain proof plus audit-read isolation proof (own-tenant order, cross-tenant deny-without-oracle, forged-tenant ignored, cursor replay 0 rows, `401`, RLS proof), health probe proof (`/healthz` no-auth, `/readyz` DB check, correlation echo), plus the Testcontainers configuration
-- `docs/` — architecture and decisions; `.github/workflows/ci.yml` gate (`test,sast,secrets-scan,audit,build,arch-validate,hygiene,contract-check` required, `gate` sole required) on Java 25
-
-## Explicitly deferred (not created yet)
-
-- License undecided (`pom.xml` carries no license block on purpose)
-- No runbooks — no deploy target
+The breaking-change check (`task test:contract`) watches `contracts/openapi.yaml` and `src/main/resources/db/migration/`.
