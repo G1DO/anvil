@@ -1,0 +1,6 @@
+# Allowlist for intentional destructive migrations, read by `task test:contract:schema`.
+# Use it only for the contract step of expand -> migrate -> contract, after the
+# expand and migrate steps have shipped. One migration file name per line, with
+# the reason as a trailing comment, e.g.:
+#   V9__drop_legacy_title.sql  # contract step; V7 added title_v2, V8 backfilled it
+# Editing or removing an existing migration is never allowed.
