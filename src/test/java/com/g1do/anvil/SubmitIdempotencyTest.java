@@ -193,7 +193,7 @@ class SubmitIdempotencyTest {
         assertThat(outboxSha).matches("^[0-9a-f]{64}$");
 
         // Canonical bytes stored and hash matches sha256(canonical_cbor).
-        byte[] stored = (byte[]) jdbc.queryForObject("SELECT canonical_cbor FROM document_versions WHERE id = ?",
+        byte[] stored = jdbc.queryForObject("SELECT canonical_cbor FROM document_versions WHERE id = ?",
                 byte[].class, versionId);
         assertThat(stored).isNotNull();
         java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");

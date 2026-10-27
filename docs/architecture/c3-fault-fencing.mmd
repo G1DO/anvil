@@ -16,6 +16,7 @@ flowchart TB
         susp["suspend past lease 0 rows ledger 2"]
         kill["kill -9 publish-mark restart dedupe 1"]
         dupe["dupe delivery apply once"]
+        pitr["sim rewind 0 rows cap reissue 1"]
     end
     subgraph prod["Production fencing JobService OutboxRelay"]
         claim["JobService claim LIMIT 20 SKIP LOCKED"]
@@ -37,3 +38,5 @@ flowchart TB
     susp -->|proves| claim
     kill -->|proves| relay
     dupe -->|proves| consumer
+    pitr -->|proves| claim
+    pitr -->|proves| commit
