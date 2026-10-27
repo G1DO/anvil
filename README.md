@@ -36,10 +36,10 @@ Each guarantee links to the tests that prove it. All tests run against real Post
    - A deterministic simulator catches each seeded fencing break in under 500 runs: [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
    - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java). It mirrors [`docs/faults/fencing.tla`](docs/faults/fencing.tla); the model-checker output is in [`docs/faults/tlc-output.log`](docs/faults/tlc-output.log).
    - Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
-   - A simulated point-in-time restore that rewinds the epoch lets a stale owner affect 0 rows with no double effect, and an unknown database timeline fails closed: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0013](docs/decisions/0013-pitr-timeline-check.md).
+   - A simulated point-in-time restore that rewinds the epoch lets a stale owner affect 0 rows with no double effect: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0013](docs/decisions/0013-pitr-timeline-check.md).
 5. **Saturation is visible.** Queue age, claim latency and pool wait are exported without tenant data. The burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 
-Not yet guaranteed: a database restore with measured recovery time and data loss (#34).
+Not yet guaranteed (#34): a database restore with measured recovery time and data loss, and refusing commits when the database timeline is unknown or rewound.
 
 ## How to run
 
@@ -84,11 +84,10 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | API contract | `contracts/openapi.yaml` |
 | Intentional breaks | `contracts/oasdiff-ignore.txt` (API), `contracts/schema-breaks.txt` (schema) |
 | Exact dependency versions | `pom.xml`: Spring Boot BOM plus explicit versions, no ranges |
-| Alert rules | `observability/alerts.yml` |
 | Architecture diagrams | [`docs/architecture/`](docs/architecture/README.md) |
 | Decisions | [`docs/decisions/`](docs/decisions/) |
 | Threat model | [`docs/threat-model.md`](docs/threat-model.md) |
-| Fault evidence (model, traces, burn snapshots, logs) | [`docs/faults/`](docs/faults/) |
+| Fencing model and its checker output | [`docs/faults/`](docs/faults/) |
 | Gate | `.github/workflows/gate.yml`, which runs the same `task` commands as `Taskfile.yml` |
 
 The breaking-change check (`task test:contract`) watches `contracts/openapi.yaml` and `src/main/resources/db/migration/`.

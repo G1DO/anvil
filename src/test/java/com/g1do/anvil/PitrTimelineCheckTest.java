@@ -29,12 +29,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Real PITR would also rewind {@code audit_events}/{@code job_checkpoints}
  * (append-only, TRUNCATE-only cleanup) and bump the PG timeline ID; that
  * fidelity gap is documented in
- * {@code docs/decisions/0013-pitr-timeline-check.md} and
- * {@code docs/faults/pitr-timeline-check.log}.
+ * {@code docs/decisions/0013-pitr-timeline-check.md}.
  *
  * <p>Proves: stale owner/token affects 0 rows post-rewind, no double effect,
- * cap must be re-issued (missing cap denies 403 NEEDS_APPROVAL), and an
- * unknown timeline ID fails closed.
+ * and cap must be re-issued (missing cap denies 403 NEEDS_APPROVAL). The
+ * fail-closed timeline check itself is not built yet (#34).
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -114,25 +113,5 @@ class PitrTimelineCheckTest {
         assertThat(ledger).hasSize(1);
         assertThat(ledger.get(0).get("owner")).isEqualTo("worker-fresh");
         assertThat(ledger.get(0).get("fencing_token")).isEqualTo(fresh.fencingToken());
-    }
-
-    @Test
-    void unknownTimelineIdFailsClosed() {
-        // PG timeline-ID observability varies by version/role: pg_control read
-        // is typically denied for the app role. Unknown must fail closed
-        // (refuse traffic until leases expired + caps re-issued), never
-        // assumed forward. This test documents the lookup gap, not a gate.
-        boolean timelineKnown = false;
-        try {
-            List<Map<String, Object>> rows = jdbc.queryForList(
-                    "SELECT timeline_id FROM pg_control_checkpoint()");
-            timelineKnown = rows.size() == 1 && rows.get(0).get("timeline_id") != null;
-        } catch (Exception deniedOrMissing) {
-            timelineKnown = false;
-        }
-        // Fail-closed contract: on unknown, caller must treat the epoch as
-        // rewound. Here we assert the check ran and record the outcome; the
-        // decision (0013) owns the NO-GO residual, not an SLO claim.
-        assertThat(timelineKnown).as("timeline lookup attempted on containerized PG 18; unknown fails closed per 0013").isIn(true, false);
     }
 }

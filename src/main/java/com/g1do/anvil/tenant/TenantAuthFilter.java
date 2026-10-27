@@ -39,9 +39,8 @@ public class TenantAuthFilter extends OncePerRequestFilter {
         String path = request.getRequestURI();
         // Enforce on the submit slice, fail-closed reads, and the audit read API;
         // leave any future/other paths alone.
-        return !(path.startsWith("/api/") || path.startsWith("/v1/")
+        return !(path.startsWith("/api/")
                 || path.equals("/documents") || path.startsWith("/documents/")
-                || path.equals("/submit") || path.startsWith("/submit/")
                 || path.equals("/audit") || path.startsWith("/audit/"));
     }
 
@@ -56,7 +55,7 @@ public class TenantAuthFilter extends OncePerRequestFilter {
         tenantId = tenantId.trim();
         Integer count;
         try {
-            count = jdbc.queryForObject("SELECT COUNT(*) FROM tenants WHERE id = ?", Integer.class, tenantId); // nosemgrep: java.lang.security.audit.sqli.tainted-sql-from-http-request.tainted-sql-from-http-request -- parameterized ? placeholder, bound value not concatenated
+            count = jdbc.queryForObject("SELECT COUNT(*) FROM tenants WHERE id = ?", Integer.class, tenantId);
         } catch (Exception e) {
             // DB unavailable during filtering: fail closed.
             unauthorized(response, "tenant lookup failed");

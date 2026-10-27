@@ -1,5 +1,7 @@
 <!-- The description becomes the commit message. -->
 
+Closes #<!-- issue -->
+
 ## Problem
 
 <!-- The user problem this solves. -->
