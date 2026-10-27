@@ -13,7 +13,7 @@ Canonical view list. Mermaid sources live in this directory and are validated by
 - `c3-api.mmd` — API detail: auth filter, submit path, reads, audit reads, URLs, health.
 - `c3-workers.mmd` — worker detail: fenced claim, heartbeat, capability-gated commit, reconciler.
 - `c3-exec-jail.mmd` — execution jail detail: workspace, env, output caps, default-deny egress.
-- `c3-fault-fencing.mmd` — fault-fencing model view: claim, heartbeat, commit, reconcile transitions.
+- `c3-fault-fencing.mmd` — fault-fencing model view: claim, heartbeat, commit, reconcile transitions + PITR timeline-check sim node.
 - `job-lifecycle.mmd` — job state lifecycle: QUEUED, RUNNING, SUCCEEDED, FAILED, DEAD.
 - `sequence-submit-claim-commit.mmd` — submit to claim to commit interaction.
 - `sequence-reconcile-outbox.mmd` — reconciler and outbox relay interaction.
@@ -26,7 +26,7 @@ Canonical view list. Mermaid sources live in this directory and are validated by
 
 ## Decisions
 
-- `../decisions/` — accepted architecturally significant records (V1 schema through fault-verified fencing).
+- `../decisions/` — accepted architecturally significant records (V1 schema through pitr-timeline-check 0013).
 - `../security/threat-model.md` — trust boundaries for tenant isolation, capabilities, reads, replay, jail.
 
 Verify: `task diagrams`.

@@ -1,0 +1,44 @@
+# PITR timeline-check drill log — INV-1 (issue #34 bullet-1)
+
+Date: 2026-10-27. Owner: G1DO. Branch: 34-pitr-epoch from origin/main@13f535f.
+Target (simulated, containerized PG only): Testcontainers postgres:18, no prod
+restore, no base backup, no WAL replay. Full drill to declared target
+(containerized PG clean+WAL to 5min ago) deferred to later bullet.
+
+## Method (simulated rewind)
+
+Per PitrTimelineCheckTest:
+1. seed QUEUED, claim worker-stale (token tA), issueCap epoch 1.
+2. Rewind: UPDATE jobs SET QUEUED/NULL owner/fencing_token=tA-1/NULL lease;
+   DELETE rewound attempt + cap_grants row.
+   Gap: audit_events/job_checkpoints NOT rewound (append-only, TRUNCATE-only);
+   PG timeline ID NOT bumped (real PITR would bump timeline + rewind all tables).
+3. Attempt stale heartbeat/commit; fresh claim; commit without cap; re-issue;
+   commit; ledger check. Timeline lookup via pg_control_checkpoint().
+
+## Results (2026-10-27, ./mvnw -B -ntp -Dtest=PitrTimelineCheckTest test)
+
+- Tests run: 2, Failures: 0, Errors: 0, Skipped: 0 (BUILD SUCCESS).
+- rewoundEpochStaleOwnerAffectsZeroRowsWithNoDoubleEffect: PASS
+  - stale heartbeat -> false (0 rows).
+  - stale commit -> CapDeniedException 403 NEEDS_APPROVAL (no grant post-rewind),
+    jobs row stays QUEUED (no state/owner/token change).
+  - fresh claim + commit without cap -> 403 + cap_rejected +1.
+  - re-issue cap + commit -> true, SUCCEEDED x1, attempts ledger x1
+    (owner=worker-fresh, token=fresh), no stale double effect.
+- unknownTimelineIdFailsClosed: PASS (lookup attempted; unknown fails closed
+  per decision 0013, no SLO claimed).
+
+## Gap report (no rewound-epoch double effect accepted as success)
+
+- Sim, not real PITR: no base backup, no WAL replay to 5min ago, no timeline
+  bump, no RTO/RPO numbers. Real drill still required.
+- audit_events/job_checkpoints divergence on real rewind unproven here.
+- Timeline-ID observability varies by PG version/role; fail-closed on unknown.
+- RLS + O1/O2 regression covered by existing suites (RlsLeakTest,
+  CapRevokeMidRunTest, FaultProofTest) + full task verify in PR CI.
+
+## Decision pointer
+
+See docs/decisions/0013-pitr-timeline-check.md (NO-GO on SLO, fail-closed gate
+required, full drill before any SLO claim). Refs #34, no Verified mark.
