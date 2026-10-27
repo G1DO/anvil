@@ -36,6 +36,7 @@ Each guarantee links to the tests that prove it. All tests run against real Post
    - A deterministic simulator catches each seeded fencing break in under 500 runs: [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
    - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java). It mirrors [`docs/faults/fencing.tla`](docs/faults/fencing.tla); the model-checker output is in [`docs/faults/tlc-output.log`](docs/faults/tlc-output.log).
    - Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
+   - A simulated point-in-time restore that rewinds the epoch lets a stale owner affect 0 rows with no double effect, and an unknown database timeline fails closed: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0013](docs/decisions/0013-pitr-timeline-check.md).
 5. **Saturation is visible.** Queue age, claim latency and pool wait are exported without tenant data. The burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 
 Not yet guaranteed: a database restore with measured recovery time and data loss (#34).
