@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
  * evaluation. {@code GET /metrics} returns a minimal Prometheus text
  * exposition for the same three signals plus alert firing gauges. Both bypass
  * tenant auth by design (see {@code TenantAuthFilter#shouldNotFilter}: only
- * {@code /api/}, {@code /audit/}, {@code /documents}, {@code /submit} are
+ * {@code /api/}, {@code /audit/}, {@code /documents} are
  * filtered) and carry no tenant bytes.
  */
 @RestController

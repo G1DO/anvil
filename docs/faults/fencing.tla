@@ -22,7 +22,7 @@
  *  - NoDoubleEffect: terminal commit at most once; processed_event at most
  *    once per stable identity; ledger (job, attempt) unique.
  *
- * Seeded breaks (checked by FenceSimTest, disjoint from bug-log.md):
+ * Seeded breaks (checked by FenceSimTest):
  *  - BrokenFence: commit ignores fencing token (owner+state only).
  *  - BrokenLease: claim stamps no lease / non-atomic select-then-update,
  *    allowing double claim (lease unenforced).
