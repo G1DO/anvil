@@ -16,9 +16,8 @@ import java.util.Map;
  * </ul>
  *
  * <p>Labels are static ({@code severity="page"}); payloads carry no tenant
- * bytes. Prometheus rules live in {@code observability/alerts.yml}; this class
- * is the same logic in-process so containerized tests can prove fire-on-burn
- * and silent-on-green without a Prometheus dependency.
+ * bytes. The logic runs in-process so containerized tests can prove
+ * fire-on-burn and silent-on-green without a Prometheus dependency.
  */
 public final class BurnAlerts {
 

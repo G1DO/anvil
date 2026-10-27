@@ -23,8 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * dedupe; asserts single-holder-per-live-token and no double effect.
  *
  * <p>Exhaustive BFS over 1 job x 2 workers x clock 0..6 checks every
- * interleaving up to depth 8. Seeded breaks are in {@code FenceSimTest};
- * real claim/relay/CAS observations are in {@code docs/faults/bug-log.md}.
+ * interleaving up to depth 8. Seeded breaks are in {@code FenceSimTest}.
  */
 class FenceModelTest {
 
