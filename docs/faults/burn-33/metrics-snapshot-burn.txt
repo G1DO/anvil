@@ -1,0 +1,13 @@
+# HELP anvil_queue_age_seconds Oldest QUEUED age on DB clock.
+# TYPE anvil_queue_age_seconds gauge
+anvil_queue_age_seconds{state="queued"} 612.4
+# HELP anvil_claim_latency_seconds Claim latency.
+# TYPE anvil_claim_latency_seconds summary
+anvil_claim_latency_seconds{op="claim",quantile="0.99"} 2.0
+# HELP anvil_pool_wait_seconds Pool connection wait.
+# TYPE anvil_pool_wait_seconds summary
+anvil_pool_wait_seconds{pool="hikaricp",quantile="0.99"} 0.012
+# HELP anvil_burn_alert_firing Burn alert firing 1 or silent 0.
+# TYPE anvil_burn_alert_firing gauge
+anvil_burn_alert_firing{alert="QueueBurn"} 1
+anvil_burn_alert_firing{alert="ClaimBurn"} 1

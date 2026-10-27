@@ -138,6 +138,26 @@ paths:
                   status: { type: string }
         '503':
           description: not-ready
+  /observe/saturation:
+    get:
+      summary: Saturation signals plus burn alert evaluation, no auth, no tenant bytes
+      responses:
+        '200':
+          description: queue_age, claim_p99, pool_wait_p99 plus alert payload
+          content:
+            application/json:
+              schema:
+                type: object
+  /metrics:
+    get:
+      summary: Prometheus exposition for saturation signals, no auth, no tenant bytes
+      responses:
+        '200':
+          description: prometheus text exposition
+          content:
+            text/plain:
+              schema:
+                type: string
 components:
   parameters:
     XTenantId:
