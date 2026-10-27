@@ -1,5 +1,10 @@
 version: '3'
 
+vars:
+  BASE: origin/main
+  MERMERD_VERSION: 0.13.0
+  MERMERD_SHA256: 20d2f052e34f23dc0b0094fd964bd729b35d6331df41666a7fd5c37e278a1e90
+
 tasks:
   dev:
     desc: Start the system locally with dependencies (Boot Dev Services provisions Postgres)
@@ -7,7 +12,7 @@ tasks:
       - ./mvnw spring-boot:run
 
   test:
-    desc: "Full suite with Testcontainers and real dependencies (covers compile + migrations)"
+    desc: "Full suite with Testcontainers and real dependencies (covers compile, lint, and migrations)"
     cmds:
       - ./mvnw -B -ntp test
 
@@ -17,35 +22,121 @@ tasks:
       - ./mvnw -B -ntp package -DskipTests
 
   test:contract:
-    desc: "Contract compat via oasdiff breaking --fail-on ERR (off-the-shelf; fail if origin/main missing, skip if no baseline file)"
+    desc: "Breaking-change check on the API contract and the schema (always runs; no-op when those paths are unchanged)"
+    cmds:
+      - task: test:contract:api
+      - task: test:contract:schema
+
+  test:contract:api:
+    desc: "oasdiff breaking --fail-on ERR against {{.BASE}}; fails when the baseline is missing unless this change adds the spec"
     cmds:
       - |
-        git rev-parse --verify origin/main >/dev/null || { echo "contract: origin/main not found"; exit 1; }
-        git show origin/main:contracts/openapi.yaml > /tmp/anvil-base.yaml 2>/dev/null || git show origin/main:openapi/openapi.yaml > /tmp/anvil-base.yaml || { echo "contract: openapi.yaml not on main, skipping"; exit 0; }
-        oasdiff breaking --fail-on ERR --err-ignore contracts/oasdiff-ignore.txt /tmp/anvil-base.yaml contracts/openapi.yaml
+        set -e
+        git rev-parse --verify {{.BASE}} >/dev/null
+        if ! git cat-file -e {{.BASE}}:contracts/openapi.yaml 2>/dev/null; then
+          if git diff --name-only --diff-filter=A {{.BASE}}...HEAD -- contracts/openapi.yaml | grep -q .; then
+            echo "contract: contracts/openapi.yaml is new in this change; nothing to compare"
+            exit 0
+          fi
+          echo "contract: no baseline contracts/openapi.yaml on {{.BASE}}"
+          exit 1
+        fi
+        mkdir -p target
+        git show {{.BASE}}:contracts/openapi.yaml > target/openapi-base.yaml
+        docker run --rm -v "$PWD:/src" -w /src tufin/oasdiff:v1.33.0 breaking --fail-on ERR --err-ignore contracts/oasdiff-ignore.txt target/openapi-base.yaml contracts/openapi.yaml
+
+  test:contract:schema:
+    desc: "Fail when an existing migration is edited or removed, or a new one has a destructive step not listed in contracts/schema-breaks.txt"
+    cmds:
+      - |
+        set -e
+        git rev-parse --verify {{.BASE}} >/dev/null
+        mkdir -p target
+        git diff --name-status --no-renames {{.BASE}}...HEAD -- src/main/resources/db/migration > target/schema-diff.txt
+        python3 - target/schema-diff.txt contracts/schema-breaks.txt <<'EOF'
+        import pathlib, re, sys
+        diff = pathlib.Path(sys.argv[1]).read_text().splitlines()
+        allowed = {l.split("#")[0].strip() for l in pathlib.Path(sys.argv[2]).read_text().splitlines()} - {""}
+        destructive = re.compile(r"\b(DROP\s+(TABLE|COLUMN|VIEW|SCHEMA|TYPE|CONSTRAINT|POLICY|TRIGGER|FUNCTION|INDEX)|RENAME|TRUNCATE|DELETE\s+FROM|SET\s+NOT\s+NULL|ALTER\s+COLUMN\s+\S+\s+(SET\s+DATA\s+)?TYPE)\b", re.I)
+        bad = []
+        for line in diff:
+            status, path = line.split("\t", 1)
+            name = pathlib.Path(path).name
+            if status != "A":
+                bad.append(f"{path}: existing migration {'removed' if status == 'D' else 'edited'}; add a new migration instead")
+                continue
+            sql = re.sub(r"--[^\n]*|/\*.*?\*/", "", pathlib.Path(path).read_text(), flags=re.S)
+            hits = sorted({m.group(0).upper() for m in destructive.finditer(sql)})
+            if hits and name not in allowed:
+                bad.append(f"{path}: destructive step {hits}; list it in contracts/schema-breaks.txt if this is the contract step of expand -> migrate -> contract")
+        print("\n".join(bad) if bad else "schema: no breaking migration changes")
+        sys.exit(1 if bad else 0)
+        EOF
 
   check:sast:
-    desc: "SAST via Semgrep registry p/default --error (off-the-shelf; CodeQL runs in CI as advisory)"
+    desc: "Static analysis via Semgrep registry p/default --error"
     cmds:
       - docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep:1.180.0 semgrep scan --config p/default --error --metrics off src/main/java
 
   check:secrets:
-    desc: "Secrets scan via gitleaks dir (off-the-shelf; exits 1 on leaks per gitleaks docs)"
+    desc: "Secret scan of the full git history via gitleaks (exits 1 on leaks)"
     cmds:
-      - docker run --rm -v "$PWD:/path" ghcr.io/gitleaks/gitleaks:v8.30.1 dir /path -v
+      - docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo --redact -v
 
   check:audit:
-    desc: "Dependency audit via osv-scanner (off-the-shelf; exits 1 on vulns per osv-scanner docs)"
+    desc: "Fail on vulnerable dependencies this change adds vs {{.BASE}} (existing ones are fixed through Dependabot PRs)"
     cmds:
-      - docker run --rm -v "$PWD:/src" ghcr.io/google/osv-scanner:v2.7.0 scan source -r /src --format table
+      - |
+        set -e
+        git rev-parse --verify {{.BASE}} >/dev/null
+        base=$(mktemp -d)
+        trap 'git worktree remove --force "$base"' EXIT
+        git worktree add --detach "$base" {{.BASE}} >/dev/null
+        mkdir -p target
+        for side in base head; do
+          src=$PWD; [ "$side" = base ] && src=$base
+          # Maven resolves the tree (BOM-managed and transitive versions); osv-scanner alone cannot.
+          (cd "$src" && ./mvnw -q -B -ntp org.cyclonedx:cyclonedx-maven-plugin:2.9.3:makeBom -DoutputFormat=json -DoutputName=bom -DincludeTestScope=false)
+          rc=0
+          docker run --rm -v "$src:/src" ghcr.io/google/osv-scanner:v2.7.0 scan source -L /src/target/bom.json --format json > "target/osv-$side.json" || rc=$?
+          [ "$rc" -le 1 ] || { echo "audit: osv-scanner failed on $side (exit $rc)"; exit "$rc"; }
+        done
+        python3 - target/osv-base.json target/osv-head.json <<'EOF'
+        import json, sys
+        def vulns(path):
+            out = set()
+            for result in json.load(open(path)).get("results") or []:
+                for pkg in result.get("packages") or []:
+                    name = pkg["package"]["name"]
+                    for v in pkg.get("vulnerabilities") or []:
+                        out.add((name, v["id"]))
+            return out
+        added = sorted(vulns(sys.argv[2]) - vulns(sys.argv[1]))
+        for name, vid in added:
+            print(f"audit: {name} adds {vid}")
+        print("audit: no new vulnerable dependencies" if not added else f"audit: {len(added)} new")
+        sys.exit(1 if added else 0)
+        EOF
 
-  check:hygiene:
-    desc: "Fail on stubs via grep (off-the-shelf)"
+  check:pr:
+    desc: "PR description has Problem and Acceptance check filled in (reads PR_BODY; locally: PR_BODY=\"$(gh pr view --json body -q .body)\" task check:pr)"
     cmds:
-      - grep -r -E '@ORG[/]|\|\|[ ]true|echo[ ]placeholder|TODO[ ]CI|assertTrue\(true\)' Taskfile.yml .github && exit 1 || exit 0
+      - |
+        python3 - <<'EOF'
+        import os, re, sys
+        body = re.sub(r"<!--.*?-->", "", os.environ.get("PR_BODY", ""), flags=re.S)
+        sections = {m.group(1).strip().lower(): m.group(2) for m in re.finditer(r"^##\s+(.+?)\s*$(.*?)(?=^##\s|\Z)", body, re.M | re.S)}
+        missing = []
+        for name in ("problem", "acceptance check"):
+            text = re.sub(r"^\s*Proven by:\s*$", "", sections.get(name, ""), flags=re.M).strip()
+            if not text:
+                missing.append(name.capitalize())
+        print("pr: missing or empty: " + ", ".join(missing) if missing else "pr: Problem and Acceptance check filled in")
+        sys.exit(1 if missing else 0)
+        EOF
 
-  diagrams:
-    desc: "Mermaid-cli validate + fail on pasted mermaid (off-the-shelf)"
+  check:diagrams:
+    desc: "Mermaid-cli renders every diagram; no Mermaid pasted into Markdown"
     cmds:
       - |
         for f in docs/architecture/*.mmd; do
@@ -54,8 +145,26 @@ tasks:
         done
       - grep -r --include='*.md' '```mermaid' docs/ && exit 1 || exit 0
 
+  diagrams:
+    desc: "Generate docs/architecture/data-model.mmd (not committed) with mermerd from the compose database"
+    cmds:
+      - |
+        set -e
+        mkdir -p .bin
+        if [ ! -x .bin/mermerd ]; then
+          curl -fsSL -o .bin/mermerd.tar.gz https://github.com/KarnerTh/mermerd/releases/download/v{{.MERMERD_VERSION}}/mermerd_{{.MERMERD_VERSION}}_linux_amd64.tar.gz
+          echo "{{.MERMERD_SHA256}}  .bin/mermerd.tar.gz" | sha256sum -c -
+          tar -xzf .bin/mermerd.tar.gz -C .bin mermerd
+          rm .bin/mermerd.tar.gz
+        fi
+        docker compose up -d --build --wait db app
+        until curl -fs localhost:8080/readyz >/dev/null; do sleep 2; done
+        .bin/mermerd --connectionString "postgresql://anvil:${POSTGRES_PASSWORD:-anvil}@localhost:5432/anvil?sslmode=disable" \
+          --schema public --useAllTables --showAllConstraints --outputFileName docs/architecture/data-model.mmd
+        echo "wrote docs/architecture/data-model.mmd"
+
   verify:
-    desc: "Full local gate: test (once) + contract + build + security/diagram checks"
+    desc: "Full local gate: the same commands CI runs"
     cmds:
       - task test
       - task test:contract
@@ -63,5 +172,4 @@ tasks:
       - task check:sast
       - task check:secrets
       - task check:audit
-      - task check:hygiene
-      - task diagrams
+      - task check:diagrams

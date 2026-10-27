@@ -1,34 +1,21 @@
 # Security
 
-## Reporting
+## Reporting a vulnerability
 
-Do not put undisclosed vulnerability details into a public issue. Use GitHub private vulnerability reporting (Security Advisories) for this repository so the report stays private until a fix is coordinated. Include affected version, reproduction, and impact (affected routes or jobs behavior where relevant).
+Report privately through GitHub private vulnerability reporting: the repository's **Security** tab → **Report a vulnerability**. Don't open a public issue. Include the affected commit, steps to reproduce, and the impact.
 
-There are no supported releases yet (`0.0.1-SNAPSHOT`); the current scope is the `main` branch.
+There are no releases yet (`0.0.1-SNAPSHOT`); `main` is the supported version.
 
 ## Handling
 
-- Acknowledge within 2 working days, fix privately, disclose after a fix is available.
-- Solo owner: G1DO triages; no second reviewer available, so required `gate` check green plus self-review of the diff satisfies review (checks never weakened).
+1. Acknowledge within 2 working days.
+2. Fix in a private security advisory. Advisory forks skip CI and rulesets, so run `task verify` locally before merging the fix.
+3. Publish the advisory together with the fixed version. An unfixed vulnerability is never public.
 
-## Secrets and data
+## Secrets
 
-- No secrets are stored in the repository. Postgres comes from Testcontainers in tests and Boot Dev Services on local run.
-- Never committed and never pasted into Notion, issues, PRs, comments, or logs; environment-specific config stays out of the repo.
-- Enable GitHub secret scanning + push protection where available, with gitleaks as defense-in-depth in pre-commit and CI (full history via `fetch-depth: 0` + `task check:secrets`).
-- Threat model lives in `docs/security/threat-model.md` (required: Auth/sensitive fires). No SBOM is maintained for this slice; add one only when its risk (public contract, durable data, release chain) actually requires it.
+The repository holds no secret values. `.env.example` lists the names the local stack reads; real values come from your environment or an untracked `.env`. The gate scans the full git history for secrets (`task check:secrets`).
 
-## Dependencies
+## Threat model
 
-- Update monthly, critical within 7 days.
-- Dependabot alerts + version updates on; dependency-review blocks new vulns at PR time; local `task check:audit` (OSV.dev) fails on HIGH/CRITICAL.
-
-## Trust boundaries
-
-- HTTP entry: `TenantAuthFilter` requires `X-Tenant-Id` on the submit slice and looks it up in `tenants`; missing or unknown tenants get `401`, and a lookup failure fails closed. `SubmitService` re-validates the tenant inside the submit path.
-- Tenant isolation is composite `FOREIGN KEY(tenant_id, xxx_id)` edges plus `UNIQUE(tenant_id, id)` targets plus DB-enforced RLS: `RLS FORCE` on the ten tenant-scoped tables (`documents, document_versions, jobs, attempts, artifacts, outbox, processed_events, audit_events, cap_grants, job_checkpoints`; `tenants` excluded as the auth lookup target) with one `tenant_isolation` policy per table (`tenant_id = current_setting('app.tenant', true)`), runtime role `anvil_app` is `NOSUPERUSER NOBYPASSRLS`, views are `security_invoker=true`. Every transaction touching tenant rows sets `SET LOCAL app.tenant` via `TenantGuard.setTenant` with a read-back probe; missing context reads zero rows (fail closed). See `src/main/resources/db/migration/V1__durable_v1_schema.sql`, `src/main/resources/db/migration/V2__tenant_rls.sql`, `src/main/java/com/g1do/anvil/tenant/TenantGuard.java`, `docs/architecture/data-model.md`, and `docs/decisions/0005-db-enforced-tenant-isolation.md`.
-- Job ownership is fenced on `(id, tenant_id, owner, fencing_token, state)` with the database clock as the only lease clock; stale workers affect zero rows and terminal rows are immutable at the database.
-- Content paths are `tenants/{tenant}/{sha}` with tenant names rejected when they escape their directory (`/`, `\`, `..`, `%`-encoded traversal, reserved names); every read re-verifies `sha256(bytes)` and never serves a torn tail. Authenticated reads go through `ContentStore.getForCaller(caller, resource, sha)` (caller must equal resource plus an `artifacts` row for `(caller, sha)` under RLS, else caller-scoped `404` with no oracle). See `src/main/java/com/g1do/anvil/cas/ContentStore.java`.
-- Read surfaces are fail-closed per tenant: direct-ID fetches (`ReadService`) return empty for cross-tenant IDs (same as missing, no oracle); minimal search is `GET /api/documents?query=&limit=&cursor` with tenant solely from `X-Tenant-Id` (`WHERE tenant_id=:t AND title ILIKE :prefix% ORDER BY created_at,id`, RLS plus pre-filter plus per-row re-check, cursor replay across tenants returns 0 rows); audit event reads are `GET /audit/events?job_id=&limit=&cursor` (aliases `/api/audit/events`, `/api/v1/audit/events`) in `AuditReadService`/`AuditEventsController` returning the caller-tenant-only chain `ORDER BY seq` (`WHERE tenant_id=? AND job_id=?`, RLS underneath, per-row tenant+job re-check, tenant solely from `X-Tenant-Id` with `tenant`/`tenant_id` params ignored, cross-tenant `job_id` same empty `200 []` as missing, tenant- and job-scoped event-UUID cursor with foreign/missing resolving to 0 rows, default limit `20`/max `100`, JDBC only, no filesystem access, `401` on missing/unknown tenant via `TenantAuthFilter` on `/audit/*`); deterministic replay is `GET /audit/replay?job_id=` (aliases `/api/audit/replay`, `/api/v1/audit/replay`) in `ReplayService`/`ReplayController` returning caller-tenant-only `{input_sha,output_sha,match}` read-only (`WHERE tenant_id=? AND job_id=?` + RLS + per-row re-check, `limit/cursor` ignored, malformed `400`, missing/cross-tenant generic `404` with no bytes and no oracle, non-terminal own-tenant `match:false`); presigned CAS URLs (`CasPresignedService`, TTL `60s`, DB clock, HMAC-bound `tenant/sha/job/cap/epoch/expiry`) deny `403` on swapped tenant, tampering, expiry, or revoked caps (`403 NEEDS_APPROVAL`, `cap_rejected++`). See `src/main/java/com/g1do/anvil/read/`, `src/main/java/com/g1do/anvil/audit/AuditReadService.java`, `src/main/java/com/g1do/anvil/audit/AuditEventsController.java`, `src/main/java/com/g1do/anvil/replay/ReplayService.java`, `src/main/java/com/g1do/anvil/replay/ReplayController.java`, `src/main/java/com/g1do/anvil/cas/CasPresignedService.java`, and `docs/security/threat-model.md`.
-- Untrusted execution is jailed per tenant (`ExecJail`, `JailEgress`): each run forks a child with its working directory set to `<anvil.exec.root>/<tenant>` and a cleared environment (`env -i` equivalent: only `PATH=/usr/bin:/bin`, `ANVIL_TENANT=<tenant>`, plus explicit allowlist entries; `ANVIL_TENANT`/`PATH` cannot be overridden, loader/debug keys `LD_*`/`DYLD_*`/`PYTHON*`/`PERL*`/`RUBY*`/`NODE_*`/`IFS`/`BASH_ENV`/`ENV`/`ZDOTDIR` deny). Shell interpreters deny, absolute/`..`/`%` operands deny, workspace executables deny, symlink-traversing paths deny, and stdout/stderr cap at 1 MiB per stream (truncated + flag). File operands must resolve via `resolveInWorkspace` (absolute/`..`/`%`/null-byte/symlink deny with `SecurityException`); authenticated reads go through `readWorkspaceFile(caller, resource, rel)` (`caller != resource` denies caller-scoped without oracle). Egress from the untrusted path is default-deny (`JailEgress.checkAllowed` denies every URL with no allowlist in v1, without network); blocked targets (localhost/metadata/link-local/loopback/private incl. expanded/mapped forms, non-canonical numerics, non-http(s), userinfo) always deny even when allowlisted; the jail HTTP client never follows redirects (`followRedirects(NEVER)`). Denials carry a generic reason only. Residual: no mount/user/network namespace in v1 (kernel still permits raw `../sibling` or `/tmp` from arbitrary native code once it runs; interpreter `-c` strings, workspace binaries, `/proc`, and symlink TOCTOU bypass the argv allowlist — `run` is trusted-caller-only), no DNS-rebind re-check, non-canonical IP encodings deny without decoding, no nftables DROP. See `src/main/java/com/g1do/anvil/exec/` and `docs/security/threat-model.md`.
-- Input validation limits live in `SubmitService` (title, `mime_type`, `Idempotency-Key`, required `body`); CBOR canonicalization covers `{title, mime_type, body}` only.
+`docs/threat-model.md`.

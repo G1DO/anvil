@@ -36,3 +36,10 @@ build/
 /tmp/anvil-mmd.svg
 # Legacy local runtime dirt (root-owned search index, untracked)
 /.structurizr/
+
+# Local env values (names live in .env.example)
+.env
+# Pinned tool downloads (task diagrams)
+/.bin/
+# Generated on demand by task diagrams; not committed
+docs/architecture/data-model.mmd
