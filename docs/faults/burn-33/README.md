@@ -10,7 +10,7 @@ the same test. No prod target exists; local compose (`docker compose up
 - `QueueBurn`: `anvil_queue_age_seconds{state="queued"} > 60` for `5m`.
 - `ClaimBurn`: `anvil_claim_latency_seconds{op="claim",quantile="0.99"} > 0.5`
   or `anvil_pool_wait_seconds{pool="hikaricp",quantile="0.99"} > 0.5` for `5m`.
-- Rules: `prometheus/alerts-33.yml`; same logic in
+- Rules: `observability/alerts.yml`; same logic in
   `src/main/java/com/g1do/anvil/observe/BurnAlerts.java`.
 
 ## Induced burn (firing)

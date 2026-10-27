@@ -1,0 +1,27 @@
+flowchart TB
+    subgraph untrusted["Untrusted: outside the system"]
+        tenantClient["Tenant client<br/>X-Tenant-Id + Idempotency-Key"]
+    end
+    operator["Operator<br/>compose up, health probes, logs"]
+    subgraph anvil["ANVIL: one Spring Boot deployable"]
+        api["API service<br/>auth, validate, CBOR, submit, reads, audit, replay, URLs, health"]
+        workers["Workers<br/>claim, heartbeat, commit, relay, reconcile"]
+        subgraph jailZone["Untrusted code: tenant-supplied execution"]
+            jail["Exec jail<br/>per-tenant workspace, cleared env, deny egress"]
+        end
+    end
+    subgraph tenantData["Tenant boundary: enforced by Postgres RLS"]
+        postgres["PostgreSQL 18<br/>source of truth, queue, outbox, audit chain"]
+    end
+    casStore["CAS store<br/>per-tenant content, hash-verified reads"]
+    execWorkspaces["Exec workspaces<br/>per-tenant writable directories"]
+    network["Network<br/>egress denied by default"]
+    tenantClient -->|"TRUST BOUNDARY: X-Tenant-Id checked, input validated"| api
+    operator -->|probes, logs| api
+    api -->|"JDBC, SET LOCAL app.tenant + RLS"| postgres
+    workers -->|"claim, heartbeat, commit, relay, reconcile under RLS"| postgres
+    api -->|put and get, torn tails removed| casStore
+    workers -->|put and link, refcount GC| casStore
+    workers -.->|"TRUST BOUNDARY: run tenant argv, env, timeout (no production caller yet)"| jail
+    jail -->|resolveInWorkspace only| execWorkspaces
+    jail -.->|"TRUST BOUNDARY: denied, redirects never followed"| network
