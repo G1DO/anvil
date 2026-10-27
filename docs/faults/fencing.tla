@@ -28,9 +28,8 @@
  *    allowing double claim (lease unenforced).
  *  - BrokenRelay: mark before publish; publish throw loses the event.
  *
- * TLC: run with 1 job, 2 workers, clock 0..6. The checked-in
- * docs/faults/tlc-output.log records the Java exhaustive checker result
- * that mirrors this spec (TLC binary not run offline; spec is TLC-ready).
+ * TLC: run with 1 job, 2 workers, clock 0..6. TLC is not run; FenceModelTest
+ * is the exhaustive Java checker that mirrors this spec.
  *)
 
 EXTENDS Naturals, FiniteSets, Sequences, TLC

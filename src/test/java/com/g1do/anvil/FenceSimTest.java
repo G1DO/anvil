@@ -25,8 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * </ul>
  *
  * <p>Determinism: {@code new Random(baseSeed + run)} drives every choice;
- * detection run + violating trace are asserted and printed for
- * {@code docs/faults/tlc-output.log} and {@code src/test/resources/fault-sim/}.
+ * detection run + violating trace are asserted and printed.
  * Correct fencing never violates (see {@code FenceModelTest}).
  */
 class FenceSimTest {
