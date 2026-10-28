@@ -7,7 +7,7 @@ vars:
 
 tasks:
   dev:
-    desc: Start the system locally with dependencies (Boot Dev Services provisions Postgres)
+    desc: "Run the app locally with ./mvnw spring-boot:run; starts no Postgres, so startup fails without a configured datasource"
     cmds:
       - ./mvnw spring-boot:run
 
