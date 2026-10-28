@@ -24,6 +24,7 @@ flowchart TB
         commit["JobService commit<br/>cap gate + fenced write"]
         recon["JobService reconciler<br/>expire to QUEUED or DEAD"]
         cap["JobService caps<br/>issue revoke FOR UPDATE"]
+        timeline["TimelineGuard + confirmTimeline<br/>refuse on unknown or rewound timeline"]
         relay["OutboxRelay<br/>poll unsent LIMIT 100 + mark sent"]
         consumer["IdempotentConsumer<br/>processed_events dedup"]
         chain["AuditChain append<br/>same txn as effect<br/>checkpoint every 100"]
@@ -58,6 +59,10 @@ flowchart TB
     commit -->|cap check + UPDATE| pg
     recon -->|reclaim deaden| pg
     cap -->|cap_grants| pg
+    claim --> timeline
+    beat --> timeline
+    commit --> timeline
+    timeline -->|db_timeline vs pg_control| pg
     relay -->|poll mark| pg
     relay --> consumer
     consumer -->|INSERT ON CONFLICT| pg

@@ -32,8 +32,10 @@ sequenceDiagram
     U->>D: INSERT audit_events cap issue
     W->>S: putForJob plus linkArtifactToJob
     S->>D: upsert artifacts plus append cas put
-    W->>D: commit with cap check FOR UPDATE
-    alt cap invalid or revoked or expired
+    W->>D: commit with timeline check then cap check FOR UPDATE
+    alt timeline unknown or rewound by a restore
+        D-->>W: 503 TIMELINE UNCONFIRMED zero rows
+    else cap invalid or revoked or expired
         D-->>W: 403 NEEDS APPROVAL zero rows
     else cap valid plus fence match
         D->>D: UPDATE jobs SUCCEEDED or FAILED
