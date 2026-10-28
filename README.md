@@ -17,7 +17,7 @@ ANVIL is for:
 
 ## Guarantees
 
-Each guarantee links to the tests that prove it. All tests run against real PostgreSQL in containers.
+Each guarantee links to the tests that prove it. All tests run against real PostgreSQL in containers, restored from a backup before the suite starts.
 
 1. **No lost work, no double effect.** Execution is at-least-once with fenced, idempotent effects; it is never exactly-once.
    - A duplicate submit returns the same IDs and creates one job: [`SubmitIdempotencyTest`](src/test/java/com/g1do/anvil/SubmitIdempotencyTest.java).
@@ -37,9 +37,11 @@ Each guarantee links to the tests that prove it. All tests run against real Post
    - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java). It mirrors [`docs/faults/fencing.tla`](docs/faults/fencing.tla).
    - Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
    - A simulated point-in-time restore that rewinds the epoch lets a stale owner affect 0 rows with no double effect: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0013](docs/decisions/0013-pitr-timeline-check.md).
+   - When the database timeline is unknown or rewound, claims, heartbeats and commits are refused (`503 TIMELINE_UNCONFIRMED`) until leases expire and capabilities are re-issued: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0016](docs/decisions/0016-restore-timeline-gate.md).
+   - A backup → clean → point-in-time restore to a declared target reports its measured recovery time and data loss. Afterwards, tokens and grants from either side of the target affect 0 rows, a re-published event applies once, and isolation and capability checks hold: [`PitrRestoreDrillTest`](src/test/java/com/g1do/anvil/PitrRestoreDrillTest.java). The whole suite runs against a restored database.
 5. **Saturation is visible.** Queue age, claim latency and pool wait are exported without tenant data. The burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 
-Not yet guaranteed (#34): a database restore with measured recovery time and data loss, and refusing commits when the database timeline is unknown or rewound.
+Not yet guaranteed: a target for recovery time or data loss (the drill measures them; it doesn't promise them), or detecting a restore that keeps the database timeline, such as a storage snapshot rolled back in place. See [record 0016](docs/decisions/0016-restore-timeline-gate.md).
 
 ## How to run
 
@@ -47,7 +49,7 @@ You need Java 25, Docker and [Task](https://taskfile.dev).
 
 ```bash
 task dev       # run locally; Spring Boot Dev Services starts Postgres
-task test      # full suite against Testcontainers Postgres (also compiles with lint)
+task test      # full suite against Testcontainers Postgres restored from a backup (also compiles with lint)
 task verify    # everything the gate runs
 ```
 

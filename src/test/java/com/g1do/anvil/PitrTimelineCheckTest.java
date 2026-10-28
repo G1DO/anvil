@@ -4,24 +4,35 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import javax.sql.DataSource;
+
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 
 import com.g1do.anvil.jobs.CapDeniedException;
 import com.g1do.anvil.jobs.CapGrant;
 import com.g1do.anvil.jobs.ClaimedJob;
 import com.g1do.anvil.jobs.JobService;
+import com.g1do.anvil.jobs.TimelineStatus;
+import com.g1do.anvil.jobs.TimelineUnconfirmedException;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * INV-1 timeline-check repro for issue #34 bullet-1 (REQ-4 restore part).
+ * Timeline check for issue #34: the INV-1 rewind repro plus the fail-closed
+ * gate (record 0016). The real backup, clean and restore drill is
+ * {@link PitrRestoreDrillTest}.
  *
+ * <p>INV-1 repro (record 0013):
  * <p>Containerized PG only (Testcontainers {@code postgres:18}); no prod
  * restore, no base backup, no WAL replay. Simulates a PITR timeline rewind
  * by resetting the {@code jobs} row to its pre-claim state (QUEUED, prior
@@ -32,8 +43,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code docs/decisions/0013-pitr-timeline-check.md}.
  *
  * <p>Proves: stale owner/token affects 0 rows post-rewind, no double effect,
- * and cap must be re-issued (missing cap denies 403 NEEDS_APPROVAL). The
- * fail-closed timeline check itself is not built yet (#34).
+ * and cap must be re-issued (missing cap denies 403 NEEDS_APPROVAL).
+ *
+ * <p>Gate: a rewound timeline (the stored {@code db_timeline} row older than
+ * the server's, as after promotion) or an unknown one refuses claim,
+ * heartbeat and commit until leases expire and capabilities are re-issued.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -45,11 +59,22 @@ class PitrTimelineCheckTest {
     @Autowired
     JobService jobs;
 
+    @Autowired
+    DataSource dataSource;
+
     @BeforeEach
     void clean() {
         jdbc.execute("TRUNCATE TABLE job_checkpoints, audit_events, cap_grants, processed_events, outbox, attempts, jobs, document_versions, documents, artifacts");
         jdbc.execute("DELETE FROM tenants WHERE id <> 't_single'");
         jdbc.update("INSERT INTO tenants (id) VALUES ('t_single') ON CONFLICT DO NOTHING");
+    }
+
+    /** Leaves the gate open for the next test whatever this one did to it. */
+    @AfterEach
+    void reconfirm() {
+        jdbc.update("UPDATE db_timeline SET system_identifier = s.system_identifier, "
+                + "timeline_id = ('x' || substr(pg_walfile_name(pg_current_wal_lsn()), 1, 8))::bit(32)::bigint "
+                + "FROM pg_control_system() s WHERE id = 1");
     }
 
     private UUID seedQueued(String key) {
@@ -113,5 +138,128 @@ class PitrTimelineCheckTest {
         assertThat(ledger).hasSize(1);
         assertThat(ledger.get(0).get("owner")).isEqualTo("worker-fresh");
         assertThat(ledger.get(0).get("fencing_token")).isEqualTo(fresh.fencingToken());
+    }
+
+    @Test
+    void rewoundTimelineRefusesUntilLeasesExpireAndCapsAreReissued() {
+        UUID job = seedQueued("pitr-gate-" + UUID.randomUUID());
+        UUID other = seedQueued("pitr-gate-other-" + UUID.randomUUID());
+        ClaimedJob held = jobs.claim("t_single", "worker-held").orElseThrow();
+        assertThat(held.jobId()).isEqualTo(job);
+        CapGrant cap = jobs.issueCap("t_single", job);
+
+        // A restore promotes onto a new timeline; the restored row still
+        // names the old one.
+        jdbc.update("UPDATE db_timeline SET timeline_id = timeline_id - 1 WHERE id = 1");
+
+        assertThatThrownBy(() -> jobs.commitSucceeded("t_single", job, "worker-held", held.fencingToken()))
+                .isInstanceOf(TimelineUnconfirmedException.class)
+                .satisfies(e -> assertThat(((TimelineUnconfirmedException) e).getStatusCode().value())
+                        .isEqualTo(503));
+        assertThatThrownBy(() -> jobs.commitSucceeded(
+                "t_single", job, "worker-held", held.fencingToken(), cap.capId(), cap.epoch()))
+                .isInstanceOf(TimelineUnconfirmedException.class);
+        assertThatThrownBy(() -> jobs.heartbeat("t_single", job, "worker-held", held.fencingToken()))
+                .isInstanceOf(TimelineUnconfirmedException.class);
+        // Claim tries to confirm, but the held lease is still live.
+        assertThatThrownBy(() -> jobs.claim("t_single", "worker-fresh"))
+                .isInstanceOf(TimelineUnconfirmedException.class);
+        assertThat(jobs.confirmTimeline()).isEqualTo(TimelineStatus.WAITING_FOR_LEASES);
+
+        // Refusals and the waiting confirm changed nothing.
+        assertThat(state(job)).isEqualTo("RUNNING");
+        assertThat(state(other)).isEqualTo("QUEUED");
+        assertThat(token(job)).isEqualTo(held.fencingToken());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM cap_grants WHERE job_id = ?", Integer.class, job))
+                .isEqualTo(1);
+        assertThat(commitEvents(job)).isZero();
+
+        // The lease expires on the database clock; confirm reopens the gate.
+        jdbc.update("UPDATE jobs SET lease_expires_at = clock_timestamp() - INTERVAL '1 second' WHERE id = ?", job);
+        assertThat(jobs.confirmTimeline()).isEqualTo(TimelineStatus.CONFIRMED);
+        assertThat(token(job)).isEqualTo(held.fencingToken() + JobService.MAX_ATTEMPTS);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM cap_grants", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit_events WHERE job_id = ? AND type = 'cap.revoke'", Integer.class, job))
+                .isEqualTo(1);
+
+        // Every commit waits for a re-issued capability, and the old grant
+        // never matches again.
+        assertThatThrownBy(() -> jobs.commitSucceeded("t_single", job, "worker-held", held.fencingToken()))
+                .isInstanceOf(CapDeniedException.class);
+        CapGrant reissued = jobs.issueCap("t_single", job);
+        assertThat(reissued.capId()).isNotEqualTo(cap.capId());
+        assertThatThrownBy(() -> jobs.commitSucceeded(
+                "t_single", job, "worker-held", held.fencingToken(), cap.capId(), cap.epoch()))
+                .isInstanceOf(CapDeniedException.class);
+
+        // The pre-restore token now affects 0 rows.
+        assertThat(jobs.heartbeat("t_single", job, "worker-held", held.fencingToken())).isFalse();
+        assertThat(jobs.commitSucceeded("t_single", job, "worker-held", held.fencingToken())).isFalse();
+        assertThat(state(job)).isEqualTo("RUNNING");
+
+        // The job runs again under a token above any the lost timeline could
+        // have issued (held + max_attempts - attempt), and commits once.
+        jobs.reconcile("t_single");
+        ClaimedJob fresh = jobs.claim("t_single", "worker-fresh").orElseThrow();
+        assertThat(fresh.jobId()).isEqualTo(job);
+        assertThat(fresh.fencingToken())
+                .isGreaterThan(held.fencingToken() + JobService.MAX_ATTEMPTS - held.attempt());
+        assertThat(jobs.commitSucceeded("t_single", job, "worker-fresh", fresh.fencingToken())).isTrue();
+        assertThat(state(job)).isEqualTo("SUCCEEDED");
+        assertThat(commitEvents(job)).isEqualTo(1);
+    }
+
+    @Test
+    void unknownTimelineRefusesCommitsAndCannotBeConfirmed() {
+        UUID job = seedQueued("pitr-unknown-" + UUID.randomUUID());
+        ClaimedJob held = jobs.claim("t_single", "worker-held").orElseThrow();
+        jobs.issueCap("t_single", job);
+
+        try (HikariDataSource appPool = newAppPool()) {
+            JobService appJobs = new JobService(new JdbcTemplate(appPool), new DataSourceTransactionManager(appPool));
+            // A hardened server that hides pg_control from the runtime role:
+            // the timeline can't be read, so the gate stays closed.
+            jdbc.execute("REVOKE EXECUTE ON FUNCTION pg_control_system() FROM PUBLIC");
+            try {
+                assertThatThrownBy(() -> appJobs.commitSucceeded("t_single", job, "worker-held", held.fencingToken()))
+                        .isInstanceOf(TimelineUnconfirmedException.class);
+                assertThat(appJobs.confirmTimeline()).isEqualTo(TimelineStatus.UNKNOWN);
+                assertThatThrownBy(() -> appJobs.claim("t_single", "worker-app"))
+                        .isInstanceOf(TimelineUnconfirmedException.class);
+                assertThat(state(job)).isEqualTo("RUNNING");
+                assertThat(commitEvents(job)).isZero();
+            } finally {
+                jdbc.execute("GRANT EXECUTE ON FUNCTION pg_control_system() TO PUBLIC");
+            }
+            // Same role and job once the timeline is readable again.
+            assertThat(appJobs.commitSucceeded("t_single", job, "worker-held", held.fencingToken())).isTrue();
+        }
+    }
+
+    private String state(UUID job) {
+        return jdbc.queryForObject("SELECT state FROM jobs WHERE id = ?", String.class, job);
+    }
+
+    private long token(UUID job) {
+        return jdbc.queryForObject("SELECT fencing_token FROM jobs WHERE id = ?", Long.class, job);
+    }
+
+    private int commitEvents(UUID job) {
+        return jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit_events WHERE job_id = ? AND type = 'commit'", Integer.class, job);
+    }
+
+    private HikariDataSource newAppPool() {
+        if (!(dataSource instanceof HikariDataSource hikari) || hikari.getJdbcUrl() == null) {
+            throw new IllegalStateException("Hikari DataSource with JDBC URL required");
+        }
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(hikari.getJdbcUrl());
+        config.setUsername("anvil_app");
+        config.setPassword("anvil_app");
+        config.setMaximumPoolSize(2);
+        config.setPoolName("pitr-app-pool-" + UUID.randomUUID());
+        return new HikariDataSource(config);
     }
 }

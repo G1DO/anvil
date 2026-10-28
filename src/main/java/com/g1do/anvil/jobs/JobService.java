@@ -70,6 +70,16 @@ import com.g1do.anvil.tenant.TenantGuard;
  * after the commit txn commits) is residual by definition; revoke committed
  * before the commit's {@code FOR UPDATE} lock is acquired is always observed
  * because the same transaction holds the row lock across check and effect.
+ *
+ * <p>Timeline gate (issue #34, record 0016): a point-in-time restore rewinds
+ * fencing tokens and grants, so a worker from the lost timeline could hold a
+ * token or grant the restored database hands out again. Claim, heartbeat and
+ * commit first call {@link TimelineGuard#requireConfirmed}, which refuses
+ * ({@code 503 TIMELINE_UNCONFIRMED}, zero rows) while the database timeline is
+ * unknown or differs from {@code db_timeline}. {@link #confirmTimeline()}
+ * reopens the gate only once no lease is live on the database clock, after
+ * raising every open job's token past any the lost timeline could have issued
+ * and deleting every grant, so each commit waits for a re-issued capability.
  */
 @Service
 public class JobService {
@@ -206,6 +216,57 @@ public class JobService {
               AND job_id = ?
             """;
 
+    private static final String STORED_TIMELINE_SQL = """
+            SELECT system_identifier, timeline_id
+            FROM db_timeline
+            WHERE id = 1
+            FOR UPDATE
+            """;
+
+    private static final String LIVE_LEASE_SQL = """
+            SELECT EXISTS (
+              SELECT 1 FROM jobs
+              WHERE tenant_id = ?
+                AND state = 'RUNNING'
+                AND lease_expires_at > clock_timestamp()
+            )
+            """;
+
+    /**
+     * A claim needs {@code attempt < max_attempts} and raises token and
+     * attempt together, so the lost timeline issued at most
+     * {@code max_attempts - attempt} tokens past the restored one. Adding
+     * {@code max_attempts} puts every open job at or above them, and strictly
+     * above for {@code RUNNING} rows ({@code attempt >= 1}); a
+     * {@code QUEUED} row needs a fresh claim (+1) before any commit.
+     */
+    private static final String RAISE_TOKENS_SQL = """
+            UPDATE jobs
+            SET fencing_token = fencing_token + max_attempts,
+                updated_at = clock_timestamp()
+            WHERE tenant_id = ?
+              AND state IN ('QUEUED', 'RUNNING')
+            """;
+
+    /**
+     * Deleting (not revoking) grants means a re-issue creates a new grant id,
+     * so a grant id and epoch held from the lost timeline never match again.
+     */
+    private static final String DELETE_CAPS_SQL = """
+            DELETE FROM cap_grants
+            WHERE tenant_id = ?
+            RETURNING job_id, epoch
+            """;
+
+    private static final String UPSERT_TIMELINE_SQL = """
+            INSERT INTO db_timeline (id, system_identifier, timeline_id, confirmed_at)
+            VALUES (1, ?, ?, clock_timestamp())
+            ON CONFLICT (id) DO UPDATE SET
+              system_identifier = EXCLUDED.system_identifier,
+              timeline_id = EXCLUDED.timeline_id,
+              confirmed_at = EXCLUDED.confirmed_at
+            """;
+
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final SaturationSignals signals;
@@ -232,40 +293,57 @@ public class JobService {
      *         when no {@code QUEUED} job with {@code attempt < max_attempts}
      *         and an unheld/expired lease is available (includes the case where
      *         every job is terminal, running, or exhausted).
+     * @throws TimelineUnconfirmedException ({@code 503 TIMELINE_UNCONFIRMED})
+     *         when the timeline is unknown, or rewound and
+     *         {@link #confirmTimeline()} can't confirm it yet.
      */
     public Optional<ClaimedJob> claim(String tenantId, String owner) {
         String tenant = requireTenant(tenantId);
         String worker = requireOwner(owner);
         long start = System.nanoTime();
         try {
-            return tx.execute(status -> {
-                TenantGuard.setTenant(jdbc, tenant);
-                List<ClaimedJob> rows = jdbc.query(
-                        CLAIM_SQL,
-                        (rs, i) -> new ClaimedJob(
-                                (UUID) rs.getObject("id"),
-                                worker,
-                                rs.getLong("fencing_token"),
-                                rs.getInt("attempt"),
-                                rs.getObject("lease_expires_at", OffsetDateTime.class)),
-                        tenant, worker, tenant);
-                if (rows.isEmpty()) {
-                    return Optional.<ClaimedJob>empty();
+            try {
+                return claimOnce(tenant, worker);
+            } catch (TimelineUnconfirmedException e) {
+                // Workers poll claim, so the first poll after leases expire
+                // reopens the gate without an operator step.
+                if (confirmTimeline() != TimelineStatus.CONFIRMED) {
+                    throw e;
                 }
-                ClaimedJob claimed = rows.get(0);
-                jdbc.update(INSERT_ATTEMPT_SQL,
-                        tenant, claimed.jobId(), claimed.attempt(), worker, claimed.fencingToken());
-                // Same-transaction audit: attempt/owner/token/lease excluded from
-                // payload by contract; heartbeat is never logged.
-                AuditChain.append(jdbc, tenant, claimed.jobId(), AuditChain.TYPE_CLAIM,
-                        java.util.Map.of("state", "RUNNING"));
-                return Optional.of(claimed);
-            });
+                return claimOnce(tenant, worker);
+            }
         } finally {
             if (signals != null) {
                 signals.recordClaimNanos(System.nanoTime() - start);
             }
         }
+    }
+
+    private Optional<ClaimedJob> claimOnce(String tenant, String worker) {
+        return tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            TimelineGuard.requireConfirmed(jdbc);
+            List<ClaimedJob> rows = jdbc.query(
+                    CLAIM_SQL,
+                    (rs, i) -> new ClaimedJob(
+                            (UUID) rs.getObject("id"),
+                            worker,
+                            rs.getLong("fencing_token"),
+                            rs.getInt("attempt"),
+                            rs.getObject("lease_expires_at", OffsetDateTime.class)),
+                    tenant, worker, tenant);
+            if (rows.isEmpty()) {
+                return Optional.<ClaimedJob>empty();
+            }
+            ClaimedJob claimed = rows.get(0);
+            jdbc.update(INSERT_ATTEMPT_SQL,
+                    tenant, claimed.jobId(), claimed.attempt(), worker, claimed.fencingToken());
+            // Same-transaction audit: attempt/owner/token/lease excluded from
+            // payload by contract; heartbeat is never logged.
+            AuditChain.append(jdbc, tenant, claimed.jobId(), AuditChain.TYPE_CLAIM,
+                    java.util.Map.of("state", "RUNNING"));
+            return Optional.of(claimed);
+        });
     }
 
     /**
@@ -274,6 +352,9 @@ public class JobService {
      * {@code lease_expires_at > clock_timestamp()}.
      *
      * @return {@code true} when exactly one row was extended.
+     * @throws TimelineUnconfirmedException ({@code 503 TIMELINE_UNCONFIRMED})
+     *         while the timeline is unknown or rewound, so a lost-timeline
+     *         worker can't keep a restored lease alive.
      */
     public boolean heartbeat(String tenantId, UUID jobId, String owner, long fencingToken) {
         String tenant = requireTenant(tenantId);
@@ -281,6 +362,7 @@ public class JobService {
         requireJobId(jobId);
         Boolean ok = tx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
+            TimelineGuard.requireConfirmed(jdbc);
             int updated = jdbc.update(HEARTBEAT_SQL, jobId, tenant, worker, fencingToken);
             return updated == 1;
         });
@@ -301,6 +383,8 @@ public class JobService {
      * @return {@code true} when exactly one row transitioned.
      * @throws CapDeniedException ({@code 403 NEEDS_APPROVAL}) when no valid
      *         capability authorizes this commit.
+     * @throws TimelineUnconfirmedException ({@code 503 TIMELINE_UNCONFIRMED})
+     *         while the timeline is unknown or rewound.
      */
     public boolean commitSucceeded(String tenantId, UUID jobId, String owner, long fencingToken) {
         return commit(tenantId, jobId, owner, fencingToken, "SUCCEEDED");
@@ -313,6 +397,8 @@ public class JobService {
      * @return {@code true} when exactly one row transitioned.
      * @throws CapDeniedException ({@code 403 NEEDS_APPROVAL}) when no valid
      *         capability authorizes this commit.
+     * @throws TimelineUnconfirmedException ({@code 503 TIMELINE_UNCONFIRMED})
+     *         while the timeline is unknown or rewound.
      */
     public boolean commitFailed(String tenantId, UUID jobId, String owner, long fencingToken) {
         return commit(tenantId, jobId, owner, fencingToken, "FAILED");
@@ -328,6 +414,8 @@ public class JobService {
      * @return {@code true} when exactly one row transitioned.
      * @throws CapDeniedException ({@code 403 NEEDS_APPROVAL}) on missing,
      *         revoked, expired, superseded, or cross-tenant capability.
+     * @throws TimelineUnconfirmedException ({@code 503 TIMELINE_UNCONFIRMED})
+     *         while the timeline is unknown or rewound.
      */
     public boolean commitSucceeded(
             String tenantId, UUID jobId, String owner, long fencingToken, UUID capId, long capEpoch) {
@@ -340,6 +428,8 @@ public class JobService {
      * @return {@code true} when exactly one row transitioned.
      * @throws CapDeniedException ({@code 403 NEEDS_APPROVAL}) on missing,
      *         revoked, expired, superseded, or cross-tenant capability.
+     * @throws TimelineUnconfirmedException ({@code 503 TIMELINE_UNCONFIRMED})
+     *         while the timeline is unknown or rewound.
      */
     public boolean commitFailed(
             String tenantId, UUID jobId, String owner, long fencingToken, UUID capId, long capEpoch) {
@@ -352,6 +442,7 @@ public class JobService {
         requireJobId(jobId);
         Boolean ok = tx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
+            TimelineGuard.requireConfirmed(jdbc);
             requireCurrentGrantValid(tenant, jobId);
             int updated = jdbc.update(COMMIT_SQL_PREFIX, targetState, jobId, tenant, worker, fencingToken);
             if (updated == 1) {
@@ -375,6 +466,7 @@ public class JobService {
         }
         Boolean ok = tx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
+            TimelineGuard.requireConfirmed(jdbc);
             requirePresentedGrantValid(tenant, jobId, capId, capEpoch);
             int updated = jdbc.update(COMMIT_SQL_PREFIX, targetState, jobId, tenant, worker, fencingToken);
             if (updated == 1) {
@@ -574,6 +666,57 @@ public class JobService {
             capRejected.incrementAndGet();
             throw new CapDeniedException("expired");
         }
+    }
+
+    /**
+     * Confirms the database timeline after a restore (issue #34, record 0016).
+     *
+     * <p>One transaction, so the gate reopens only together with its fix-ups:
+     * lock the {@code db_timeline} row (serializing concurrent confirms);
+     * when it already matches the server, return {@code CONFIRMED}. Otherwise,
+     * per tenant under {@link TenantGuard#setTenant} (each statement keeps a
+     * single tenant context and {@code WHERE tenant_id}), roll back with
+     * {@code WAITING_FOR_LEASES} if any lease is live on the database clock;
+     * else raise open jobs' fencing tokens by {@code max_attempts} and delete
+     * every grant, auditing each as {@code cap.revoke}. Finally store the
+     * server's pair. An unreadable timeline returns {@code UNKNOWN} and
+     * changes nothing.
+     */
+    public TimelineStatus confirmTimeline() {
+        return tx.execute(status -> {
+            Optional<TimelineGuard.Timeline> current = TimelineGuard.current(jdbc);
+            if (current.isEmpty()) {
+                status.setRollbackOnly();
+                return TimelineStatus.UNKNOWN;
+            }
+            TimelineGuard.Timeline server = current.get();
+            List<TimelineGuard.Timeline> stored = jdbc.query(STORED_TIMELINE_SQL,
+                    (rs, i) -> new TimelineGuard.Timeline(
+                            rs.getLong("system_identifier"), rs.getLong("timeline_id")));
+            if (stored.equals(List.of(server))) {
+                return TimelineStatus.CONFIRMED;
+            }
+            List<String> tenants = jdbc.query("SELECT id FROM tenants", (rs, i) -> rs.getString("id"));
+            for (String tenant : tenants) {
+                TenantGuard.setTenant(jdbc, tenant);
+                if (Boolean.TRUE.equals(jdbc.queryForObject(LIVE_LEASE_SQL, Boolean.class, tenant))) {
+                    status.setRollbackOnly();
+                    return TimelineStatus.WAITING_FOR_LEASES;
+                }
+                jdbc.update(RAISE_TOKENS_SQL, tenant);
+                record Deleted(UUID jobId, long epoch) {
+                }
+                List<Deleted> deleted = jdbc.query(DELETE_CAPS_SQL,
+                        (rs, i) -> new Deleted((UUID) rs.getObject("job_id"), rs.getLong("epoch")),
+                        tenant);
+                for (Deleted grant : deleted) {
+                    AuditChain.append(jdbc, tenant, grant.jobId(), AuditChain.TYPE_CAP_REVOKE,
+                            java.util.Map.of("epoch", grant.epoch()));
+                }
+            }
+            jdbc.update(UPSERT_TIMELINE_SQL, server.systemIdentifier(), server.timelineId());
+            return TimelineStatus.CONFIRMED;
+        });
     }
 
     /**
