@@ -83,9 +83,9 @@ class PitrRestoreDrillTest {
             UUID jobC = seedQueued(jdbc, "t_single", "c");
             OffsetDateTime lastWrite = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
             drill.archiveWal();
-            drill.crash();
 
             long failedAt = System.nanoTime();
+            drill.crash();
             drill.clean();
             drill.restoreToTarget();
             long restoredAt = System.nanoTime();
@@ -219,6 +219,42 @@ class PitrRestoreDrillTest {
                     Duration.ofNanos(confirmedAt - restoredAt).toMillis(),
                     Duration.ofNanos(firstCommitAt - confirmedAt).toMillis(),
                     rpo.toMillis(), lastWrite);
+        }
+    }
+
+    /**
+     * A database from before V6, restored or not, must not come out of the
+     * migration confirmed: its tokens and grants may predate a restore.
+     */
+    @Test
+    void databaseFromBeforeTheGateStaysClosedAfterMigratingToV6() {
+        try (PitrDrill drill = new PitrDrill()) {
+            drill.start();
+            drill.migrate("5");
+            JdbcTemplate jdbc = drill.jdbc();
+            UUID job = seedQueued(jdbc, "t_single", "pre-v6");
+            jdbc.update("UPDATE jobs SET state = 'RUNNING', owner = 'worker-old', fencing_token = 1, attempt = 1, "
+                    + "lease_expires_at = clock_timestamp() + INTERVAL '1 hour' WHERE id = ?", job);
+            jdbc.update("INSERT INTO cap_grants (tenant_id, job_id, expires_at) "
+                    + "VALUES ('t_single', ?, clock_timestamp() + INTERVAL '1 hour')", job);
+
+            drill.migrate();
+            JobService jobs = drill.jobs();
+
+            assertThatThrownBy(() -> jobs.commitSucceeded("t_single", job, "worker-old", 1L))
+                    .isInstanceOf(TimelineUnconfirmedException.class);
+            assertThatThrownBy(() -> jobs.heartbeat("t_single", job, "worker-old", 1L))
+                    .isInstanceOf(TimelineUnconfirmedException.class);
+            assertThat(jobs.confirmTimeline()).isEqualTo(TimelineStatus.WAITING_FOR_LEASES);
+            assertThat(state(jdbc, job)).isEqualTo("RUNNING");
+
+            jdbc.update("UPDATE jobs SET lease_expires_at = clock_timestamp() - INTERVAL '1 second' WHERE id = ?", job);
+            assertThat(jobs.confirmTimeline()).isEqualTo(TimelineStatus.CONFIRMED);
+            assertThatThrownBy(() -> jobs.commitSucceeded("t_single", job, "worker-old", 1L))
+                    .isInstanceOf(CapDeniedException.class);
+            jobs.issueCap("t_single", job);
+            assertThat(jobs.commitSucceeded("t_single", job, "worker-old", 1L)).isFalse();
+            assertThat(state(jdbc, job)).isEqualTo("RUNNING");
         }
     }
 

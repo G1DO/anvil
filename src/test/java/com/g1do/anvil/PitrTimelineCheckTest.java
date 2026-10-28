@@ -219,7 +219,19 @@ class PitrTimelineCheckTest {
         try (HikariDataSource appPool = newAppPool()) {
             JobService appJobs = new JobService(new JdbcTemplate(appPool), new DataSourceTransactionManager(appPool));
             // A hardened server that hides pg_control from the runtime role:
-            // the timeline can't be read, so the gate stays closed.
+            // the timeline can't be read, so the gate stays closed. The test
+            // starts from PUBLIC holding EXECUTE with no grant to anvil_app,
+            // and the finally block puts that back.
+            assertThat(jdbc.queryForObject("""
+                    SELECT proacl IS NULL OR (
+                      EXISTS (SELECT 1 FROM aclexplode(proacl) a
+                              WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE')
+                      AND NOT EXISTS (SELECT 1 FROM aclexplode(proacl) a
+                                      WHERE a.grantee = 'anvil_app'::regrole))
+                    FROM pg_proc WHERE oid = 'pg_control_system()'::regprocedure
+                    """, Boolean.class))
+                    .as("PUBLIC executes pg_control_system() and anvil_app has no grant of its own")
+                    .isTrue();
             jdbc.execute("REVOKE EXECUTE ON FUNCTION pg_control_system() FROM PUBLIC");
             try {
                 assertThatThrownBy(() -> appJobs.commitSucceeded("t_single", job, "worker-held", held.fencingToken()))
@@ -230,6 +242,8 @@ class PitrTimelineCheckTest {
                 assertThat(state(job)).isEqualTo("RUNNING");
                 assertThat(commitEvents(job)).isZero();
             } finally {
+                // The default ACL lets PUBLIC execute, so this restores the
+                // baseline privileges asserted above.
                 jdbc.execute("GRANT EXECUTE ON FUNCTION pg_control_system() TO PUBLIC");
             }
             // Same role and job once the timeline is readable again.

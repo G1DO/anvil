@@ -681,6 +681,9 @@ public class JobService {
      * every grant, auditing each as {@code cap.revoke}. Finally store the
      * server's pair. An unreadable timeline returns {@code UNKNOWN} and
      * changes nothing.
+     *
+     * <p>Database-wide: the timeline belongs to the whole database, so one
+     * call, from any tenant's claim, waits on and fixes up every tenant.
      */
     public TimelineStatus confirmTimeline() {
         return tx.execute(status -> {

@@ -12,7 +12,10 @@
 --   * timeline_id is the first 8 hex digits of the current WAL file name: the
 --     insert timeline, which changes at promotion, before any checkpoint.
 --   * Not tenant-scoped: no tenant_id and no RLS, like tenants.
---   * Seeded with the server's current pair, so a fresh database is confirmed.
+--   * Not seeded. A missing row refuses like a mismatch, so a database migrated
+--     to V6 from a backup taken before V6 (restored onto a new timeline) stays
+--     closed until confirmTimeline runs its fix-ups. On a fresh database the
+--     first claim confirms it, with nothing to fix.
 CREATE TABLE db_timeline (
     id SMALLINT PRIMARY KEY CHECK (id = 1),
     system_identifier BIGINT NOT NULL,
@@ -24,8 +27,3 @@ CREATE TABLE db_timeline (
 -- and commit and upserts it on confirm.
 ALTER TABLE db_timeline OWNER TO anvil_migrator;
 GRANT SELECT, INSERT, UPDATE ON TABLE db_timeline TO anvil_app;
-
-INSERT INTO db_timeline (id, system_identifier, timeline_id)
-SELECT 1, s.system_identifier,
-       ('x' || substr(pg_walfile_name(pg_current_wal_lsn()), 1, 8))::bit(32)::bigint
-FROM pg_control_system() s;

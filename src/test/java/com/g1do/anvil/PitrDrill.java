@@ -127,6 +127,11 @@ final class PitrDrill implements AutoCloseable {
         Flyway.configure().dataSource(dataSource).load().migrate();
     }
 
+    /** Migrates up to and including {@code version}. */
+    void migrate(String version) {
+        Flyway.configure().dataSource(dataSource).target(version).load().migrate();
+    }
+
     void baseBackup() {
         sh("gosu postgres pg_basebackup -N -D /drill/base -U " + USER + " -c fast");
     }
