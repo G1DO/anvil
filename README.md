@@ -48,7 +48,7 @@ Not yet guaranteed: a target for recovery time or data loss (the drill measures 
 You need Java 25, Docker and [Task](https://taskfile.dev).
 
 ```bash
-task dev       # run locally; Spring Boot Dev Services starts Postgres
+task dev       # run locally; starts no Postgres, and startup fails without a configured datasource
 task test      # full suite against Testcontainers Postgres restored from a backup (also compiles with lint)
 task verify    # everything the gate runs
 ```
