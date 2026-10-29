@@ -43,6 +43,25 @@ Each guarantee links to the tests that prove it. All tests run against real Post
 
 Not yet guaranteed: a target for recovery time or data loss (the drill measures them; it doesn't promise them), or detecting a restore that keeps the database timeline, such as a storage snapshot rolled back in place. See [record 0016](docs/decisions/0016-restore-timeline-gate.md).
 
+## Success
+
+Success is measured by the guarantees above. Each measure names the test that shows it.
+
+- A duplicate submit returns the same IDs and creates one job: [`SubmitIdempotencyTest`](src/test/java/com/g1do/anvil/SubmitIdempotencyTest.java).
+- Two workers never claim the same job, and a stale or zombie worker affects 0 rows: [`JobServiceTest`](src/test/java/com/g1do/anvil/JobServiceTest.java).
+- A relay crash between publish and mark re-publishes an event that applies once: [`OutboxRelayTest`](src/test/java/com/g1do/anvil/OutboxRelayTest.java).
+- A crash during a content write or garbage collection never serves a torn file: [`ContentStoreTest`](src/test/java/com/g1do/anvil/ContentStoreTest.java).
+- The database enforces tenant isolation with pooled connections and cached plans, with 0 leaks: [`RlsLeakTest`](src/test/java/com/g1do/anvil/RlsLeakTest.java).
+- The 28-case read matrix and the audit reads show 0 cross-tenant leaks: [`ReadIsolationTest`](src/test/java/com/g1do/anvil/ReadIsolationTest.java), [`AuditReadIsolationTest`](src/test/java/com/g1do/anvil/AuditReadIsolationTest.java).
+- A capability revoked mid-run blocks the commit (0 rows, `403 NEEDS_APPROVAL`): [`CapRevokeMidRunTest`](src/test/java/com/g1do/anvil/CapRevokeMidRunTest.java).
+- Jailed execution cannot see another tenant's files or reach the network: [`ExecJailTest`](src/test/java/com/g1do/anvil/ExecJailTest.java).
+- A job replays bit-for-bit from its audit chain, and a corrupted, dropped or re-linked event is detected: [`AuditChainTest`](src/test/java/com/g1do/anvil/AuditChainTest.java), [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java).
+- A seeded fencing break is caught in under 500 simulator runs: [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
+- The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java).
+- Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
+- An unconfirmed or rewound database timeline refuses claims, heartbeats and commits: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java).
+- A backup, clean and point-in-time restore reports its measured recovery time and data loss, with no target claimed: [`PitrRestoreDrillTest`](src/test/java/com/g1do/anvil/PitrRestoreDrillTest.java).
+
 ## How to run
 
 You need Java 25, Docker and [Task](https://taskfile.dev).
