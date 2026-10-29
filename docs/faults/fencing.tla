@@ -74,6 +74,10 @@ Init ==
 
 LiveLease == jobLease > clock
 
+\* TLC state constraint (CONSTRAINT in fencing.cfg): Tick is always enabled,
+\* so without a bound the clock, and the state space, never stop growing.
+ClockBound == clock <= 6
+
 Claimable ==
     /\ jobState = "QUEUED"
     /\ jobAttempt < MaxAttempts
