@@ -53,7 +53,7 @@ A multi-tenant job service. Tenants submit documents, jobs run and commit result
 Not fully. These risks are accepted for now:
 
 - **The jail is minimal** (#73). It has no mount, user or network namespace, so native code can reach `../sibling` or `/tmp`. Interpreter `-c`, workspace binaries, `/proc` and symlink races bypass the argv allowlist, which is why `run` is for trusted callers only. Egress has no DNS-rebind re-check and no network-layer drop. Non-canonical IPs are denied without being decoded, and there's no full SSRF matrix.
-- **The leak matrix is reduced** (#74). RLS leak tests cover pool and plan-cache reuse on a reduced matrix, not every table and query path.
+- **The leak matrix leaves out sweeps.** `RlsLeakTest` interleaves two tenants on one pool across all 10 tenant-scoped tables and the submit, claim, heartbeat, commit, capability, relay, read, search, audit read, replay and CAS paths (#74). Reconcile and garbage collection sweep every tenant by design and aren't in the matrix.
 - **Replay cost grows with chain length** (#76). Replay re-verifies the whole chain, so a long chain makes it slow (chain DoS).
 - **Some restores aren't detected** (#34, record 0016). A storage snapshot rolled back in place, or a base backup started without `recovery.signal`, keeps the timeline, so the gate stays open. Effects outside the database from after the restore target can repeat, and the old primary must be gone before the restored one serves.
 - **A time-of-check gap after each grant check.** A revoke that lands after a commit's grant check takes effect from the next commit.
