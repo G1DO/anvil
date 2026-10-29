@@ -35,6 +35,7 @@ Each guarantee links to the tests that prove it. All tests run against real Post
 4. **Fencing holds under real faults.**
    - A deterministic simulator catches each seeded fencing break in under 500 runs: [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
    - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java). It mirrors [`docs/faults/fencing.tla`](docs/faults/fencing.tla).
+   - TLC model-checks [`docs/faults/fencing.tla`](docs/faults/fencing.tla) on every gate run, with TLC pinned to 1.7.4 and a SHA-256 check. The job is `tla` in [`gate.yml`](.github/workflows/gate.yml) and runs `task check:tla`. Its runs are on the [gate workflow page](https://github.com/G1DO/anvil/actions/workflows/gate.yml).
    - Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
    - A simulated point-in-time restore that rewinds the epoch lets a stale owner affect 0 rows with no double effect: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0013](docs/decisions/0013-pitr-timeline-check.md).
    - When the database timeline is unknown or rewound, claims, heartbeats and commits are refused (`503 TIMELINE_UNCONFIRMED`) until leases expire and capabilities are re-issued: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0016](docs/decisions/0016-restore-timeline-gate.md).

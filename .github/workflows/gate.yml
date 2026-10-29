@@ -96,6 +96,19 @@ jobs:
           version: 3.54.0
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: task check:diagrams
+  tla:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25.0.3'
+      - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        with:
+          version: 3.54.0
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: task check:tla
   pr-description:
     runs-on: ubuntu-latest
     steps:
@@ -118,7 +131,7 @@ jobs:
   gate:
     # always(): a skipped or cancelled gate would count as passing for the required check.
     if: ${{ always() }}
-    needs: [test, build, sast, secrets-scan, audit, contract-check, arch-validate, pr-description]
+    needs: [test, build, sast, secrets-scan, audit, contract-check, arch-validate, tla, pr-description]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded (skipped or cancelled counts as failure)
