@@ -4,6 +4,8 @@ vars:
   BASE: origin/main
   MERMERD_VERSION: 0.13.0
   MERMERD_SHA256: 20d2f052e34f23dc0b0094fd964bd729b35d6331df41666a7fd5c37e278a1e90
+  TLC_VERSION: 1.7.4
+  TLC_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
 
 tasks:
   dev:
@@ -148,6 +150,17 @@ tasks:
         done
       - grep -r --include='*.md' '```mermaid' docs/ && exit 1 || exit 0
 
+  check:tla:
+    desc: "Model-check docs/faults/fencing.tla with TLC {{.TLC_VERSION}} (SHA-256 pinned); fails on a violation or a parse error"
+    cmds:
+      - |
+        set -e
+        mkdir -p .bin target
+        jar=.bin/tla2tools-{{.TLC_VERSION}}.jar
+        [ -f "$jar" ] || curl -fsSL -o "$jar" https://github.com/tlaplus/tlaplus/releases/download/v{{.TLC_VERSION}}/tla2tools.jar
+        echo "{{.TLC_SHA256}}  $jar" | sha256sum -c -
+        java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -metadir target/tlc -config docs/faults/fencing.cfg docs/faults/fencing.tla
+
   diagrams:
     desc: "Generate docs/architecture/data-model.mmd (not committed) with mermerd from the compose database"
     cmds:
@@ -176,3 +189,4 @@ tasks:
       - task check:secrets
       - task check:audit
       - task check:diagrams
+      - task check:tla

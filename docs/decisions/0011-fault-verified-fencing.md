@@ -22,8 +22,9 @@ test-only (no `src/main` change):
 - Model (`docs/faults/fencing.tla`, `FenceModelTest`): claim, heartbeat,
   commit, zombie-resume, relay re-publish dedupe; asserts
   single-holder-per-live-token and no double effect over 1800 exhaustive states
-  (maxDepth 8). TLC binary not run offline; Java checker mirrors the spec
-  action-for-action; output in `docs/faults/tlc-output.log`.
+  (maxDepth 8). TLC was not run when this was accepted; #103 runs it in the gate
+  (`task check:tla`), and its output is recorded in the PR, not committed. Java
+  checker mirrors the spec action-for-action.
 - Sim (`FenceSimTest`): seeded `BROKEN_FENCE` (ignores token), `BROKEN_LEASE`
   (no lease, non-atomic double claim), `BROKEN_RELAY` (mark-before-publish
   loss), each detected in under 500 runs (0/1/0) with seed + trace in

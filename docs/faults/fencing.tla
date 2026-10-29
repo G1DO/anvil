@@ -28,11 +28,12 @@
  *    allowing double claim (lease unenforced).
  *  - BrokenRelay: mark before publish; publish throw loses the event.
  *
- * TLC: run with 1 job, 2 workers, clock 0..6. TLC is not run; FenceModelTest
- * is the exhaustive Java checker that mirrors this spec.
+ * TLC: `task check:tla` runs it in the gate with fencing.cfg: 1 job, 2 workers,
+ * 2 attempts, lease 2, clock 0..6. FenceModelTest is a separate Java checker that
+ * mirrors this spec with 5 attempts and lease 10.
  *)
 
-EXTENDS Naturals, FiniteSets, Sequences, TLC
+EXTENDS Naturals, Integers, FiniteSets, Sequences, TLC
 
 CONSTANTS Workers, MaxAttempts, LeaseTTL
 
