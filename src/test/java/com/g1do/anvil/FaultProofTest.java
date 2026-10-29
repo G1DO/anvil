@@ -13,6 +13,7 @@ import javax.sql.DataSource;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
@@ -46,9 +47,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   single apply;</li>
  *   <li>dupe: redelivery applies once, fresh consumer still dedupes.</li>
  * </ul>
+ *
+ * <p>Part of the weekly real-Postgres fault runs (issue #78); a failure writes
+ * a report for the run's issue ({@link FaultReport}).
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
+@ExtendWith(FaultReport.class)
 class FaultProofTest {
 
     @Autowired

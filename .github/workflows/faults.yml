@@ -1,0 +1,105 @@
+name: faults
+on:
+  schedule:
+    - cron: '17 3 * * *' # nightly: 100 simulator runs
+    - cron: '41 4 * * 0' # weekly, Sunday: 5 real-Postgres fault runs
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Which runs to start
+        type: choice
+        options: [sim, pg, both]
+        default: sim
+      seed_break:
+        description: Run a broken simulator variant on purpose, to check that a failed run opens an issue
+        type: choice
+        options: [none, BROKEN_FENCE, BROKEN_LEASE, BROKEN_RELAY]
+        default: none
+permissions:
+  contents: read
+concurrency:
+  group: faults-${{ github.event.schedule || github.run_id }}
+  cancel-in-progress: false
+# Every job runs the same `task` command a developer runs locally.
+# Each run draws a fresh seed (the run ID); a failure writes its seed and trace
+# to target/fault-runs/, and the report job opens an issue from them. Only the
+# report job, which runs no build or tests, can write issues.
+jobs:
+  sim:
+    if: ${{ github.event.schedule == '17 3 * * *' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'pg') }}
+    runs-on: ubuntu-latest
+    env:
+      FAULT_SEED: ${{ github.run_id }}
+      FAULT_SIM_RUNS: '100'
+      FAULT_SIM_BREAK: ${{ inputs.seed_break != 'none' && inputs.seed_break || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25.0.3'
+          cache: maven
+      - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        with:
+          version: 3.54.0
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: task faults:sim
+      - if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fault-runs-sim
+          path: target/fault-runs/
+          if-no-files-found: ignore
+  pg:
+    if: ${{ github.event.schedule == '41 4 * * 0' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'sim') }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2, 3, 4, 5]
+    env:
+      FAULT_SEED: ${{ github.run_id }}${{ matrix.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25.0.3'
+          cache: maven
+      - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        with:
+          version: 3.54.0
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: task faults:pg
+      - if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fault-runs-pg-${{ matrix.run }}
+          path: target/fault-runs/
+          if-no-files-found: ignore
+  report:
+    needs: [sim, pg]
+    # failure(): a needed job failed; a skipped one (the other schedule) doesn't count.
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        # A run that failed before any fault case wrote a report still gets an issue.
+        continue-on-error: true
+        with:
+          pattern: fault-runs-*
+          path: target/fault-runs
+          merge-multiple: true
+      - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        with:
+          version: 3.54.0
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Open an issue with the seed and trace
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: task faults:issue
