@@ -138,7 +138,7 @@ class FaultProofTest {
         String javaBin = javaBinary();
         String classpath = System.getProperty("java.class.path");
         Process child = new ProcessBuilder(javaBin, "-cp", classpath,
-                RelayCrashChild.class.getName(), coords[0], coords[1], coords[2])
+                RelayCrashChild.class.getName(), coords[0], coords[1], coords[2], "t_single")
                 .redirectErrorStream(true)
                 .start();
         StringBuilder childOutput = new StringBuilder();

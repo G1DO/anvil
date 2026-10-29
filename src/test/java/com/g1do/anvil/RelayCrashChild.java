@@ -10,8 +10,9 @@ import java.util.UUID;
  * Real-crash relay worker for issue #14.
  *
  * <p>Mimics the production relay boundary without ever advancing it:
- * poll ({@code WHERE sent_at IS NULL ORDER BY id LIMIT 1} in its own
- * auto-commit read) -&gt; publish ({@code INSERT INTO processed_events
+ * poll ({@code WHERE tenant_id = ? AND sent_at IS NULL ORDER BY id LIMIT 1}
+ * for the tenant given on the command line, in its own auto-commit read) -&gt;
+ * publish ({@code INSERT INTO processed_events
  * ON CONFLICT DO NOTHING} in a second auto-commit write) -&gt; sleep
  * forever instead of {@code UPDATE outbox SET sent_at}.
  *
@@ -26,14 +27,15 @@ import java.util.UUID;
 public class RelayCrashChild {
 
     public static void main(String[] args) throws Exception {
-        if (args.length < 3) {
-            System.err.println("usage: RelayCrashChild <jdbcUrl> <username> <password>");
+        if (args.length < 4) {
+            System.err.println("usage: RelayCrashChild <jdbcUrl> <username> <password> <tenantId>");
             System.exit(2);
             return;
         }
         String jdbcUrl = args[0];
         String username = args[1];
         String password = args[2];
+        String tenant = args[3];
         if ("__NULL__".equals(password)) {
             password = null;
         }
@@ -46,17 +48,19 @@ public class RelayCrashChild {
             UUID jobId;
             try (PreparedStatement poll = conn.prepareStatement(
                     "SELECT id, tenant_id, job_id FROM outbox "
-                            + "WHERE sent_at IS NULL ORDER BY id LIMIT 1");
-                    ResultSet rs = poll.executeQuery()) {
-                if (!rs.next()) {
-                    System.out.println("NO_WORK");
-                    System.out.flush();
-                    System.exit(3);
-                    return;
+                            + "WHERE tenant_id = ? AND sent_at IS NULL ORDER BY id LIMIT 1")) {
+                poll.setString(1, tenant);
+                try (ResultSet rs = poll.executeQuery()) {
+                    if (!rs.next()) {
+                        System.out.println("NO_WORK");
+                        System.out.flush();
+                        System.exit(3);
+                        return;
+                    }
+                    eventId = (UUID) rs.getObject("id");
+                    tenantId = rs.getString("tenant_id");
+                    jobId = (UUID) rs.getObject("job_id");
                 }
-                eventId = (UUID) rs.getObject("id");
-                tenantId = rs.getString("tenant_id");
-                jobId = (UUID) rs.getObject("job_id");
             }
 
             try (PreparedStatement claim = conn.prepareStatement(

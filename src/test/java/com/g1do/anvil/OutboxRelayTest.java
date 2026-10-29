@@ -205,7 +205,7 @@ class OutboxRelayTest {
         // RuntimeException above with a real OS kill of a relay subprocess
         // between publish and mark.
         //
-        // Kill mechanism: RelayCrashChild polls one unsent row, INSERTs the
+        // Kill mechanism: RelayCrashChild polls one unsent row for its tenant, INSERTs the
         // processed_events effect, prints PUBLISHED, then sleeps 60s instead
         // of running UPDATE outbox SET sent_at. The parent waits until the
         // effect is durable (SELECT COUNT(*) ... == 1), then kills the child
@@ -231,7 +231,7 @@ class OutboxRelayTest {
         Process child = new ProcessBuilder(
                 javaBin, "-cp", classpath,
                 RelayCrashChild.class.getName(),
-                coords[0], coords[1], coords[2])
+                coords[0], coords[1], coords[2], "t_single")
                 .redirectErrorStream(true)
                 .start();
         StringBuilder childOutput = new StringBuilder();
@@ -304,6 +304,82 @@ class OutboxRelayTest {
             // Idempotency still lives in the DB, not relay memory.
             IdempotentConsumer fresh = new IdempotentConsumer(jdbc, txManager);
             assertThat(fresh.consume(redelivered)).isFalse();
+        } finally {
+            if (child.isAlive()) {
+                child.destroyForcibly();
+            }
+        }
+    }
+
+    @Test
+    void relayKillPublishesOnlyTheKilledRelaysTenantRow() throws Exception {
+        // Issue #72: the crash child polls for the tenant it is given, as
+        // OutboxRelay does. Outbox ids are random, so the other tenant's row is
+        // pinned to the smallest id: an unfiltered poll would take it first.
+        jdbc.update("INSERT INTO tenants (id) VALUES ('t_other') ON CONFLICT DO NOTHING");
+        submitOne("relay-kill-own-" + UUID.randomUUID());
+        submitService.submit("t_other", "relay-kill-other-" + UUID.randomUUID(), "Other", "text/plain", "body-other");
+        UUID otherEventId = UUID.fromString("00000000-0000-0000-0000-000000000001");
+        UUID ownEventId = UUID.fromString("00000000-0000-0000-0000-000000000002");
+        jdbc.update("UPDATE outbox SET id = ? WHERE tenant_id = 't_other'", otherEventId);
+        jdbc.update("UPDATE outbox SET id = ? WHERE tenant_id = 't_single'", ownEventId);
+
+        String[] coords = dbCoords();
+        Process child = new ProcessBuilder(javaBinary(), "-cp", System.getProperty("java.class.path"),
+                RelayCrashChild.class.getName(), coords[0], coords[1], coords[2], "t_single")
+                .redirectErrorStream(true)
+                .start();
+        try {
+            // Wait until the child has published (or died), then kill it before its mark.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+            while (child.isAlive() && System.nanoTime() < deadline) {
+                Integer published = jdbc.queryForObject("SELECT COUNT(*) FROM processed_events", Integer.class);
+                if (published != null && published > 0) {
+                    break;
+                }
+                Thread.sleep(100L);
+            }
+            killNineOrDestroy(child);
+            assertThat(child.waitFor(10, TimeUnit.SECONDS)).isTrue();
+
+            // The killed relay published its own tenant's row and nothing else.
+            assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM processed_events WHERE event_id = ? AND tenant_id = 't_single'",
+                    Integer.class, ownEventId)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM processed_events WHERE tenant_id = 't_other'",
+                    Integer.class)).isEqualTo(0);
+            assertThat(outboxRow(ownEventId).get("sent_at")).isNull();
+            assertThat(outboxRow(otherEventId).get("sent_at")).isNull();
+
+            // A restarted relay drains both tenants; the other tenant's effect applies once.
+            RecordingPublisher restarted = new RecordingPublisher(consumer);
+            assertThat(relay.relayOnce(restarted::publish)).isEqualTo(2);
+            assertThat(restarted.applyCount.get()).isEqualTo(1);
+            assertThat(outboxRow(ownEventId).get("sent_at")).isNotNull();
+            assertThat(outboxRow(otherEventId).get("sent_at")).isNotNull();
+        } finally {
+            if (child.isAlive()) {
+                child.destroyForcibly();
+            }
+        }
+    }
+
+    @Test
+    void crashChildExitsWithUsageWhenNoTenantIsGiven() throws Exception {
+        // Issue #72: the child polls only for a tenant it is given. Without one
+        // it prints usage and exits before it reads the outbox.
+        String[] coords = dbCoords();
+        Process child = new ProcessBuilder(javaBinary(), "-cp", System.getProperty("java.class.path"),
+                RelayCrashChild.class.getName(), coords[0], coords[1], coords[2])
+                .redirectErrorStream(true)
+                .start();
+        try {
+            assertThat(child.waitFor(10, TimeUnit.SECONDS))
+                    .as("child without a tenant exits promptly")
+                    .isTrue();
+            assertThat(child.exitValue()).isEqualTo(2);
+            String output = new String(child.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertThat(output).contains("usage: RelayCrashChild");
         } finally {
             if (child.isAlive()) {
                 child.destroyForcibly();
