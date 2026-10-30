@@ -37,6 +37,10 @@ Each guarantee links to the tests that prove it. All tests run against real Post
    - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java). It mirrors [`docs/faults/fencing.tla`](docs/faults/fencing.tla).
    - TLC model-checks [`docs/faults/fencing.tla`](docs/faults/fencing.tla) on every gate run, with TLC pinned to 1.7.4 and a SHA-256 check. The job is `tla` in [`gate.yml`](.github/workflows/gate.yml) and runs `task check:tla`. Its runs are on the [gate workflow page](https://github.com/G1DO/anvil/actions/workflows/gate.yml).
    - Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
+- Each of the nine fault-matrix cases shows a single effect and no lost work: [`FaultMatrixTest`](src/test/java/com/g1do/anvil/FaultMatrixTest.java).
+- A failed scheduled fault run opens an issue with its seed and trace: [`FaultScheduleTest`](src/test/java/com/g1do/anvil/FaultScheduleTest.java), [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
+   - The real-Postgres fault matrix covers a crash before and after the effect, a lost ack, duplicate and out-of-order delivery, a stuck lease, a GIN pending-list flush, autovacuum and connection-pool exhaustion. Each case shows a single effect and no lost work: [`FaultMatrixTest`](src/test/java/com/g1do/anvil/FaultMatrixTest.java).
+   - The [`faults`](.github/workflows/faults.yml) workflow runs the simulator 100 times nightly and the real-Postgres fault suite 5 times weekly, each from a fresh seed. A failed run opens an issue with its seed and trace: [`FaultScheduleTest`](src/test/java/com/g1do/anvil/FaultScheduleTest.java), [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java). Its runs are on the [faults workflow page](https://github.com/G1DO/anvil/actions/workflows/faults.yml).
    - A simulated point-in-time restore that rewinds the epoch lets a stale owner affect 0 rows with no double effect: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0013](docs/decisions/0013-pitr-timeline-check.md).
    - When the database timeline is unknown or rewound, claims, heartbeats and commits are refused (`503 TIMELINE_UNCONFIRMED`) until leases expire and capabilities are re-issued: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0016](docs/decisions/0016-restore-timeline-gate.md).
    - A backup → clean → point-in-time restore to a declared target reports its measured recovery time and data loss. Afterwards, tokens and grants from either side of the target affect 0 rows, a re-published event applies once, and isolation and capability checks hold: [`PitrRestoreDrillTest`](src/test/java/com/g1do/anvil/PitrRestoreDrillTest.java). The whole suite runs against a restored database.
@@ -71,7 +75,11 @@ You need Java 25, Docker and [Task](https://taskfile.dev).
 task dev       # run locally; starts no Postgres, and startup fails without a configured datasource
 task test      # full suite against Testcontainers Postgres restored from a backup (also compiles with lint)
 task verify    # everything the gate runs
+task faults:sim   # the nightly simulator runs (FAULT_SEED, FAULT_SIM_RUNS, FAULT_SIM_BREAK)
+task faults:pg    # one weekly real-Postgres fault run (FAULT_SEED)
 ```
+
+A failed fault run writes its seed, trace and rerun command to `target/fault-runs/`.
 
 To run the stack the way it's deployed:
 
@@ -111,5 +119,6 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | Threat model | [`docs/threat-model.md`](docs/threat-model.md) |
 | Fencing model (TLA+ spec) | [`docs/faults/fencing.tla`](docs/faults/fencing.tla) |
 | Gate | `.github/workflows/gate.yml`, which runs the same `task` commands as `Taskfile.yml` |
+| Scheduled fault runs | `.github/workflows/faults.yml` (`task faults:sim`, `task faults:pg`, `task faults:issue`) |
 
 The breaking-change check (`task test:contract`) watches `contracts/openapi.yaml` and `src/main/resources/db/migration/`.

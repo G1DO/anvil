@@ -161,6 +161,39 @@ tasks:
         echo "{{.TLC_SHA256}}  $jar" | sha256sum -c -
         java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -metadir target/tlc -config docs/faults/fencing.cfg docs/faults/fencing.tla
 
+  faults:sim:
+    desc: "Fault simulator: FAULT_SIM_RUNS runs (default 100) from FAULT_SEED; a violation writes its seed and trace to target/fault-runs/"
+    cmds:
+      - ./mvnw -B -ntp -Dtest='FenceSimTest#scheduledRunsKeepFencing' test
+
+  faults:pg:
+    desc: "Real-Postgres fault suite (FaultProofTest, FaultMatrixTest) from FAULT_SEED; a failure writes its seed and trace to target/fault-runs/"
+    cmds:
+      - ./mvnw -B -ntp -Dtest='FaultProofTest,FaultMatrixTest' test
+
+  faults:issue:
+    desc: "Open an issue with the seed and trace of each report in REPORTS (default target/fault-runs); needs GH_TOKEN with issues: write and RUN_URL"
+    vars:
+      REPORTS: '{{.REPORTS | default "target/fault-runs"}}'
+    cmds:
+      - |
+        set -e
+        mkdir -p target
+        body=target/fault-issue.md
+        seeds=$(sed -n 's/^Seed: `\(.*\)`$/\1/p' {{.REPORTS}}/*.md 2>/dev/null | paste -sd, -)
+        {
+          echo "A scheduled fault run failed: ${RUN_URL:?RUN_URL is required}"
+          echo
+          if [ -n "$seeds" ]; then
+            cat {{.REPORTS}}/*.md
+          else
+            echo "No fault case wrote a seed or trace, so the run failed before or outside one. See the run log."
+          fi
+        } > "$body"
+        title="Fault run failed${seeds:+ (seed $seeds)}"
+        echo "$title"
+        gh issue create --repo "${GITHUB_REPOSITORY:-G1DO/anvil}" --title "$title" --body-file "$body"
+
   diagrams:
     desc: "Generate docs/architecture/data-model.mmd (not committed) with mermerd from the compose database"
     cmds:

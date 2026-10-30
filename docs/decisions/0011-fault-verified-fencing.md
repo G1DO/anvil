@@ -50,3 +50,6 @@ test-only (no `src/main` change):
   target; `Real-users/Loss-cost` stays deferred to INV-1/PITR drill (#34).
 - Rejected: 100-nightly + 5-weekly full runs, exhaustive fault matrix,
   dashboards/runbooks, live-live migration, O3 replay API changes, O5 eval.
+  #78 later added the nightly and weekly runs (`.github/workflows/faults.yml`)
+  and a nine-case real-PG matrix (`FaultMatrixTest`): the six failure-model
+  points plus GIN, autovacuum and pool exhaustion.

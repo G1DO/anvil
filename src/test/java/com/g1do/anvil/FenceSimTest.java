@@ -1,14 +1,18 @@
 package com.g1do.anvil;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -27,10 +31,21 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Determinism: {@code new Random(baseSeed + run)} drives every choice;
  * detection run + violating trace are asserted and printed.
  * Correct fencing never violates (see {@code FenceModelTest}).
+ *
+ * <p>Scheduled runs (issue #78): {@link #scheduledRunsKeepFencing} runs the
+ * correct rules 100 times from {@code FAULT_SEED}. The gate uses a fixed seed;
+ * the nightly {@code faults} workflow uses its run ID, so each night tries new
+ * interleavings. A violation writes its seed and trace for the workflow's
+ * issue. {@code FAULT_SIM_BREAK} swaps in a broken variant to check that path.
  */
 class FenceSimTest {
 
-    enum Variant { BROKEN_FENCE, BROKEN_LEASE, BROKEN_RELAY }
+    enum Variant { CORRECT, BROKEN_FENCE, BROKEN_LEASE, BROKEN_RELAY }
+
+    /** Runs per night; {@code FAULT_SIM_RUNS} overrides it. */
+    static final int SCHEDULED_RUNS = 100;
+
+    static final String SCHEDULED_TEST = "FenceSimTest#scheduledRunsKeepFencing";
 
     record SimResult(boolean violated, int detectedAtRun, long seed, List<String> trace) {}
 
@@ -200,6 +215,64 @@ class FenceSimTest {
             }
         }
         return new SimResult(false, -1, -1, List.of());
+    }
+
+    /**
+     * Runs {@code runs} simulations of {@code variant} from {@code baseSeed}. On the
+     * first violation, writes its seed and trace to {@code reportDir} and returns
+     * the report.
+     */
+    static Optional<Path> scheduledRuns(Variant variant, long baseSeed, int runs, Path reportDir) {
+        SimResult r = findViolation(variant, baseSeed, runs);
+        if (!r.violated()) {
+            return Optional.empty();
+        }
+        return Optional.of(FaultReport.write(reportDir, SCHEDULED_TEST, r.seed(), r.trace(),
+                variant + " violated at run " + r.detectedAtRun() + " of " + runs,
+                "FAULT_SEED=" + r.seed() + " FAULT_SIM_RUNS=1 FAULT_SIM_BREAK=" + variant
+                        + " ./mvnw -B -ntp -Dtest='" + SCHEDULED_TEST + "' test"));
+    }
+
+    @Test
+    void scheduledRunsKeepFencing() {
+        String breakVariant = System.getenv("FAULT_SIM_BREAK");
+        Variant variant = breakVariant == null || breakVariant.isBlank()
+                ? Variant.CORRECT : Variant.valueOf(breakVariant.trim());
+        String runsValue = System.getenv("FAULT_SIM_RUNS");
+        int runs = runsValue == null || runsValue.isBlank() ? SCHEDULED_RUNS : Integer.parseInt(runsValue.trim());
+        long seed = FaultReport.seed(BASE_SEED + 50_000);
+
+        Optional<Path> report = scheduledRuns(variant, seed, runs, FaultReport.dir());
+
+        System.out.println("SIM scheduled variant=" + variant + " runs=" + runs + " seed=" + seed
+                + " violations=" + (report.isPresent() ? 1 : 0));
+        assertThat(report).as("%s over %d runs from seed %d; report has the seed and trace", variant, runs, seed)
+                .isEmpty();
+    }
+
+    @Test
+    void seededBreakWritesItsSeedAndTraceAndTheSeedReplaysIt(@TempDir Path dir) throws Exception {
+        SimResult r = findViolation(Variant.BROKEN_FENCE, BASE_SEED, SCHEDULED_RUNS);
+        Path report = scheduledRuns(Variant.BROKEN_FENCE, BASE_SEED, SCHEDULED_RUNS, dir).orElseThrow();
+        String body = Files.readString(report);
+
+        assertThat(body).as("report first line names the test and seed")
+                .startsWith("### " + SCHEDULED_TEST + " (seed " + r.seed() + ")");
+        assertThat(body).as("report carries the seed").contains("Seed: `" + r.seed() + "`");
+        assertThat(body).as("report carries the whole trace").contains(r.trace());
+        assertThat(body).as("report says how to rerun it")
+                .contains("FAULT_SEED=" + r.seed() + " FAULT_SIM_RUNS=1 FAULT_SIM_BREAK=BROKEN_FENCE");
+
+        SimResult rerun = findViolation(Variant.BROKEN_FENCE, r.seed(), 1);
+        assertThat(rerun.violated()).as("the reported seed fails again on its own").isTrue();
+        assertThat(rerun.trace().subList(1, rerun.trace().size()))
+                .as("and replays the same trace").isEqualTo(r.trace().subList(1, r.trace().size()));
+    }
+
+    @Test
+    void correctVariantNeverViolatesOverTheScheduledRuns() {
+        SimResult r = findViolation(Variant.CORRECT, BASE_SEED + 50_000, 10 * SCHEDULED_RUNS);
+        assertThat(r.violated()).as("correct rules, %d runs", 10 * SCHEDULED_RUNS).isFalse();
     }
 
     @Test
