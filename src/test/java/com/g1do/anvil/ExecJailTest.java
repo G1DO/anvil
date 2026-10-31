@@ -10,6 +10,7 @@ import java.net.URI;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.security.KeyStore;
@@ -23,6 +24,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.net.ssl.ExtendedSSLSession;
@@ -58,11 +62,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>Proves on containerized Postgres (tenant identity exists for workspace
  * scoping) plus real forked children under the bubblewrap sandbox: untrusted
  * native code reaches neither a sibling workspace, the shared {@code /tmp},
- * host processes nor the network; the sandbox fails closed; the environment
- * is cleaned; brokered egress denies the SSRF matrix, re-checks DNS at
- * connect time, verifies TLS and never follows redirects; a denied egress
- * request takes the same time whether the target exists or not; and
- * allowed-tenant controls still succeed. No external
+ * host processes nor the network; the sandbox fails closed; the tenant lock
+ * and tree kill leave nothing to race; the environment is cleaned; brokered
+ * egress denies the SSRF matrix, re-checks DNS at connect time, verifies TLS
+ * and never follows redirects; denials take the same time whether the target
+ * exists or not; and allowed-tenant controls still succeed. No external
  * network is used: remote hosts are stub resolvers and loopback servers.
  */
 @Import(TestcontainersConfiguration.class)
@@ -565,7 +569,50 @@ class ExecJailTest {
         }
     }
 
+    @Test
+    void timeoutKillsEveryJailedProcess() throws Exception {
+        JailEscapeProbe probe = new JailEscapeProbe(jail, tempDir);
+        assertThatThrownBy(() -> jail.run(TENANT_A, List.of("/usr/bin/env", "bash", "-c",
+                "(while :; do echo t >> tick; sleep 0.05; done) & (sleep 60) & wait"),
+                Map.of(), Duration.ofSeconds(1)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("timed out");
+        Path tick = jail.workspaceDir(TENANT_A).resolve("tick");
+        assertThat(tick).exists();
+        long size = Files.size(tick);
+        Thread.sleep(500);
+        assertThat(Files.size(tick)).as("no jailed process outlives run").isEqualTo(size);
+        // And the jail still works afterwards.
+        assertThat(probe.control().escaped()).isFalse();
+    }
 
+    @Test
+    void workspaceApiWaitsForRunningChild() throws Exception {
+        jail.writeWorkspaceFile(TENANT_B, "secret-b.txt", "bravo-secret".getBytes(StandardCharsets.UTF_8));
+        Path race = jail.workspaceDir(TENANT_A).resolve("race");
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            // A jailed child flips "race" between a symlink to the sibling and a regular file.
+            Future<JailResult> child = pool.submit(() -> jail.run(TENANT_A,
+                    List.of("/usr/bin/env", "bash", "-c", "for i in $(seq 1 200); do "
+                            + "ln -sfn ../" + TENANT_B + "/secret-b.txt race; "
+                            + "echo own > race.tmp; mv -f race.tmp race; done; sleep 1"),
+                    Map.of(), Duration.ofSeconds(20)));
+            long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (!Files.exists(race, LinkOption.NOFOLLOW_LINKS) && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            Future<byte[]> read = pool.submit(() -> jail.readWorkspaceFile(TENANT_A, TENANT_A, "race"));
+            Thread.sleep(300);
+            // While the child runs, the parent's check-then-read can't interleave with it.
+            assertThat(child.isDone()).isFalse();
+            assertThat(read.isDone()).as("workspace read waits for the running child").isFalse();
+            assertThat(child.get().exitCode()).isZero();
+            assertThat(new String(read.get(), StandardCharsets.UTF_8)).isEqualTo("own\n");
+        } finally {
+            pool.shutdownNow();
+        }
+    }
 
     @Test
     void hostnameRebindDeniedAtConnect() throws Exception {
@@ -792,6 +839,32 @@ class ExecJailTest {
         assertThat(gap).as("egress denial gap").isLessThanOrEqualTo(TIMING_TOLERANCE);
     }
 
+    @Test
+    void deniedWorkspaceReadTimingHidesExistence() throws Exception {
+        // Another tenant's existing file vs a missing one.
+        jail.writeWorkspaceFile(TENANT_B, "exists.txt", "bravo".getBytes(StandardCharsets.UTF_8));
+        String[] messages = new String[2];
+        Duration gap = medianGap(
+                () -> messages[0] = deniedMessage(() -> jail.readWorkspaceFile(TENANT_A, TENANT_B, "exists.txt")),
+                () -> messages[1] = deniedMessage(() -> jail.readWorkspaceFile(TENANT_A, TENANT_B, "missing.txt")));
+        assertThat(messages[0]).isEqualTo(messages[1]);
+        assertThat(gap).as("cross-tenant read denial gap").isLessThanOrEqualTo(TIMING_TOLERANCE);
+
+        // A busy sibling doesn't slow the denial either: it never waits on the sibling's lock.
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<JailResult> busy = pool.submit(() -> jail.run(TENANT_B,
+                    List.of("/usr/bin/sleep", "2"), Map.of(), Duration.ofSeconds(10)));
+            Thread.sleep(300);
+            long start = System.nanoTime();
+            deniedMessage(() -> jail.readWorkspaceFile(TENANT_A, TENANT_B, "exists.txt"));
+            assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofMillis(100));
+            assertThat(busy.isDone()).isFalse();
+            busy.get();
+        } finally {
+            pool.shutdownNow();
+        }
+    }
 
     @Test
     void productionConnectorIsTlsAndPlaintextIsDenied() throws Exception {

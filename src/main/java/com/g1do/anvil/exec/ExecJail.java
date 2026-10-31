@@ -15,7 +15,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -49,9 +52,13 @@ import org.springframework.stereotype.Service;
  * segments, {@code %} (encoded traversal), and null bytes with
  * {@link SecurityException}, denies anything that normalizes outside the
  * workspace, and denies any path with a symlink component (fail-closed: even
- * a symlink pointing inside still denies). The tenant name itself follows the
- * same directory-escape rules as {@code ContentStore} ({@code /, \, .., %}
- * and reserved names rejected).</li>
+ * a symlink pointing inside still denies). Parent-side reads and writes take
+ * the tenant's lock exclusively and {@link #run} holds it shared, so jailed
+ * code can't swap a checked path for a symlink between check and use: when
+ * {@link #run} returns, the PID namespace is gone and no jailed process of
+ * that tenant is left. The tenant name itself follows the same
+ * directory-escape rules as {@code ContentStore} ({@code /, \, .., %} and
+ * reserved names rejected).</li>
  * <li>Argv checks stay as defence in depth: shell interpreters, absolute,
  * {@code ..} and {@code %} operands, workspace executables and symlink operands
  * are denied before launch. The sandbox, not these checks, is the boundary.
@@ -67,8 +74,8 @@ import org.springframework.stereotype.Service;
  * <li>Cross-tenant invisibility at the API layer:
  * {@link #readWorkspaceFile(String, String, String)} denies with a
  * caller-scoped {@link NoSuchFileException} when {@code caller != resource},
- * before touching the file system, so the denial takes the same time whether
- * the target exists or not.</li>
+ * before touching the file system or any lock, so the denial takes the same
+ * time whether the target exists or not.</li>
  * </ul>
  *
  * <p>Residual: the child has no seccomp filter of its own and no cgroup
@@ -105,6 +112,8 @@ public class ExecJail {
 
     private final Path root;
     private final Path sandbox;
+    private final ConcurrentHashMap<String, ReentrantReadWriteLock> tenantLocks =
+            new ConcurrentHashMap<>();
     private volatile boolean sandboxVerified;
 
     public ExecJail(String root) {
@@ -191,6 +200,17 @@ public class ExecJail {
         if (content == null) {
             throw new IllegalArgumentException("content must not be null");
         }
+        Lock lock = lockFor(tenant).writeLock();
+        lock.lock();
+        try {
+            writeLocked(tenant, relativePath, content);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void writeLocked(String tenant, String relativePath, byte[] content)
+            throws IOException {
         Path target = resolveInWorkspace(tenant, relativePath);
         Path parent = target.getParent();
         if (parent != null) {
@@ -223,6 +243,8 @@ public class ExecJail {
         if (!caller.equals(resource)) {
             throw new NoSuchFileException("workspaces/" + caller + "/" + rel);
         }
+        Lock lock = lockFor(caller).writeLock();
+        lock.lock();
         try {
             Path target = resolveInWorkspace(caller, relativePath);
             if (Files.isSymbolicLink(target)) {
@@ -231,6 +253,8 @@ public class ExecJail {
             return Files.readAllBytes(target);
         } catch (NoSuchFileException e) {
             throw new NoSuchFileException("workspaces/" + caller + "/" + rel);
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -260,7 +284,7 @@ public class ExecJail {
      * @param timeout how long to wait; {@code null} means {@link #DEFAULT_TIMEOUT}.
      * @return captured exit code, stdout, stderr, and truncation flag.
      * @throws IllegalStateException when the sandbox is unavailable (nothing
-     *         runs), or when the child exceeds the timeout (killed).
+     *         runs), or when the child exceeds the timeout (the whole tree is killed).
      * @throws SecurityException when argv escapes the workspace, uses a shell,
      *         targets a workspace executable, or traverses a symlink.
      */
@@ -326,7 +350,13 @@ public class ExecJail {
         command.add("--");
         command.addAll(argv);
 
-        return launch(command, workspace, wait);
+        Lock lock = lockFor(tenant).readLock();
+        lock.lock();
+        try {
+            return launch(command, workspace, wait);
+        } finally {
+            lock.unlock();
+        }
     }
 
     private static JailResult launch(List<String> command, Path workspace, Duration wait)
@@ -345,12 +375,12 @@ public class ExecJail {
         try {
             finished = process.waitFor(wait.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
-            process.destroyForcibly();
+            killTree(process);
             Thread.currentThread().interrupt();
             throw e;
         }
         if (!finished) {
-            process.destroyForcibly();
+            killTree(process);
             throw new IllegalStateException("jail execution timed out");
         }
         outDrain.join(5_000L);
@@ -415,7 +445,7 @@ public class ExecJail {
             Process process = builder.start();
             boolean done = process.waitFor(10, TimeUnit.SECONDS);
             if (!done) {
-                process.destroyForcibly();
+                killTree(process);
             }
             byte[] out = done ? process.getInputStream().readNBytes(4096) : new byte[0];
             if (!done || process.exitValue() != 0) {
@@ -424,6 +454,31 @@ public class ExecJail {
             }
             sandboxVerified = true;
         }
+    }
+
+    /**
+     * Kills the sandbox and every process under it, and waits for them to exit,
+     * so the tenant lock is only released once no jailed process is left.
+     */
+    private static void killTree(Process process) {
+        List<ProcessHandle> tree = new ArrayList<>(process.descendants().toList());
+        process.destroyForcibly();
+        tree.forEach(ProcessHandle::destroyForcibly);
+        tree.add(process.toHandle());
+        for (ProcessHandle handle : tree) {
+            try {
+                handle.onExit().get(5, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                if (e instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                // Best effort; --die-with-parent and the PID namespace kill the rest.
+            }
+        }
+    }
+
+    private ReentrantReadWriteLock lockFor(String tenant) {
+        return tenantLocks.computeIfAbsent(tenant, t -> new ReentrantReadWriteLock());
     }
 
     private static Thread drain(InputStream in, ByteArrayOutputStream out) {
