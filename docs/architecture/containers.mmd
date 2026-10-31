@@ -7,7 +7,7 @@ flowchart TB
         api["API service<br/>auth, validate, CBOR, submit, reads, audit, replay, URLs, health"]
         workers["Workers<br/>claim, heartbeat, commit, relay, reconcile"]
         subgraph jailZone["Untrusted code: tenant-supplied execution"]
-            jail["Exec jail<br/>per-tenant workspace, cleared env, deny egress"]
+            jail["Exec jail<br/>bwrap namespaces: own workspace only, private /tmp, no network"]
         end
     end
     subgraph tenantData["Tenant boundary: enforced by Postgres RLS"]
@@ -16,6 +16,7 @@ flowchart TB
     casStore["CAS store<br/>per-tenant content, hash-verified reads"]
     execWorkspaces["Exec workspaces<br/>per-tenant writable directories"]
     network["Network<br/>egress denied by default"]
+    broker["JailEgress broker<br/>in the parent: allowlist, connect-time DNS check"]
     tenantClient -->|"TRUST BOUNDARY: X-Tenant-Id checked, input validated"| api
     operator -->|probes, logs| api
     api -->|"JDBC, SET LOCAL app.tenant + RLS"| postgres
@@ -23,5 +24,7 @@ flowchart TB
     api -->|put and get, torn tails removed| casStore
     workers -->|put and link, refcount GC| casStore
     workers -.->|"TRUST BOUNDARY: run tenant argv, env, timeout (no production caller yet)"| jail
-    jail -->|resolveInWorkspace only| execWorkspaces
-    jail -.->|"TRUST BOUNDARY: denied, redirects never followed"| network
+    jail -->|"own tenant's workspace only: bind mount at /work, resolveInWorkspace"| execWorkspaces
+    jail -.->|"TRUST BOUNDARY: empty network namespace, no route"| network
+    workers -.->|"egress on the jail's behalf (no production caller yet)"| broker
+    broker -.->|"TRUST BOUNDARY: vetted address only, redirects denied"| network

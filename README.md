@@ -28,7 +28,8 @@ Each guarantee links to the tests that prove it. All tests run against real Post
    - The database enforces isolation even with pooled connections and cached plans: [`RlsLeakTest`](src/test/java/com/g1do/anvil/RlsLeakTest.java).
    - A 28-case matrix over direct IDs, search, content addresses and presigned URLs shows 0 leaks: [`ReadIsolationTest`](src/test/java/com/g1do/anvil/ReadIsolationTest.java). The same holds for audit reads: [`AuditReadIsolationTest`](src/test/java/com/g1do/anvil/AuditReadIsolationTest.java).
    - Revoking a capability mid-run blocks the commit (0 rows, `403 NEEDS_APPROVAL`): [`CapRevokeMidRunTest`](src/test/java/com/g1do/anvil/CapRevokeMidRunTest.java).
-   - Jailed execution can't see another tenant's files or reach the network: [`ExecJailTest`](src/test/java/com/g1do/anvil/ExecJailTest.java).
+   - Jailed execution runs in a kernel sandbox. Untrusted native code in it can't read or write another tenant's workspace or the shared `/tmp`, and has no network route. This holds on the host and inside a container: [`ExecJailTest`](src/test/java/com/g1do/anvil/ExecJailTest.java), [`JailContainerEscapeTest`](src/test/java/com/g1do/anvil/JailContainerEscapeTest.java). Why: [record 0019](docs/decisions/0019-kernel-sandboxed-exec-jail.md).
+   - Brokered egress is HTTPS-only with verified certificates, denies an 80-plus-case SSRF matrix, re-checks DNS at connect time, never follows redirects, and takes the same time (within 1 ms) for an existing and a missing target: [`ExecJailTest`](src/test/java/com/g1do/anvil/ExecJailTest.java).
 3. **Any job can be replayed bit-for-bit from its audit chain, and tampering is detected.**
    - Every effect is recorded in an append-only, hash-linked chain in the same transaction: [`AuditChainTest`](src/test/java/com/g1do/anvil/AuditChainTest.java).
    - `GET /audit/replay` returns `{input_sha, output_sha, match: true}` for an intact chain. A corrupted, dropped or re-linked event gives a mismatch. Checkpoint replay gives the same result: [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java).
@@ -59,7 +60,7 @@ Success is measured by the guarantees above. Each measure names the test that sh
 - The database enforces tenant isolation with pooled connections and cached plans, with 0 leaks: [`RlsLeakTest`](src/test/java/com/g1do/anvil/RlsLeakTest.java).
 - The 28-case read matrix and the audit reads show 0 cross-tenant leaks: [`ReadIsolationTest`](src/test/java/com/g1do/anvil/ReadIsolationTest.java), [`AuditReadIsolationTest`](src/test/java/com/g1do/anvil/AuditReadIsolationTest.java).
 - A capability revoked mid-run blocks the commit (0 rows, `403 NEEDS_APPROVAL`): [`CapRevokeMidRunTest`](src/test/java/com/g1do/anvil/CapRevokeMidRunTest.java).
-- Jailed execution cannot see another tenant's files or reach the network: [`ExecJailTest`](src/test/java/com/g1do/anvil/ExecJailTest.java).
+- Untrusted native code in the jail can't reach another tenant's workspace, the shared `/tmp` or the network, on the host and in a container, and every SSRF matrix case is denied: [`ExecJailTest`](src/test/java/com/g1do/anvil/ExecJailTest.java), [`JailContainerEscapeTest`](src/test/java/com/g1do/anvil/JailContainerEscapeTest.java).
 - A job replays bit-for-bit from its audit chain, and a corrupted, dropped or re-linked event is detected: [`AuditChainTest`](src/test/java/com/g1do/anvil/AuditChainTest.java), [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java).
 - A seeded fencing break is caught in under 500 simulator runs: [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
 - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java).
@@ -69,7 +70,7 @@ Success is measured by the guarantees above. Each measure names the test that sh
 
 ## How to run
 
-You need Java 25, Docker and [Task](https://taskfile.dev).
+You need Java 25, Docker, [Task](https://taskfile.dev) and [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, with unprivileged user namespaces allowed), which the exec jail runs every child under.
 
 ```bash
 task dev       # run locally; starts no Postgres, and startup fails without a configured datasource

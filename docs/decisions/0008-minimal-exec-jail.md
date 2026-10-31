@@ -1,6 +1,6 @@
 # 0008 — Minimal execution jail with default-deny egress
 
-Status: accepted. Builds on 0005 (tenant identity for workspace scoping); independent of 0006 (capability gates) and 0007 (fail-closed reads), integrating where execution calls their re-checks.
+Status: accepted; its residuals are closed by record 0019 (#73). Builds on 0005 (tenant identity for workspace scoping); independent of 0006 (capability gates) and 0007 (fail-closed reads), integrating where execution calls their re-checks.
 
 ## Context
 
