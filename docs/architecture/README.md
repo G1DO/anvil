@@ -32,6 +32,6 @@ The SQL in `src/main/resources/db/migration/` is the schema. These are the rules
 - **Batch sizes:** claim (`LIMIT 20`) and relay (`LIMIT 100`) are contracts of their canonical queries, backed by partial indexes: `jobs_claim_order_idx` on queued jobs in claim order, `outbox_poll_idx` on unsent rows, and `artifacts_gc_idx` on unreferenced content. `jobs_claim_idx` (V1) no longer backs the claim.
 - **Fair claim:** `tenants.max_running` is each tenant's quota of `RUNNING` jobs, default 1000. Claims for one tenant serialize on a transaction-scoped advisory lock before counting. A claim takes only jobs with `next_run_at <= now()`, in the order `(penalty, next_run_at, created_at, id)`, where the penalty is the tenant's `RUNNING` count. Rows that existed before V7 share the migration's `next_run_at` and keep their arrival order (record 0020).
 - **Capability grants:** they expire after one hour (`V3`).
-- **Dead jobs:** keep their last owner, token and lease. They're never offered again; see #35.
+- **Dead jobs:** keep their last owner, token and lease. They're never offered again: the reconciler moves a job with `attempt >= max_attempts` to `DEAD`, and a claim takes only `QUEUED` rows with `attempt < max_attempts`.
 
 Check the live catalog with `flyway info`, `\d <table>`, `pg_policies` and `pg_indexes`.
