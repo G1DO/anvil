@@ -320,11 +320,12 @@ class JobServiceTest {
         String plan = String.join("\n", jdbc.queryForList(
                 "EXPLAIN SELECT id FROM jobs WHERE tenant_id = 't_single' AND state = 'QUEUED' "
                         + "AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp()) "
-                        + "AND attempt < max_attempts ORDER BY created_at, id LIMIT 20 FOR UPDATE SKIP LOCKED",
+                        + "AND attempt < max_attempts AND next_run_at <= now() "
+                        + "ORDER BY next_run_at, created_at, id LIMIT 20 FOR UPDATE SKIP LOCKED",
                 String.class));
         assertThat(plan)
-                .as("claim uses jobs_claim_idx at gate volume (%d queued jobs)", queuedJobs)
-                .contains("jobs_claim_idx");
+                .as("claim uses jobs_claim_order_idx at gate volume (%d queued jobs)", queuedJobs)
+                .contains("jobs_claim_order_idx");
         assertThat(plan).doesNotContain("Seq Scan");
 
         // Terminals are never runnable before the scale run.
@@ -821,10 +822,12 @@ class JobServiceTest {
 
     @Test
     void canonicalCandidateSelectionUsesClaimIndex() {
-        // The production claim filters the same shape the V1 migration documents
-        // as canonical; that shape must keep using jobs_claim_idx once the
-        // table is large enough for the planner to prefer the index (mirrors
-        // DurableV1SchemaTest seeding).
+        // The V1 migration's canonical claim query keeps using jobs_claim_idx once
+        // the table is large enough for the planner to prefer the index (mirrors
+        // DurableV1SchemaTest seeding). The production claim now orders by
+        // next_run_at first (V7, record 0020); its plan is checked on
+        // jobs_claim_order_idx in atomicClaimHasZeroDoubleClaimsAtGateScale and
+        // FairClaimTest.claimUsesTheClaimOrderIndex.
         for (int i = 0; i < 200; i++) {
             seedQueued("t_single", "explain-" + i + "-" + UUID.randomUUID());
         }

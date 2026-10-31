@@ -1,6 +1,6 @@
 stateDiagram-v2
     [*] --> QUEUED : submit
-    QUEUED --> RUNNING : claim
+    QUEUED --> RUNNING : claim when due and tenant under quota
     RUNNING --> QUEUED : reconciler reclaim
     RUNNING --> SUCCEEDED : commitSucceeded
     RUNNING --> FAILED : commitFailed
