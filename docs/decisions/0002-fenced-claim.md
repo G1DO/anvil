@@ -1,6 +1,6 @@
 # 0002 — Fenced claim, heartbeat, commit, and reconciler
 
-Status: accepted.
+Status: accepted. Record 0020 changes which job a claim picks (per-tenant quota, then `(penalty, next_run_at, created_at, id)`); fencing, leases and the reconciler here are unchanged.
 
 ## Context
 

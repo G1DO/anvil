@@ -23,7 +23,8 @@ sequenceDiagram
         D-->>A: COMMIT doc version job IDs
         A-->>C: 202 new IDs
     end
-    W->>D: claim QUEUED LIMIT 20 SKIP LOCKED
+    W->>D: claimNext ranks tenants under quota by penalty then next_run_at
+    W->>D: claim takes tenant lock, rechecks quota, QUEUED due LIMIT 20 SKIP LOCKED
     D-->>W: RUNNING job plus token attempt lease
     W->>U: append claim RUNNING
     U->>D: INSERT audit_events claim

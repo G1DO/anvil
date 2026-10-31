@@ -23,6 +23,6 @@ Alternatives: not recorded at the time.
 ## Consequences
 
 - There's one thing to build, deploy and roll back, and no broker to run. Isolation, fencing and audit rely on Postgres guarantees (row-level security, transactions, triggers) in one place.
-- Queue throughput and fairness are bounded by Postgres and solved in SQL. Fair claiming across tenants is #35.
+- Queue throughput and fairness are bounded by Postgres and solved in SQL. Fair claiming across tenants is record 0020.
 - The content store is a local filesystem, so running more than one app instance needs shared storage first.
 - Splitting a module out later means replacing in-process calls and shared transactions with a network protocol and the outbox. That decision would need its own record.

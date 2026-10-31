@@ -45,6 +45,7 @@ import org.springframework.transaction.CannotCreateTransactionException;
 
 import com.g1do.anvil.jobs.ClaimedJob;
 import com.g1do.anvil.jobs.JobService;
+import com.g1do.anvil.jobs.TenantClaim;
 import com.g1do.anvil.outbox.IdempotentConsumer;
 import com.g1do.anvil.outbox.OutboxEvent;
 import com.g1do.anvil.outbox.OutboxPublisher;
@@ -464,7 +465,8 @@ class FaultMatrixTest implements FaultReport.Seeded {
     }
 
     /**
-     * Runs {@code workers} worker threads until no job is open. On a first attempt a worker
+     * Runs {@code workers} worker threads, each claiming with {@link JobService#claimNext}, until
+     * no job is open. On a first attempt a worker
      * stalls past its lease one time in three (seeded): the reconciler hands the job on and
      * the late commit must affect 0 rows. Later attempts always commit, so no job runs out
      * of attempts.
@@ -492,12 +494,16 @@ class FaultMatrixTest implements FaultReport.Seeded {
 
     private void work(String owner, Random rnd) throws InterruptedException {
         while (openJobs() > 0) {
-            Optional<ClaimedJob> claimed = jobs.claim(TENANT, owner);
+            // The fair claim across tenants (#35); only TENANT has jobs here.
+            Optional<TenantClaim> claimed = jobs.claimNext(owner);
             if (claimed.isEmpty()) {
                 Thread.sleep(10L);
                 continue;
             }
-            ClaimedJob c = claimed.get();
+            if (!TENANT.equals(claimed.get().tenantId())) {
+                throw new AssertionError(owner + " claimed another tenant's job: " + claimed.get());
+            }
+            ClaimedJob c = claimed.get().job();
             jobs.issueCap(TENANT, c.jobId());
             if (c.attempt() == 1 && rnd.nextInt(3) == 0) {
                 expireLease(c.jobId());

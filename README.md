@@ -45,7 +45,10 @@ Each guarantee links to the tests that prove it. All tests run against real Post
    - A simulated point-in-time restore that rewinds the epoch lets a stale owner affect 0 rows with no double effect: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0013](docs/decisions/0013-pitr-timeline-check.md).
    - When the database timeline is unknown or rewound, claims, heartbeats and commits are refused (`503 TIMELINE_UNCONFIRMED`) until leases expire and capabilities are re-issued: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0016](docs/decisions/0016-restore-timeline-gate.md).
    - A backup → clean → point-in-time restore to a declared target reports its measured recovery time and data loss. Afterwards, tokens and grants from either side of the target affect 0 rows, a re-published event applies once, and isolation and capability checks hold: [`PitrRestoreDrillTest`](src/test/java/com/g1do/anvil/PitrRestoreDrillTest.java). The whole suite runs against a restored database.
-5. **Saturation is visible.** Queue age, claim latency and pool wait are exported without tenant data. The burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
+5. **One tenant's flood can't starve the others.**
+   - A claim never takes a tenant past its quota of running jobs, even with 64 claims at once. Jobs are claimed in the order of a penalty (the tenant's running count), then `next_run_at` on the database clock, then arrival: [`FairClaimTest`](src/test/java/com/g1do/anvil/FairClaimTest.java). Why: [record 0020](docs/decisions/0020-fair-claim-under-quota.md).
+   - While one tenant floods 8 workers, a quiet tenant's jobs are each claimed within 16 flood claims of their submit. This holds whether the flood's quota is below the pool or above it: [`FairClaimTest`](src/test/java/com/g1do/anvil/FairClaimTest.java).
+6. **Saturation is visible.** Queue age, claim latency and pool wait are exported without tenant data. The burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 
 Not yet guaranteed: a target for recovery time or data loss (the drill measures them; it doesn't promise them), or detecting a restore that keeps the database timeline, such as a storage snapshot rolled back in place. See [record 0016](docs/decisions/0016-restore-timeline-gate.md).
 
@@ -65,6 +68,7 @@ Success is measured by the guarantees above. Each measure names the test that sh
 - A seeded fencing break is caught in under 500 simulator runs: [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
 - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java).
 - Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
+- A tenant never exceeds its quota of running jobs, and a quiet tenant's jobs keep moving while another tenant floods the workers: [`FairClaimTest`](src/test/java/com/g1do/anvil/FairClaimTest.java).
 - An unconfirmed or rewound database timeline refuses claims, heartbeats and commits: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java).
 - A backup, clean and point-in-time restore reports its measured recovery time and data loss, with no target claimed: [`PitrRestoreDrillTest`](src/test/java/com/g1do/anvil/PitrRestoreDrillTest.java).
 
