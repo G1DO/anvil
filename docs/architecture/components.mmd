@@ -19,7 +19,7 @@ flowchart TB
     end
 
     subgraph workers["Workers"]
-        claim["JobService claim<br/>LIMIT 20 SKIP LOCKED + token"]
+        claim["JobService claim + claimNext<br/>tenant lock + quota, order by penalty, next_run_at<br/>LIMIT 20 SKIP LOCKED + token"]
         beat["JobService heartbeat<br/>owner token live lease"]
         commit["JobService commit<br/>cap gate + fenced write"]
         recon["JobService reconciler<br/>expire to QUEUED or DEAD"]
