@@ -56,13 +56,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Jail proofs for issues #23 and #73.
  *
  * <p>Proves on containerized Postgres (tenant identity exists for workspace
- * scoping) plus real forked children: read-only-root at the API layer,
- * cleaned environment, cross-tenant file invisibility, and an allowed-tenant
- * control that still succeeds. Brokered egress denies the SSRF matrix,
- * re-checks DNS at connect time, verifies TLS and never follows redirects,
- * and a denied request takes the same time whether the target exists or not.
- * No external network is used: remote hosts are stub resolvers and loopback
- * servers.
+ * scoping) plus real forked children under the bubblewrap sandbox: untrusted
+ * native code reaches neither a sibling workspace, the shared {@code /tmp},
+ * host processes nor the network; the sandbox fails closed; the environment
+ * is cleaned; brokered egress denies the SSRF matrix, re-checks DNS at
+ * connect time, verifies TLS and never follows redirects; a denied egress
+ * request takes the same time whether the target exists or not; and
+ * allowed-tenant controls still succeed. No external
+ * network is used: remote hosts are stub resolvers and loopback servers.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -478,9 +479,91 @@ class ExecJailTest {
     /** Medians of denied existing vs missing targets must be within this (issue #73). */
     static final Duration TIMING_TOLERANCE = Duration.ofMillis(1);
 
+    @Test
+    void nativeCodeCannotReachSiblingWorkspaceOrSharedTmp() throws Exception {
+        JailEscapeProbe probe = new JailEscapeProbe(jail, tempDir);
 
+        // Control: the jailed child runs and owns its workspace.
+        assertThat(probe.control().escaped()).as(probe.control().line()).isFalse();
 
+        // The attempt is real: the same script outside the jail reads the sibling's secret.
+        probe.seed();
+        Process unjailed = new ProcessBuilder("/usr/bin/env", "bash", "-c",
+                "cat ../" + JailEscapeProbe.TENANT_B + "/secret-b.txt")
+                .directory(jail.workspaceDir(TENANT_A).toFile()).start();
+        assertThat(new String(unjailed.getInputStream().readAllBytes(), StandardCharsets.UTF_8))
+                .contains(JailEscapeProbe.SECRET_B);
 
+        // Inside the jail, native code past the argv checks reaches neither the sibling nor /tmp.
+        for (JailEscapeProbe.Attempt attempt : List.of(probe.siblingRead(), probe.siblingWrite(),
+                probe.symlinkToSibling(), probe.sharedTmpRead(), probe.sharedTmpWrite(),
+                probe.hostProcesses())) {
+            assertThat(attempt.escaped()).as(attempt.line()).isFalse();
+        }
+        assertThat(jail.workspaceDir(TENANT_B)).isDirectoryNotContaining("glob:**pwn*");
+    }
+
+    @Test
+    void everyNamespaceIsNewAndNoCapabilityIsHeld() throws Exception {
+        List<String> kinds = List.of("user", "mnt", "pid", "net", "ipc", "uts", "cgroup");
+        StringBuilder script = new StringBuilder();
+        for (String kind : kinds) {
+            script.append("readlink /proc/self/ns/").append(kind).append("; ");
+        }
+        script.append("grep '^CapEff:' /proc/self/status");
+        JailResult inside = jail.run(TENANT_A, List.of("/usr/bin/env", "bash", "-c", script.toString()),
+                Map.of(), Duration.ofSeconds(10));
+        assertThat(inside.exitCode()).as(inside.stderr()).isZero();
+        List<String> lines = inside.stdout().lines().toList();
+        assertThat(lines).as(inside.stdout()).hasSize(kinds.size() + 1);
+        for (int i = 0; i < kinds.size(); i++) {
+            String host = Files.readSymbolicLink(Path.of("/proc/self/ns", kinds.get(i))).toString();
+            assertThat(lines.get(i)).as(kinds.get(i) + " namespace")
+                    .startsWith(kinds.get(i) + ":[").isNotEqualTo(host);
+        }
+        assertThat(lines.get(kinds.size()).split("\\s+")[1]).as("effective capabilities")
+                .matches("0+");
+    }
+
+    @Test
+    void jailEgressDroppedAtNetworkLayer() throws Exception {
+        JailEscapeProbe probe = new JailEscapeProbe(jail, tempDir);
+
+        // The probe detects a connection when there is a network: run unjailed, it connects.
+        try (JailEscapeProbe.Listener listener = JailEscapeProbe.Listener.on(InetAddress.getLoopbackAddress())) {
+            Process unjailed = new ProcessBuilder("/usr/bin/env", "bash", "-c",
+                    JailEscapeProbe.connectScript(List.of("127.0.0.1/" + listener.port())))
+                    .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            assertThat(new String(unjailed.getInputStream().readAllBytes(), StandardCharsets.UTF_8))
+                    .contains("CONNECTED");
+        }
+
+        // Jailed native code (no Java on its path) can't reach host loopback, the host's
+        // address, metadata or the internet.
+        for (JailEscapeProbe.Attempt attempt : List.of(probe.loopbackEgress(), probe.networkEgress())) {
+            assertThat(attempt.escaped()).as(attempt.line()).isFalse();
+        }
+
+        // The kernel has nothing to send on: only the namespace's own loopback, no routes.
+        JailResult net = probe.nativeCode(TENANT_A, "cat /proc/net/dev; echo ROUTES; cat /proc/net/route");
+        String interfaces = net.stdout().substring(0, net.stdout().indexOf("ROUTES"));
+        assertThat(interfaces.lines().skip(2).map(l -> l.trim().split(":")[0]).toList())
+                .as(net.stdout()).containsExactly("lo");
+        assertThat(net.stdout().substring(net.stdout().indexOf("ROUTES")).lines().skip(2).toList())
+                .as("no IPv4 routes").isEmpty();
+    }
+
+    @Test
+    void sandboxUnavailableFailsClosed() throws Exception {
+        for (String sandbox : List.of(tempDir.resolve("no-such-bwrap").toString(), "/usr/bin/false")) {
+            ExecJail broken = new ExecJail(tempDir.toString(), sandbox);
+            assertThatThrownBy(() -> broken.run(TENANT_A, List.of("/usr/bin/touch", "ran.txt"),
+                    Map.of(), Duration.ofSeconds(10)))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("sandbox unavailable");
+            assertThat(broken.workspaceDir(TENANT_A).resolve("ran.txt")).doesNotExist();
+        }
+    }
 
 
 
