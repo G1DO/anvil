@@ -1,5 +1,7 @@
 package com.g1do.anvil;
 
+import java.sql.Connection;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -18,6 +20,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import javax.sql.DataSource;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,12 +29,15 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 
 import com.g1do.anvil.jobs.CapDeniedException;
 import com.g1do.anvil.jobs.ClaimedJob;
 import com.g1do.anvil.jobs.JobService;
 import com.g1do.anvil.jobs.ReconcileResult;
 import com.g1do.anvil.jobs.TenantClaim;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -47,6 +54,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
 class FairClaimTest {
+
+    /** {@code tenants.max_running} default from V7. */
+    private static final int V7_DEFAULT_MAX_RUNNING = 1000;
 
     /** Worker threads in the flood runs. */
     private static final int POOL = 8;
@@ -74,6 +84,9 @@ class FairClaimTest {
 
     @Autowired
     JobService jobs;
+
+    @Autowired
+    DataSource dataSource;
 
     @BeforeEach
     void clean() {
@@ -147,6 +160,54 @@ class FairClaimTest {
     }
 
     @Test
+    void quotaHoldsUnderRepeatableReadConnections() throws Exception {
+        // A pool whose connections default to repeatable read takes each claim's snapshot
+        // before the tenant lock unless the claim sets its own isolation level.
+        tenant("t_rr", 5);
+        seedJobs("t_rr", 100);
+        HikariDataSource main = (HikariDataSource) dataSource;
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(main.getJdbcUrl());
+        config.setUsername(main.getUsername());
+        config.setPassword(main.getPassword());
+        config.setMaximumPoolSize(16);
+        config.setTransactionIsolation("TRANSACTION_REPEATABLE_READ");
+        config.setPoolName("fair-claim-repeatable-read");
+        try (HikariDataSource rr = new HikariDataSource(config)) {
+            JobService rrJobs = new JobService(new JdbcTemplate(rr), new DataSourceTransactionManager(rr));
+            List<Optional<ClaimedJob>> claims = race(64, i -> rrJobs.claim("t_rr", "rr-" + i));
+            assertThat(claims.stream().filter(Optional::isPresent).count())
+                    .as("64 simultaneous claims against quota 5 on repeatable-read connections").isEqualTo(5);
+            assertThat(running("t_rr")).isEqualTo(5);
+        }
+    }
+
+    @Test
+    void claimNextMovesPastATenantWhoseClaimLockIsBusy() throws Exception {
+        tenant("t_busy_a", 1000);
+        tenant("t_busy_b", 1000);
+        job("t_busy_a", "-10 seconds", "-10 seconds", null);
+        UUID b = job("t_busy_b", "-1 second", "-1 second", null);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        // Another claim holds t_busy_a's lock (same key as JobService's claim lock).
+        try (Connection holder = dataSource.getConnection()) {
+            holder.setAutoCommit(false);
+            try (Statement st = holder.createStatement()) {
+                st.execute("SELECT pg_advisory_xact_lock(hashtextextended('anvil.claim:' || 't_busy_a', 0))");
+            }
+            Future<Optional<TenantClaim>> next = pool.submit(() -> jobs.claimNext("w"));
+            TenantClaim claimed = next.get(10, TimeUnit.SECONDS).orElseThrow();
+            assertThat(claimed.tenantId()).as("the ranked-first tenant is busy, so the next one is claimed")
+                    .isEqualTo("t_busy_b");
+            assertThat(claimed.job().jobId()).isEqualTo(b);
+            holder.rollback();
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(jobs.claimNext("w").map(TenantClaim::tenantId)).as("free again").contains("t_busy_a");
+    }
+
+    @Test
     void claimOrdersByNextRunAtOnTheDatabaseClockThenArrival() throws Exception {
         tenant("t_order", 1000);
         UUID[] ids = {
@@ -170,6 +231,8 @@ class FairClaimTest {
 
         assertThat(claimableIds("t_order")).as("the view lists only jobs due on the database clock")
                 .containsExactlyInAnyOrder(ids[0], ids[1], ids[2], ids[3], low, high);
+        assertThat(jdbc.queryForObject("SELECT next_run_at > clock_timestamp() FROM active_jobs WHERE id = ?",
+                Boolean.class, future)).as("active_jobs shows the due time").isTrue();
 
         List<UUID> order = new ArrayList<>();
         Optional<ClaimedJob> c;
@@ -244,10 +307,12 @@ class FairClaimTest {
         String plan = String.join("\n", jdbc.queryForList(
                 "EXPLAIN SELECT id FROM jobs WHERE tenant_id = 't_plan' AND state = 'QUEUED' "
                         + "AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp()) "
-                        + "AND attempt < max_attempts AND next_run_at <= clock_timestamp() "
+                        + "AND attempt < max_attempts AND next_run_at <= now() "
                         + "ORDER BY next_run_at, created_at, id LIMIT 20 FOR UPDATE SKIP LOCKED",
                 String.class));
-        assertThat(plan).contains("jobs_claim_order_idx").doesNotContain("Seq Scan");
+        assertThat(plan).contains("jobs_claim_order_idx").doesNotContain("Seq Scan").doesNotContain("Sort");
+        assertThat(plan).as("the due time bounds the index scan instead of filtering after it")
+                .containsPattern("Index Cond: .*next_run_at <= now\\(\\)");
     }
 
     @Test
@@ -275,7 +340,7 @@ class FairClaimTest {
             drill.migrate();
             JdbcTemplate migrated = drill.jdbc();
             assertThat(migrated.queryForObject("SELECT max_running FROM tenants WHERE id = 't_single'", Integer.class))
-                    .isEqualTo(JobService.DEFAULT_MAX_RUNNING);
+                    .isEqualTo(V7_DEFAULT_MAX_RUNNING);
             assertThat(migrated.queryForObject("SELECT count(DISTINCT next_run_at) FROM jobs", Integer.class))
                     .as("existing rows share the migration's time").isEqualTo(1);
             JobService migratedJobs = drill.jobs();
@@ -300,7 +365,7 @@ class FairClaimTest {
     @Test
     void floodAboveThePoolStillLetsAQuietTenantThrough() throws Exception {
         // The quota doesn't bind here (1000 > 8 workers), so the penalty alone keeps the quiet tenant moving.
-        FloodRun run = flood(JobService.DEFAULT_MAX_RUNNING);
+        FloodRun run = flood(V7_DEFAULT_MAX_RUNNING);
         assertThat(run.maxRunning().get("t_flood")).as("flood took most of the pool").isGreaterThan(POOL / 2);
         run.assertQuietTenantProgressed();
     }

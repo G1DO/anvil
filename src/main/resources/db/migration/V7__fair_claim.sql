@@ -7,7 +7,11 @@
 --     lock, so concurrent claims can't overshoot. The default of 1000 caps no
 --     tenant in the current suite; operators set a lower value per tenant.
 --   * jobs.next_run_at is when the job may first be claimed, on the database
---     clock: a claim takes only rows with next_run_at <= clock_timestamp().
+--     clock: a claim takes only rows with next_run_at <= now(), the start of the
+--     claim's transaction. now() is stable within the transaction, so the planner
+--     can use it as an index condition on jobs_claim_order_idx; the volatile
+--     clock_timestamp() would be only a filter, with a guessed selectivity that
+--     tipped plans to a sequential scan and sort.
 --     It defaults to now(), like created_at. Rows that exist when V7 runs all
 --     get the migration's time, so they tie and keep their arrival order through
 --     the created_at, id tiebreak.
@@ -17,7 +21,8 @@
 --   * jobs_claim_order_idx serves that order. jobs_claim_idx (V1) stays for its
 --     canonical query; dropping it would be a contract step of its own.
 --   * claimable_jobs gains the next_run_at predicate, so the view still lists
---     exactly what a claim may take. It stays security_invoker.
+--     exactly what a claim may take. active_jobs is recreated so it shows
+--     next_run_at too. Both stay security_invoker.
 
 ALTER TABLE tenants
     ADD COLUMN max_running INT NOT NULL DEFAULT 1000 CHECK (max_running > 0);
@@ -33,4 +38,7 @@ CREATE OR REPLACE VIEW claimable_jobs WITH (security_invoker = true) AS
     WHERE state = 'QUEUED'
       AND attempt < max_attempts
       AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
-      AND next_run_at <= clock_timestamp();
+      AND next_run_at <= now();
+
+CREATE OR REPLACE VIEW active_jobs WITH (security_invoker = true) AS
+    SELECT * FROM jobs WHERE state IN ('QUEUED', 'RUNNING');

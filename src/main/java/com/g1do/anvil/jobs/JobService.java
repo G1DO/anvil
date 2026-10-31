@@ -13,6 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.g1do.anvil.audit.AuditChain;
@@ -52,7 +53,8 @@ import com.g1do.anvil.tenant.TenantGuard;
  * before the count, so concurrent claims can't overshoot the quota. Jobs are
  * claimed in the order {@code (penalty, next_run_at, created_at, id)}: the
  * penalty is the tenant's {@code RUNNING} count, only jobs with
- * {@code next_run_at <= clock_timestamp()} are eligible, and arrival order
+ * {@code next_run_at <= now()} (the claim transaction's start on the database
+ * clock) are eligible, and arrival order
  * breaks ties. {@link #claim(String, String)} applies it within one tenant,
  * where the penalty is the same for every job; {@link #claimNext(String)}
  * applies it across tenants.
@@ -113,8 +115,33 @@ public class JobService {
     /** Intended reconciler cadence for polling deployments. */
     public static final int RECONCILER_POLL_SECONDS = 1;
 
-    /** Quota for a tenant row that doesn't set one; the V7 column default. */
-    public static final int DEFAULT_MAX_RUNNING = 1000;
+    /**
+     * Rows a claim may take, without the tenant filter: {@code QUEUED}, lease
+     * unheld or expired, attempts left, and due on the database clock. V7's
+     * {@code claimable_jobs} view states the same predicate. Due time compares
+     * with {@code now()}, the transaction's start, rather than the volatile
+     * {@code clock_timestamp()}: it's stable, so it bounds the scan of
+     * {@code jobs_claim_order_idx} instead of filtering after it.
+     */
+    private static final String ELIGIBLE = """
+            state = 'QUEUED'
+              AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
+              AND attempt < max_attempts
+              AND next_run_at <= now()
+            """;
+
+    /** Claim order within a tenant; served by {@code jobs_claim_order_idx}. */
+    private static final String CLAIM_ORDER_BY = "next_run_at, created_at, id";
+
+    /**
+     * The tenant's {@code RUNNING} count (the penalty), counted no further
+     * than {@code bound}: a tenant at its quota is refused whatever the
+     * exact count, so the scan stops there.
+     */
+    private static String runningUpTo(String bound) {
+        return "(SELECT count(*) FROM (SELECT 1 FROM jobs r WHERE r.tenant_id = ? AND r.state = 'RUNNING' LIMIT "
+                + bound + ") s)";
+    }
 
     /**
      * Serializes claims for one tenant until the claiming transaction ends.
@@ -124,17 +151,17 @@ public class JobService {
     private static final String CLAIM_LOCK_SQL =
             "SELECT pg_advisory_xact_lock(hashtextextended('anvil.claim:' || ?, 0))";
 
+    /** {@link #CLAIM_LOCK_SQL} without waiting: false when another claim holds it. */
+    private static final String CLAIM_TRY_LOCK_SQL =
+            "SELECT pg_try_advisory_xact_lock(hashtextextended('anvil.claim:' || ?, 0))";
+
     /**
-     * The tenant's quota and its current {@code RUNNING} count (the penalty).
-     * Read after {@link #CLAIM_LOCK_SQL}, so in read committed it sees every
-     * claim that held the lock before.
+     * Whether the tenant holds fewer {@code RUNNING} jobs than its quota.
+     * Read after the claim lock in a read-committed transaction, so it sees
+     * every claim that held the lock before.
      */
-    private static final String QUOTA_SQL = """
-            SELECT t.max_running,
-                   (SELECT count(*) FROM jobs r WHERE r.tenant_id = ? AND r.state = 'RUNNING') AS running
-            FROM tenants t
-            WHERE t.id = ?
-            """;
+    private static final String QUOTA_SQL = "SELECT " + runningUpTo("t.max_running")
+            + " < t.max_running AS open FROM tenants t WHERE t.id = ?";
 
     /**
      * Single atomic claim: lock up to 20 claimable candidates in claim order,
@@ -146,11 +173,8 @@ public class JobService {
               SELECT id
               FROM jobs
               WHERE tenant_id = ?
-                AND state = 'QUEUED'
-                AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
-                AND attempt < max_attempts
-                AND next_run_at <= clock_timestamp()
-              ORDER BY next_run_at, created_at, id
+                AND %s
+              ORDER BY %s
               LIMIT 20
               FOR UPDATE SKIP LOCKED
             ),
@@ -169,25 +193,21 @@ public class JobService {
               AND j.tenant_id = ?
               AND j.state = 'QUEUED'
             RETURNING j.id, j.fencing_token, j.attempt, j.lease_expires_at
-            """;
+            """.formatted(ELIGIBLE, CLAIM_ORDER_BY);
 
     /**
-     * One tenant's head job in claim order, with its {@code RUNNING} count.
-     * {@link #claimNext(String)} ranks tenants by these rows; no row means
-     * nothing is eligible.
+     * One tenant's head job in claim order, with its {@code RUNNING} count
+     * up to its quota. {@link #claimNext(String)} ranks tenants by these rows;
+     * no row means nothing is eligible.
      */
     private static final String HEAD_SQL = """
-            SELECT j.next_run_at, j.created_at, j.id,
-                   (SELECT count(*) FROM jobs r WHERE r.tenant_id = ? AND r.state = 'RUNNING') AS running
-            FROM jobs j
-            WHERE j.tenant_id = ?
-              AND j.state = 'QUEUED'
-              AND (j.lease_expires_at IS NULL OR j.lease_expires_at <= clock_timestamp())
-              AND j.attempt < j.max_attempts
-              AND j.next_run_at <= clock_timestamp()
-            ORDER BY j.next_run_at, j.created_at, j.id
+            SELECT next_run_at, created_at, id, %s AS running
+            FROM jobs
+            WHERE tenant_id = ?
+              AND %s
+            ORDER BY %s
             LIMIT 1
-            """;
+            """.formatted(runningUpTo("?"), ELIGIBLE, CLAIM_ORDER_BY);
 
     private static final String INSERT_ATTEMPT_SQL = """
             INSERT INTO attempts (tenant_id, job_id, attempt_number, owner, fencing_token, outcome)
@@ -325,6 +345,14 @@ public class JobService {
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
+
+    /**
+     * Claim transactions run in read committed whatever the pool's default,
+     * so the quota count, taken after the claim lock, sees every claim that
+     * held the lock before. Under repeatable read the snapshot would predate
+     * the lock.
+     */
+    private final TransactionTemplate claimTx;
     private final SaturationSignals signals;
 
     /** Rejection counter for capability-denied commits ({@code cap_rejected}). */
@@ -339,6 +367,8 @@ public class JobService {
             SaturationSignals signals) {
         this.jdbc = jdbc;
         this.tx = new TransactionTemplate(txManager);
+        this.claimTx = new TransactionTemplate(txManager);
+        this.claimTx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         this.signals = signals;
     }
 
@@ -350,7 +380,7 @@ public class JobService {
      *         when the tenant already holds {@code max_running} jobs in
      *         {@code RUNNING}, or when no {@code QUEUED} job with
      *         {@code attempt < max_attempts}, an unheld/expired lease and
-     *         {@code next_run_at <= clock_timestamp()} is available (includes
+     *         {@code next_run_at <= now()} is available (includes
      *         the case where every job is terminal, running, or exhausted).
      * @throws TimelineUnconfirmedException ({@code 503 TIMELINE_UNCONFIRMED})
      *         when the timeline is unknown, or rewound and
@@ -361,7 +391,7 @@ public class JobService {
         String worker = requireOwner(owner);
         long start = System.nanoTime();
         try {
-            return confirmingTimeline(() -> claimOnce(tenant, worker));
+            return confirmingTimeline(() -> claimOnce(tenant, worker, true).claimed());
         } finally {
             if (signals != null) {
                 signals.recordClaimNanos(System.nanoTime() - start);
@@ -380,9 +410,13 @@ public class JobService {
      * is the tenant's {@code RUNNING} count, so a tenant running fewer jobs
      * goes first. Then each tenant in rank order is tried with the same claim
      * as {@link #claim(String, String)}, which re-checks the quota under the
-     * tenant's lock; the first job claimed is returned. A tenant whose head
-     * another worker took in between is skipped, so the order is exact for a
-     * single worker and best-effort under concurrency, while the quota is
+     * tenant's lock; the first job claimed is returned. A tenant whose claim
+     * lock another worker holds is passed over rather than waited on, and
+     * tried again, waiting, only if no other tenant had a job. The ranking is
+     * one snapshot: if another worker took a tenant's head in between, the
+     * claim takes that tenant's next job, which may rank behind another
+     * tenant's head, and the penalty isn't re-read. So the order is exact for
+     * a single worker and best-effort under concurrency, while the quota is
      * always exact.
      *
      * @return the claimed job and its tenant, or empty when no tenant under
@@ -396,8 +430,18 @@ public class JobService {
         long start = System.nanoTime();
         try {
             return confirmingTimeline(() -> {
+                List<String> busy = new ArrayList<>();
                 for (String tenant : rankTenants()) {
-                    Optional<ClaimedJob> claimed = claimOnce(tenant, worker);
+                    Attempt attempt = claimOnce(tenant, worker, false);
+                    if (attempt.claimed().isPresent()) {
+                        return Optional.of(new TenantClaim(tenant, attempt.claimed().get()));
+                    }
+                    if (attempt.lockBusy()) {
+                        busy.add(tenant);
+                    }
+                }
+                for (String tenant : busy) {
+                    Optional<ClaimedJob> claimed = claimOnce(tenant, worker, true).claimed();
                     if (claimed.isPresent()) {
                         return Optional.of(new TenantClaim(tenant, claimed.get()));
                     }
@@ -458,7 +502,7 @@ public class JobService {
                                 rs.getObject("created_at", OffsetDateTime.class),
                                 (UUID) rs.getObject("id"),
                                 rs.getLong("running")),
-                        quota.tenant(), quota.tenant());
+                        quota.tenant(), quota.maxRunning(), quota.tenant());
                 if (!head.isEmpty() && head.get(0).running() < quota.maxRunning()) {
                     heads.add(head.get(0));
                 }
@@ -469,14 +513,29 @@ public class JobService {
         return ranked == null ? List.of() : ranked.stream().map(Head::tenant).toList();
     }
 
-    private Optional<ClaimedJob> claimOnce(String tenant, String worker) {
-        return tx.execute(status -> {
+    /** One claim try: the job claimed, if any, and whether the tenant's lock was busy. */
+    private record Attempt(Optional<ClaimedJob> claimed, boolean lockBusy) {
+
+        static final Attempt NONE = new Attempt(Optional.empty(), false);
+        static final Attempt BUSY = new Attempt(Optional.empty(), true);
+    }
+
+    /**
+     * Claims one of {@code tenant}'s jobs under its claim lock, waiting for the
+     * lock when {@code waitForLock}, otherwise returning {@link Attempt#BUSY}.
+     */
+    private Attempt claimOnce(String tenant, String worker, boolean waitForLock) {
+        Attempt result = claimTx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
             TimelineGuard.requireConfirmed(jdbc);
-            jdbc.query(CLAIM_LOCK_SQL, rs -> {
-            }, tenant);
+            if (waitForLock) {
+                jdbc.query(CLAIM_LOCK_SQL, rs -> {
+                }, tenant);
+            } else if (!Boolean.TRUE.equals(jdbc.queryForObject(CLAIM_TRY_LOCK_SQL, Boolean.class, tenant))) {
+                return Attempt.BUSY;
+            }
             if (!underQuota(tenant)) {
-                return Optional.<ClaimedJob>empty();
+                return Attempt.NONE;
             }
             List<ClaimedJob> rows = jdbc.query(
                     CLAIM_SQL,
@@ -488,7 +547,7 @@ public class JobService {
                             rs.getObject("lease_expires_at", OffsetDateTime.class)),
                     tenant, worker, tenant);
             if (rows.isEmpty()) {
-                return Optional.<ClaimedJob>empty();
+                return Attempt.NONE;
             }
             ClaimedJob claimed = rows.get(0);
             jdbc.update(INSERT_ATTEMPT_SQL,
@@ -497,15 +556,14 @@ public class JobService {
             // payload by contract; heartbeat is never logged.
             AuditChain.append(jdbc, tenant, claimed.jobId(), AuditChain.TYPE_CLAIM,
                     java.util.Map.of("state", "RUNNING"));
-            return Optional.of(claimed);
+            return new Attempt(Optional.of(claimed), false);
         });
+        return result == null ? Attempt.NONE : result;
     }
 
     /** Whether the tenant holds fewer {@code RUNNING} jobs than its quota. */
     private boolean underQuota(String tenant) {
-        List<Boolean> rows = jdbc.query(QUOTA_SQL,
-                (rs, i) -> rs.getLong("running") < rs.getInt("max_running"),
-                tenant, tenant);
+        List<Boolean> rows = jdbc.query(QUOTA_SQL, (rs, i) -> rs.getBoolean("open"), tenant, tenant);
         return !rows.isEmpty() && rows.get(0);
     }
 
