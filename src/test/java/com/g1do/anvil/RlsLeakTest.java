@@ -40,6 +40,7 @@ import com.g1do.anvil.jobs.CapDeniedException;
 import com.g1do.anvil.jobs.CapGrant;
 import com.g1do.anvil.jobs.ClaimedJob;
 import com.g1do.anvil.jobs.JobService;
+import com.g1do.anvil.jobs.TenantClaim;
 import com.g1do.anvil.outbox.IdempotentConsumer;
 import com.g1do.anvil.outbox.OutboxEvent;
 import com.g1do.anvil.outbox.OutboxRelay;
@@ -522,6 +523,25 @@ class RlsLeakTest {
                 }
             }
         }
+        assertPooledLinkClean();
+    }
+
+    @Test
+    void claimNextClaimsEachTenantsJobUnderThatTenantsContext() {
+        // The fair claim (#35) reads every tenant's head job, one tenant context per
+        // statement. As the restricted role, a wrong or missing context would read 0 rows
+        // and claim nothing, so claiming both seeded jobs shows each probe ran as its tenant.
+        JobService appJobs = new JobService(appJdbc, new DataSourceTransactionManager(appPool));
+        Map<String, UUID> claimed = new HashMap<>();
+        for (int i = 0; i < 2; i++) {
+            TenantClaim next = appJobs.claimNext("matrix-next").orElseThrow();
+            assertThat(tenantOfJob(next.job().jobId())).as("claimNext tenant matches the job's")
+                    .isEqualTo(next.tenantId());
+            assertThat(claimed.put(next.tenantId(), next.job().jobId())).as("one claim per tenant").isNull();
+        }
+        assertThat(claimed).containsExactlyInAnyOrderEntriesOf(
+                Map.of(TENANT_A, seedA.jobId(), TENANT_B, seedB.jobId()));
+        assertThat(appJobs.claimNext("matrix-next")).isEmpty();
         assertPooledLinkClean();
     }
 

@@ -1,10 +1,13 @@
 package com.g1do.anvil.jobs;
 
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -47,9 +50,12 @@ import com.g1do.anvil.tenant.TenantGuard;
  * tenant holds fewer than {@code tenants.max_running} jobs in {@code RUNNING}.
  * Claims for one tenant serialize on a transaction-scoped advisory lock taken
  * before the count, so concurrent claims can't overshoot the quota. Jobs are
- * claimed in the order {@code (next_run_at, created_at, id)}: only jobs with
+ * claimed in the order {@code (penalty, next_run_at, created_at, id)}: the
+ * penalty is the tenant's {@code RUNNING} count, only jobs with
  * {@code next_run_at <= clock_timestamp()} are eligible, and arrival order
- * breaks ties.
+ * breaks ties. {@link #claim(String, String)} applies it within one tenant,
+ * where the penalty is the same for every job; {@link #claimNext(String)}
+ * applies it across tenants.
  *
  * <p>Terminal jobs ({@code SUCCEEDED, FAILED, DEAD}) are never offered: claim
  * filters {@code state='QUEUED'} and the {@code job_state_guard} trigger
@@ -119,7 +125,7 @@ public class JobService {
             "SELECT pg_advisory_xact_lock(hashtextextended('anvil.claim:' || ?, 0))";
 
     /**
-     * The tenant's quota and its current {@code RUNNING} count.
+     * The tenant's quota and its current {@code RUNNING} count (the penalty).
      * Read after {@link #CLAIM_LOCK_SQL}, so in read committed it sees every
      * claim that held the lock before.
      */
@@ -163,6 +169,24 @@ public class JobService {
               AND j.tenant_id = ?
               AND j.state = 'QUEUED'
             RETURNING j.id, j.fencing_token, j.attempt, j.lease_expires_at
+            """;
+
+    /**
+     * One tenant's head job in claim order, with its {@code RUNNING} count.
+     * {@link #claimNext(String)} ranks tenants by these rows; no row means
+     * nothing is eligible.
+     */
+    private static final String HEAD_SQL = """
+            SELECT j.next_run_at, j.created_at, j.id,
+                   (SELECT count(*) FROM jobs r WHERE r.tenant_id = ? AND r.state = 'RUNNING') AS running
+            FROM jobs j
+            WHERE j.tenant_id = ?
+              AND j.state = 'QUEUED'
+              AND (j.lease_expires_at IS NULL OR j.lease_expires_at <= clock_timestamp())
+              AND j.attempt < j.max_attempts
+              AND j.next_run_at <= clock_timestamp()
+            ORDER BY j.next_run_at, j.created_at, j.id
+            LIMIT 1
             """;
 
     private static final String INSERT_ATTEMPT_SQL = """
@@ -337,21 +361,112 @@ public class JobService {
         String worker = requireOwner(owner);
         long start = System.nanoTime();
         try {
-            try {
-                return claimOnce(tenant, worker);
-            } catch (TimelineUnconfirmedException e) {
-                // Workers poll claim, so the first poll after leases expire
-                // reopens the gate without an operator step.
-                if (confirmTimeline() != TimelineStatus.CONFIRMED) {
-                    throw e;
-                }
-                return claimOnce(tenant, worker);
-            }
+            return confirmingTimeline(() -> claimOnce(tenant, worker));
         } finally {
             if (signals != null) {
                 signals.recordClaimNanos(System.nanoTime() - start);
             }
         }
+    }
+
+    /**
+     * Claims the next job across every tenant for {@code owner}: the fair
+     * claim (issue #35, record 0020).
+     *
+     * <p>One transaction reads each tenant's quota, {@code RUNNING} count and
+     * head job, each under that tenant's own context, and drops tenants at
+     * their quota or with nothing eligible. The rest are ranked by their head
+     * job's {@code (penalty, next_run_at, created_at, id)}, where the penalty
+     * is the tenant's {@code RUNNING} count, so a tenant running fewer jobs
+     * goes first. Then each tenant in rank order is tried with the same claim
+     * as {@link #claim(String, String)}, which re-checks the quota under the
+     * tenant's lock; the first job claimed is returned. A tenant whose head
+     * another worker took in between is skipped, so the order is exact for a
+     * single worker and best-effort under concurrency, while the quota is
+     * always exact.
+     *
+     * @return the claimed job and its tenant, or empty when no tenant under
+     *         its quota has an eligible job.
+     * @throws TimelineUnconfirmedException ({@code 503 TIMELINE_UNCONFIRMED})
+     *         when the timeline is unknown, or rewound and
+     *         {@link #confirmTimeline()} can't confirm it yet.
+     */
+    public Optional<TenantClaim> claimNext(String owner) {
+        String worker = requireOwner(owner);
+        long start = System.nanoTime();
+        try {
+            return confirmingTimeline(() -> {
+                for (String tenant : rankTenants()) {
+                    Optional<ClaimedJob> claimed = claimOnce(tenant, worker);
+                    if (claimed.isPresent()) {
+                        return Optional.of(new TenantClaim(tenant, claimed.get()));
+                    }
+                }
+                return Optional.<TenantClaim>empty();
+            });
+        } finally {
+            if (signals != null) {
+                signals.recordClaimNanos(System.nanoTime() - start);
+            }
+        }
+    }
+
+    /**
+     * Runs a claim; when the timeline gate refuses, tries to confirm the
+     * timeline once and runs it again. Workers poll claim, so the first poll
+     * after leases expire reopens the gate without an operator step.
+     */
+    private <T> T confirmingTimeline(Supplier<T> attempt) {
+        try {
+            return attempt.get();
+        } catch (TimelineUnconfirmedException e) {
+            if (confirmTimeline() != TimelineStatus.CONFIRMED) {
+                throw e;
+            }
+            return attempt.get();
+        }
+    }
+
+    /** Claim order of two tenants' head jobs; see {@link #claimNext(String)}. */
+    private static final Comparator<Head> CLAIM_ORDER = Comparator
+            .comparingLong(Head::running)
+            .thenComparing(h -> h.nextRunAt().toInstant())
+            .thenComparing(h -> h.createdAt().toInstant())
+            // Postgres orders uuid bytewise, which is the order of the lowercase text form.
+            .thenComparing(h -> h.id().toString());
+
+    /** A tenant's head job in claim order, with its {@code RUNNING} count. */
+    private record Head(String tenant, OffsetDateTime nextRunAt, OffsetDateTime createdAt, UUID id, long running) {
+    }
+
+    /** Tenants under their quota with an eligible job, best first. */
+    private List<String> rankTenants() {
+        record Quota(String tenant, int maxRunning) {
+        }
+        List<Head> ranked = tx.execute(status -> {
+            TimelineGuard.requireConfirmed(jdbc);
+            List<Quota> quotas = jdbc.query("SELECT id, max_running FROM tenants ORDER BY id",
+                    (rs, i) -> new Quota(rs.getString("id"), rs.getInt("max_running")));
+            List<Head> heads = new ArrayList<>();
+            for (Quota quota : quotas) {
+                // One tenant context per statement, as in confirmTimeline.
+                TenantGuard.setTenant(jdbc, quota.tenant());
+                List<Head> head = jdbc.query(HEAD_SQL,
+                        (rs, i) -> new Head(
+                                quota.tenant(),
+                                rs.getObject("next_run_at", OffsetDateTime.class),
+                                rs.getObject("created_at", OffsetDateTime.class),
+                                (UUID) rs.getObject("id"),
+                                rs.getLong("running")),
+                        quota.tenant(), quota.tenant());
+                if (!head.isEmpty() && head.get(0).running() < quota.maxRunning()) {
+                    heads.add(head.get(0));
+                }
+            }
+            heads.sort(CLAIM_ORDER);
+            return heads;
+        });
+        return ranked == null ? List.of() : ranked.stream().map(Head::tenant).toList();
     }
 
     private Optional<ClaimedJob> claimOnce(String tenant, String worker) {
