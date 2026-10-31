@@ -25,6 +25,9 @@ jobs:
         with:
           version: 3.54.0
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # The exec jail runs every child under bubblewrap (record 0019); without it the jail tests fail closed.
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
       - run: task test
   build:
     runs-on: ubuntu-latest

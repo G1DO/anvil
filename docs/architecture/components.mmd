@@ -33,11 +33,12 @@ flowchart TB
     end
 
     subgraph jail["Exec jail"]
-        run["ExecJail run<br/>fork child in tenant workspace"]
+        run["ExecJail run<br/>argv checks + tenant lock, launch sandbox"]
+        sandbox["bwrap sandbox<br/>user, mount, pid, net namespaces<br/>own workspace at /work, private /tmp, no route"]
         resolve["resolveInWorkspace<br/>deny absolute dotdot encoded symlink"]
         env["clean env<br/>PATH + ANVIL_TENANT only"]
         caps["output caps<br/>1MiB stdout stderr + timeout 30s"]
-        egress["JailEgress<br/>default-deny + redirect NEVER"]
+        egress["JailEgress broker, in the parent<br/>allowlist, decoded IPs, re-resolve at connect<br/>pinned address, redirects denied"]
     end
 
     client --> filter
@@ -81,5 +82,7 @@ flowchart TB
     run --> resolve
     run --> env
     run --> caps
-    run --> egress
+    run --> sandbox
+    sandbox -->|bind mount, own tenant only| ws
+    sandbox -.->|"no network, egress only via the parent"| egress
     resolve -->|tenant root only| ws

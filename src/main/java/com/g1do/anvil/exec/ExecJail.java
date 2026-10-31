@@ -10,66 +10,77 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.regex.Pattern;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
- * Minimal execution jail for untrusted work (issue #23).
+ * Execution jail for untrusted work (issues #23 and #73).
  *
- * <p>Contract (narrowest reasonable):
+ * <p>Contract:
  * <ul>
- * <li>Per-tenant writable workspace only: the workspace for {@code tenant} is
+ * <li>Kernel sandbox: {@link #run} launches every child through bubblewrap
+ * ({@code anvil.exec.sandbox}, default {@value #DEFAULT_SANDBOX}) with new
+ * user, mount, PID, IPC, UTS, cgroup and network namespaces, all capabilities
+ * dropped, a new session and {@code --die-with-parent}. The child's file
+ * system holds only read-only {@code /usr} (plus the {@code /bin}, {@code /lib}
+ * links or binds), a fresh {@code /proc} and {@code /dev}, a private tmpfs
+ * {@code /tmp}, and its own tenant workspace bound read-write at
+ * {@value #SANDBOX_WORKDIR}. Sibling workspaces, the exec root, the host
+ * {@code /tmp}, {@code /etc} and host processes don't exist there, so native
+ * code, interpreter {@code -c} strings, workspace binaries, {@code /proc} and
+ * symlinks can't reach them. The network namespace has only its own loopback
+ * and no route, so every packet to another host is dropped by the kernel; the
+ * only egress path is the parent's {@link JailEgress} broker. When the sandbox
+ * binary is missing or can't create namespaces, {@link #run} throws
+ * {@link IllegalStateException} and runs nothing.</li>
+ * <li>Per-tenant writable workspace: the workspace for {@code tenant} is
  * {@code <root>/<tenant>} ({@code anvil.exec.root}, default
- * {@code var/exec-workspaces}). Every file access through this class resolves
- * via {@link #resolveInWorkspace}, which denies absolute paths, {@code ..}
+ * {@code var/exec-workspaces}). Every parent-side file access resolves via
+ * {@link #resolveInWorkspace}, which denies absolute paths, {@code ..}
  * segments, {@code %} (encoded traversal), and null bytes with
  * {@link SecurityException}, denies anything that normalizes outside the
  * workspace, and denies any path with a symlink component (fail-closed: even
- * a symlink pointing inside still denies). The tenant name itself follows the
- * same directory-escape rules as {@code ContentStore} ({@code /, \, .., %}
- * and reserved names rejected).</li>
- * <li>Forked child: {@link #run} launches a real child {@link Process} with its
- * working directory set to the tenant workspace. There is no in-process
- * untrusted execution path. Shell interpreters ({@code sh}, {@code bash},
- * {@code dash}, {@code ash}, {@code zsh}, {@code ksh}, {@code fish},
- * {@code csh}, {@code tcsh}, {@code pwsh}/{@code powershell}) are denied, every
- * operand containing an absolute path, a {@code ..} segment, or {@code %} is
- * denied, workspace executables (relative-with-slash or absolute inside the
- * workspace) are denied, and operands resolving through a symlink are denied.
+ * a symlink pointing inside still denies). Parent-side reads and writes take
+ * the tenant's lock exclusively and {@link #run} holds it shared, so jailed
+ * code can't swap a checked path for a symlink between check and use: when
+ * {@link #run} returns, the PID namespace is gone and no jailed process of
+ * that tenant is left. The tenant name itself follows the same
+ * directory-escape rules as {@code ContentStore} ({@code /, \, .., %} and
+ * reserved names rejected).</li>
+ * <li>Argv checks stay as defence in depth: shell interpreters, absolute,
+ * {@code ..} and {@code %} operands, workspace executables and symlink operands
+ * are denied before launch. The sandbox, not these checks, is the boundary.
  * Stdout/stderr capture is capped at {@value #MAX_CAPTURE_BYTES} bytes per
  * stream (truncated + flag).</li>
- * <li>Clean environment ({@code env -i} equivalent): the child's environment is
- * cleared before launch; only {@code PATH=/usr/bin:/bin},
- * {@code ANVIL_TENANT=<tenant>}, and explicitly passed {@code extraEnv} entries
- * survive. Parent secrets and cross-tenant tokens are never inherited.
- * {@code ANVIL_TENANT} and {@code PATH} cannot be overridden via
- * {@code extraEnv} (ignored); loader/debug keys ({@code LD_*}, {@code DYLD_*},
- * {@code PYTHON*}, {@code PERL*}, {@code RUBY*}, {@code NODE_*}, {@code IFS},
- * {@code BASH_ENV}, {@code ENV}, {@code ZDOTDIR}) are denied.</li>
+ * <li>Clean environment: the child's environment is cleared; only
+ * {@code PATH=/usr/bin:/bin}, {@code ANVIL_TENANT=<tenant>}, and explicitly
+ * passed {@code extraEnv} entries survive. {@code ANVIL_TENANT} and
+ * {@code PATH} cannot be overridden via {@code extraEnv} (ignored);
+ * loader/debug keys ({@code LD_*}, {@code DYLD_*}, {@code PYTHON*},
+ * {@code PERL*}, {@code RUBY*}, {@code NODE_*}, {@code IFS}, {@code BASH_ENV},
+ * {@code ENV}, {@code ZDOTDIR}) are denied.</li>
  * <li>Cross-tenant invisibility at the API layer:
  * {@link #readWorkspaceFile(String, String, String)} denies with a
- * caller-scoped {@link NoSuchFileException} (no content, no oracle) when
- * {@code caller != resource}, mirroring the CAS gateway. A jailed child's
- * listing of its own workspace contains only its own files.</li>
+ * caller-scoped {@link NoSuchFileException} when {@code caller != resource},
+ * before touching the file system or any lock, so the denial takes the same
+ * time whether the target exists or not.</li>
  * </ul>
  *
- * <p>Residual (explicitly out of scope for v1): no mount, user, or network
- * namespace is created, so the OS kernel still permits a raw
- * {@code ../sibling} or {@code /tmp} access from arbitrary native code once it
- * runs (interpreter {@code -c} strings, workspace binaries, or {@code /proc}
- * bypass the argv allowlist; use is restricted to trusted callers composing
- * direct {@code argv} with validated workspace-relative operands). TOCTOU
- * between symlink check and use remains; full containerization,
- * nftables DROP, DNS-rebind hardening, and IP decoding are
- * deferred; network egress from the untrusted path is separately default-denied
- * by {@link JailEgress}.
+ * <p>Residual: the child has no seccomp filter of its own and no cgroup
+ * limits, so a kernel exploit or a resource-exhaustion attack is not
+ * contained by this class. See record 0019.
  */
 @Service
 public class ExecJail {
@@ -89,13 +100,37 @@ public class ExecJail {
             "sh", "bash", "dash", "ash", "zsh", "ksh", "fish", "csh", "tcsh",
             "pwsh", "powershell");
 
-    private final Path root;
+    /** Default bubblewrap binary. */
+    public static final String DEFAULT_SANDBOX = "/usr/bin/bwrap";
 
-    public ExecJail(@Value("${anvil.exec.root:var/exec-workspaces}") String root) {
+    /** Where the tenant workspace appears inside the sandbox. */
+    public static final String SANDBOX_WORKDIR = "/work";
+
+    /** Top-level names that may be links into {@code /usr} (merged-usr) or real dirs. */
+    private static final List<String> SYSTEM_DIRS =
+            List.of("bin", "sbin", "lib", "lib32", "lib64", "libx32");
+
+    private final Path root;
+    private final Path sandbox;
+    private final ConcurrentHashMap<String, ReentrantReadWriteLock> tenantLocks =
+            new ConcurrentHashMap<>();
+    private volatile boolean sandboxVerified;
+
+    public ExecJail(String root) {
+        this(root, DEFAULT_SANDBOX);
+    }
+
+    @Autowired
+    public ExecJail(@Value("${anvil.exec.root:var/exec-workspaces}") String root,
+            @Value("${anvil.exec.sandbox:" + DEFAULT_SANDBOX + "}") String sandbox) {
         if (root == null || root.isBlank()) {
             throw new IllegalArgumentException("exec root must not be blank");
         }
+        if (sandbox == null || sandbox.isBlank()) {
+            throw new IllegalArgumentException("exec sandbox must not be blank");
+        }
         this.root = Paths.get(root.trim());
+        this.sandbox = Paths.get(sandbox.trim());
     }
 
     /**
@@ -165,6 +200,17 @@ public class ExecJail {
         if (content == null) {
             throw new IllegalArgumentException("content must not be null");
         }
+        Lock lock = lockFor(tenant).writeLock();
+        lock.lock();
+        try {
+            writeLocked(tenant, relativePath, content);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void writeLocked(String tenant, String relativePath, byte[] content)
+            throws IOException {
         Path target = resolveInWorkspace(tenant, relativePath);
         Path parent = target.getParent();
         if (parent != null) {
@@ -197,14 +243,18 @@ public class ExecJail {
         if (!caller.equals(resource)) {
             throw new NoSuchFileException("workspaces/" + caller + "/" + rel);
         }
-        Path target = resolveInWorkspace(caller, relativePath);
-        if (Files.isSymbolicLink(target)) {
-            throw new SecurityException("path traverses symlink");
-        }
+        Lock lock = lockFor(caller).writeLock();
+        lock.lock();
         try {
+            Path target = resolveInWorkspace(caller, relativePath);
+            if (Files.isSymbolicLink(target)) {
+                throw new SecurityException("path traverses symlink");
+            }
             return Files.readAllBytes(target);
         } catch (NoSuchFileException e) {
             throw new NoSuchFileException("workspaces/" + caller + "/" + rel);
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -212,15 +262,16 @@ public class ExecJail {
      * Runs {@code argv} as a forked child in the tenant workspace with a cleaned
      * environment.
      *
-     * <p>The child is executed directly (no shell); the caller chooses
-     * {@code argv}. Its working directory is the tenant workspace, its
-     * environment is cleared first ({@code env -i} equivalent) and then set to
-     * exactly {@code PATH}, {@code ANVIL_TENANT}, plus validated
-     * {@code extraEnv} entries. Shell interpreters are denied, every operand
-     * with an absolute path, a {@code ..} segment, or {@code %} is denied,
-     * workspace executables are denied, and operands traversing a symlink are
-     * denied. Stdout/stderr are capped at {@value #MAX_CAPTURE_BYTES} bytes per
-     * stream (truncated + flag).
+     * <p>The child is executed directly (no shell) inside the bubblewrap
+     * sandbox; the caller chooses {@code argv}. Its working directory is the
+     * tenant workspace, bound at {@value #SANDBOX_WORKDIR}. Its environment is
+     * cleared first ({@code env -i} equivalent) and then set to exactly
+     * {@code PATH}, {@code ANVIL_TENANT}, plus validated {@code extraEnv}
+     * entries. As defence in depth, shell interpreters are denied, every
+     * operand with an absolute path, a {@code ..} segment, or {@code %} is
+     * denied, workspace executables are denied, and operands traversing a
+     * symlink are denied. Stdout/stderr are capped at
+     * {@value #MAX_CAPTURE_BYTES} bytes per stream (truncated + flag).
      *
      * @param tenantId authenticated tenant scoping the workspace.
      * @param argv command plus args, executed directly without a shell.
@@ -232,7 +283,8 @@ public class ExecJail {
      *        {@code ENV}, {@code ZDOTDIR}) are denied.
      * @param timeout how long to wait; {@code null} means {@link #DEFAULT_TIMEOUT}.
      * @return captured exit code, stdout, stderr, and truncation flag.
-     * @throws IllegalStateException when the child exceeds the timeout (killed).
+     * @throws IllegalStateException when the sandbox is unavailable (nothing
+     *         runs), or when the child exceeds the timeout (the whole tree is killed).
      * @throws SecurityException when argv escapes the workspace, uses a shell,
      *         targets a workspace executable, or traverses a symlink.
      */
@@ -267,12 +319,8 @@ public class ExecJail {
         }
         assertArgvJailed(workspace, realWorkspace, argv);
 
-        ProcessBuilder builder = new ProcessBuilder(argv);
-        builder.directory(workspace.toFile());
-        Map<String, String> env = builder.environment();
-        env.clear();
-        env.put("PATH", SAFE_PATH);
-        env.put("ANVIL_TENANT", tenant);
+        List<String> envArgs = new ArrayList<>();
+        envArgs.addAll(List.of("--setenv", "PATH", SAFE_PATH, "--setenv", "ANVIL_TENANT", tenant));
         if (extraEnv != null) {
             for (Map.Entry<String, String> entry : extraEnv.entrySet()) {
                 String key = entry.getKey();
@@ -292,10 +340,30 @@ public class ExecJail {
                 if (isBlockedEnvKey(key)) {
                     throw new IllegalArgumentException("extraEnv key denied: " + key);
                 }
-                env.put(key, value);
+                envArgs.addAll(List.of("--setenv", key, value));
             }
         }
+        requireSandbox();
 
+        List<String> command = sandboxPrefix(realWorkspace);
+        command.addAll(envArgs);
+        command.add("--");
+        command.addAll(argv);
+
+        Lock lock = lockFor(tenant).readLock();
+        lock.lock();
+        try {
+            return launch(command, workspace, wait);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private static JailResult launch(List<String> command, Path workspace, Duration wait)
+            throws IOException, InterruptedException {
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.directory(workspace.toFile());
+        builder.environment().clear();
         Process process = builder.start();
         CappedOutputStream stdout = new CappedOutputStream(MAX_CAPTURE_BYTES);
         CappedOutputStream stderr = new CappedOutputStream(MAX_CAPTURE_BYTES);
@@ -307,13 +375,12 @@ public class ExecJail {
         try {
             finished = process.waitFor(wait.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
-            process.destroyForcibly();
+            killTree(process);
             Thread.currentThread().interrupt();
             throw e;
         }
         if (!finished) {
-            process.destroyForcibly();
-            process.waitFor(5, TimeUnit.SECONDS);
+            killTree(process);
             throw new IllegalStateException("jail execution timed out");
         }
         outDrain.join(5_000L);
@@ -322,6 +389,96 @@ public class ExecJail {
         String err = stderr.toString(StandardCharsets.UTF_8);
         return new JailResult(process.exitValue(), out, err,
                 stdout.isTruncated() || stderr.isTruncated());
+    }
+
+    /**
+     * The bubblewrap arguments shared by every child: all namespaces new, no
+     * capabilities, read-only {@code /usr}, private {@code /tmp}, and only the
+     * tenant workspace bound read-write.
+     */
+    private List<String> sandboxPrefix(Path realWorkspace) {
+        // --unshare-all only tries the user and cgroup namespaces; ask for them outright
+        // so a host that can't create them fails closed instead of running without.
+        List<String> cmd = new ArrayList<>(List.of(sandbox.toString(),
+                "--unshare-all", "--unshare-user", "--unshare-cgroup", "--die-with-parent",
+                "--new-session", "--cap-drop", "ALL", "--clearenv", "--ro-bind", "/usr", "/usr"));
+        for (String dir : SYSTEM_DIRS) {
+            Path host = Path.of("/", dir);
+            if (Files.isSymbolicLink(host)) {
+                try {
+                    cmd.addAll(List.of("--symlink", Files.readSymbolicLink(host).toString(), host.toString()));
+                } catch (IOException e) {
+                    throw new IllegalStateException("sandbox unavailable", e);
+                }
+            } else if (Files.isDirectory(host)) {
+                cmd.addAll(List.of("--ro-bind", host.toString(), host.toString()));
+            }
+        }
+        cmd.addAll(List.of("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"));
+        if (realWorkspace != null) {
+            cmd.addAll(List.of("--bind", realWorkspace.toString(), SANDBOX_WORKDIR,
+                    "--chdir", SANDBOX_WORKDIR));
+        }
+        return cmd;
+    }
+
+    /**
+     * Fails closed when the sandbox can't run: a missing binary, or a kernel or
+     * container that refuses unprivileged namespaces. Checked once by running
+     * {@code true} inside an empty sandbox.
+     */
+    private void requireSandbox() throws IOException, InterruptedException {
+        if (sandboxVerified) {
+            return;
+        }
+        if (!Files.isExecutable(sandbox)) {
+            throw new IllegalStateException("sandbox unavailable: " + sandbox + " is not executable");
+        }
+        synchronized (this) {
+            if (sandboxVerified) {
+                return;
+            }
+            List<String> probe = sandboxPrefix(null);
+            probe.addAll(List.of("--", "/usr/bin/true"));
+            ProcessBuilder builder = new ProcessBuilder(probe).redirectErrorStream(true);
+            builder.environment().clear();
+            Process process = builder.start();
+            boolean done = process.waitFor(10, TimeUnit.SECONDS);
+            if (!done) {
+                killTree(process);
+            }
+            byte[] out = done ? process.getInputStream().readNBytes(4096) : new byte[0];
+            if (!done || process.exitValue() != 0) {
+                throw new IllegalStateException("sandbox unavailable: "
+                        + new String(out, StandardCharsets.UTF_8).trim());
+            }
+            sandboxVerified = true;
+        }
+    }
+
+    /**
+     * Kills the sandbox and every process under it, and waits for them to exit,
+     * so the tenant lock is only released once no jailed process is left.
+     */
+    private static void killTree(Process process) {
+        List<ProcessHandle> tree = new ArrayList<>(process.descendants().toList());
+        process.destroyForcibly();
+        tree.forEach(ProcessHandle::destroyForcibly);
+        tree.add(process.toHandle());
+        for (ProcessHandle handle : tree) {
+            try {
+                handle.onExit().get(5, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                if (e instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                // Best effort; --die-with-parent and the PID namespace kill the rest.
+            }
+        }
+    }
+
+    private ReentrantReadWriteLock lockFor(String tenant) {
+        return tenantLocks.computeIfAbsent(tenant, t -> new ReentrantReadWriteLock());
     }
 
     private static Thread drain(InputStream in, ByteArrayOutputStream out) {
@@ -392,9 +549,9 @@ public class ExecJail {
     }
 
     /**
-     * API-layer argv confinement (no kernel namespace in v1): denies shell
-     * interpreters, absolute/{@code ..}/{@code %} operands, workspace
-     * executables, and operands traversing a symlink.
+     * API-layer argv checks, kept as defence in depth behind the sandbox:
+     * denies shell interpreters, absolute/{@code ..}/{@code %} operands,
+     * workspace executables, and operands traversing a symlink.
      */
     private static void assertArgvJailed(Path workspace, Path realWorkspace, List<String> argv)
             throws IOException {
