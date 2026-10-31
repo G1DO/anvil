@@ -43,6 +43,14 @@ import com.g1do.anvil.tenant.TenantGuard;
  * claim has exactly one ledger entry: zero lost, zero doubled (the UNIQUE
  * target rejects zombie double-record).
  *
+ * <p>Fair claim (issue #35, record 0020): a claim takes a job only while its
+ * tenant holds fewer than {@code tenants.max_running} jobs in {@code RUNNING}.
+ * Claims for one tenant serialize on a transaction-scoped advisory lock taken
+ * before the count, so concurrent claims can't overshoot the quota. Jobs are
+ * claimed in the order {@code (next_run_at, created_at, id)}: only jobs with
+ * {@code next_run_at <= clock_timestamp()} are eligible, and arrival order
+ * breaks ties.
+ *
  * <p>Terminal jobs ({@code SUCCEEDED, FAILED, DEAD}) are never offered: claim
  * filters {@code state='QUEUED'} and the {@code job_state_guard} trigger
  * rejects any mutation of a terminal row.
@@ -99,10 +107,33 @@ public class JobService {
     /** Intended reconciler cadence for polling deployments. */
     public static final int RECONCILER_POLL_SECONDS = 1;
 
+    /** Quota for a tenant row that doesn't set one; the V7 column default. */
+    public static final int DEFAULT_MAX_RUNNING = 1000;
+
     /**
-     * Single atomic claim: lock up to 20 claimable candidates, take one, move
-     * it {@code QUEUED -> RUNNING} with a new fencing token and incremented
-     * attempt, stamped by the database clock only.
+     * Serializes claims for one tenant until the claiming transaction ends.
+     * The key is a 64-bit hash of the tenant id in an {@code anvil.claim:}
+     * namespace; a collision only serializes two tenants' claims.
+     */
+    private static final String CLAIM_LOCK_SQL =
+            "SELECT pg_advisory_xact_lock(hashtextextended('anvil.claim:' || ?, 0))";
+
+    /**
+     * The tenant's quota and its current {@code RUNNING} count.
+     * Read after {@link #CLAIM_LOCK_SQL}, so in read committed it sees every
+     * claim that held the lock before.
+     */
+    private static final String QUOTA_SQL = """
+            SELECT t.max_running,
+                   (SELECT count(*) FROM jobs r WHERE r.tenant_id = ? AND r.state = 'RUNNING') AS running
+            FROM tenants t
+            WHERE t.id = ?
+            """;
+
+    /**
+     * Single atomic claim: lock up to 20 claimable candidates in claim order,
+     * take one, move it {@code QUEUED -> RUNNING} with a new fencing token and
+     * incremented attempt, stamped by the database clock only.
      */
     private static final String CLAIM_SQL = """
             WITH candidates AS (
@@ -112,7 +143,8 @@ public class JobService {
                 AND state = 'QUEUED'
                 AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
                 AND attempt < max_attempts
-              ORDER BY created_at, id
+                AND next_run_at <= clock_timestamp()
+              ORDER BY next_run_at, created_at, id
               LIMIT 20
               FOR UPDATE SKIP LOCKED
             ),
@@ -287,12 +319,15 @@ public class JobService {
     }
 
     /**
-     * Atomically claims one claimable job for {@code owner}.
+     * Atomically claims one of {@code tenantId}'s claimable jobs for
+     * {@code owner}, in the order {@code (next_run_at, created_at, id)}.
      *
      * @return the claimed job with its new fencing token and attempt, or empty
-     *         when no {@code QUEUED} job with {@code attempt < max_attempts}
-     *         and an unheld/expired lease is available (includes the case where
-     *         every job is terminal, running, or exhausted).
+     *         when the tenant already holds {@code max_running} jobs in
+     *         {@code RUNNING}, or when no {@code QUEUED} job with
+     *         {@code attempt < max_attempts}, an unheld/expired lease and
+     *         {@code next_run_at <= clock_timestamp()} is available (includes
+     *         the case where every job is terminal, running, or exhausted).
      * @throws TimelineUnconfirmedException ({@code 503 TIMELINE_UNCONFIRMED})
      *         when the timeline is unknown, or rewound and
      *         {@link #confirmTimeline()} can't confirm it yet.
@@ -323,6 +358,11 @@ public class JobService {
         return tx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
             TimelineGuard.requireConfirmed(jdbc);
+            jdbc.query(CLAIM_LOCK_SQL, rs -> {
+            }, tenant);
+            if (!underQuota(tenant)) {
+                return Optional.<ClaimedJob>empty();
+            }
             List<ClaimedJob> rows = jdbc.query(
                     CLAIM_SQL,
                     (rs, i) -> new ClaimedJob(
@@ -344,6 +384,14 @@ public class JobService {
                     java.util.Map.of("state", "RUNNING"));
             return Optional.of(claimed);
         });
+    }
+
+    /** Whether the tenant holds fewer {@code RUNNING} jobs than its quota. */
+    private boolean underQuota(String tenant) {
+        List<Boolean> rows = jdbc.query(QUOTA_SQL,
+                (rs, i) -> rs.getLong("running") < rs.getInt("max_running"),
+                tenant, tenant);
+        return !rows.isEmpty() && rows.get(0);
     }
 
     /**
