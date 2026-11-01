@@ -127,8 +127,6 @@ jobs:
           version: 3.54.0
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: task eval
-        env:
-          EVAL_CANDIDATE: eval/fixtures/attack-rise.jsonl
   pr-description:
     runs-on: ubuntu-latest
     steps:
