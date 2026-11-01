@@ -36,7 +36,7 @@ Nothing extracts yet, so the gate needs three things:
 - **Frozen means frozen.**
   - `task test:contract:eval` runs in the gate's contract check, and fails when a file under `eval/sets/` is edited or removed relative to `main`. A new version goes in a new directory.
   - The SHA-256 check catches local edits that aren't committed.
-  - The PR is squash-merged, so `main` holds the same bytes in a different commit. The hashes tie it to `0bdc408`, and `EvalSetTest.theFreezeCommitHoldsTheSameBytes` compares the files whenever that commit is in the clone. An earlier freeze on the branch (`c260530`) had two inaccurate attack descriptions and was replaced in review, before merge.
+  - The PR is merged with a merge commit, so `0bdc408` is in `main`'s history. The hashes tie the files to it, and `EvalSetTest.theFreezeCommitHoldsTheSameBytes` compares the files whenever that commit is in the clone. An earlier freeze in the same PR (`c260530`) had two inaccurate attack descriptions and was replaced in review. It's in the history too, but it isn't the freeze.
 - **Never tuned on.**
   - No part of the set may be used to write or choose prompts, examples, rules, model settings or thresholds for an extractor scored against it. That includes per-document results.
   - A set that has been tuned on is retired, and a new version is frozen.
@@ -72,7 +72,7 @@ Alternatives considered:
 - **A non-inferiority margin** (fail when the lower bound is under −δ). It needs a δ, and choosing one from this set would be tuning on it. #38 can add one with its decision.
 - **A public dataset.** Its licence and contents would need review, and its texts may already be in a model's training data, so it couldn't be shown to be untuned-on.
 - **Generating documents from templates.** Every document would be a near duplicate of the others.
-- **Recording the squash commit as the freeze commit.** It doesn't exist until merge, and a follow-up edit to record it would itself change a frozen file.
+- **Recording the merge commit as the freeze commit.** It doesn't exist until merge, and a follow-up edit to record it would itself change a frozen file.
 - **A larger set, 10,000 resamples, McNemar and a nightly live eval.** They're out of scope for the pilot (O5).
 
 ## Consequences
@@ -90,4 +90,4 @@ Alternatives considered:
 - **The set is narrow:** short English business texts with four fields. Multilingual, encoded and long-document attacks are out of scope.
 - **The never-tuned-on rule is mostly procedural.** The 8-word check can't see paraphrased examples or rules derived from the set.
 - **The freeze check only binds once the set is on `main`.** Before that, the manifest's hashes and review hold it.
-- **The freeze commit lives on the PR's branch.** After the squash, GitHub keeps it under the PR, and a shallow clone skips the commit comparison; the hashes still hold.
+- **The freeze commit is in `main`'s history, not at its tip.** A shallow clone skips the commit comparison; the hashes still hold.

@@ -5,7 +5,7 @@
     "date": "2026-11-01",
     "commit": "0bdc4088f399176ea3f82ec8d255542d459cb2c9",
     "url": "https://github.com/G1DO/anvil/commit/0bdc4088f399176ea3f82ec8d255542d459cb2c9",
-    "note": "The branch commit that last changed the data files, in the PR for #36. The PR is squash-merged, so main carries the same bytes in a different commit, and a plain clone doesn't have this one; GitHub keeps it under the PR (url above). The sha256 of each file below ties the two together, and EvalSet.load refuses any file that doesn't match. An earlier freeze on the same branch (c260530) had two inaccurate attack descriptions; it was replaced before merge and never reached main."
+    "note": "The commit that last changed the data files, in the PR for #36. The PR is merged with a merge commit, so this commit is in main's history. The sha256 of each file below ties the files to it, and EvalSet.load refuses any file that doesn't match. An earlier freeze in the same PR (c260530) had two inaccurate attack descriptions; it was replaced in review and is in the history too, but it isn't the freeze."
   },
   "sources": "All 52 documents were written for this repository on 2026-11-01: invoices, letters, minutes, receipts, notices and similar short business texts. Every organization and person in them is fictional. No tenant, customer or personal data, and no text copied from a public dataset or website. License: the repository's Apache-2.0.",
   "size": {
