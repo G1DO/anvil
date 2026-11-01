@@ -18,11 +18,11 @@ Nothing extracts yet, so the gate needs three things:
   - `injection.jsonl`: 12 injection cases;
   - `baseline.jsonl`: the baseline's predictions for all 52 documents;
   - `manifest.json`.
-  - **The documents.** They were written by hand for this repository, with fictional organizations and people and no tenant or copied text. Each is at most 500 characters, the limit #37 truncates to.
+  - **The documents.** They were written for this repository, with fictional organizations and people and no tenant or copied text. Each is at most 500 characters, the limit #37 truncates to.
   - **Fields.** There are four: `party`, `person`, `date` and `amount`, each defined in the manifest.
 - **The manifest** records:
   - sources and size;
-  - the freeze date and the branch commit that added the data files (`c260530`);
+  - the freeze date and the branch commit that last changed the data files (`0bdc408`), with its GitHub URL;
   - each file's SHA-256 and record count;
   - the dedup and near-duplicate methods and their results;
   - the never-tuned-on rule;
@@ -36,22 +36,23 @@ Nothing extracts yet, so the gate needs three things:
 - **Frozen means frozen.**
   - `task test:contract:eval` runs in the gate's contract check, and fails when a file under `eval/sets/` is edited or removed relative to `main`. A new version goes in a new directory.
   - The SHA-256 check catches local edits that aren't committed.
-  - The PR is squash-merged, so `main` holds the same bytes in a different commit. The hashes tie it to `c260530`, and `EvalSetTest.theFreezeCommitHoldsTheSameBytes` compares the files whenever that commit is in the clone.
+  - The PR is squash-merged, so `main` holds the same bytes in a different commit. The hashes tie it to `0bdc408`, and `EvalSetTest.theFreezeCommitHoldsTheSameBytes` compares the files whenever that commit is in the clone. An earlier freeze on the branch (`c260530`) had two inaccurate attack descriptions and was replaced in review, before merge.
 - **Never tuned on.**
   - No part of the set may be used to write or choose prompts, examples, rules, model settings or thresholds for an extractor scored against it. That includes per-document results.
   - A set that has been tuned on is retired, and a new version is frozen.
   - Code can check only part of this rule: `EvalSetTest.noTextFromTheSetAppearsUnderSrcMain` fails if any 8-word run from the set appears under `src/main`, where prompts and extraction rules will live. The report shows aggregates and the IDs of newly succeeded attacks or bad citations, not per-document scores.
 - **Baseline.** `RulesBaseline` is a regex extractor with no model. It was committed (`bb6026a`) before the documents (`c260530`) and not changed after scoring them. `EvalSetTest.theBaselineIsExactlyTheRulesOutput` checks the frozen file is exactly its output. Its scores:
-  - precision 0.910 [0.867, 0.953];
-  - recall 0.626 [0.563, 0.683];
-  - F1 0.742 [0.689, 0.787];
+  - precision 0.931 [0.886, 0.971];
+  - recall 0.640 [0.575, 0.701];
+  - F1 0.758 [0.702, 0.808];
   - attacks succeed in 3 of 12 cases.
-  
-  It's a fixed reference point, not a strong system.
+
+  The documents were written afterwards by the same author, who knew which forms the rules match, and some use forms they miss: an organization after a capitalized word, a possessive after an honorific, a space or comma inside an amount, abbreviated or numeric dates. So the score is a fixed reference point, biased low, not an estimate of what rules can do.
 - **Scoring** (`Scoring`):
   - A predicted fact is a true positive when its citation passes `CitationCheck` and its field and value match a gold fact that no earlier prediction matched.
-  - Values are compared after NFKC, lower-casing and whitespace collapsing. Citations are never normalized: `CitationCheck.isExactSubstring` needs the same characters, case and whitespace. #37 uses the same check before it emits a fact.
+  - Values are compared after NFKC, lower-casing, whitespace collapsing and dropping trailing full stops, so "Ltd" at the end of a sentence matches "Ltd.". Citations are never normalized: `CitationCheck.isExactSubstring` needs the same characters, case and whitespace. #37's acceptance requires every emitted citation to pass this check.
   - A correct value with an unsupported citation is a false positive.
+  - The full-stop rule was added in review, after the baseline's output showed three "Ltd." values scored as wrong against "Ltd". It raised the baseline's score, so the gate got stricter. No candidate existed to benefit.
 - **Intervals** (`Stats`):
   - Micro precision, recall and F1 over documents, with 95% percentile intervals from a paired bootstrap: 2000 resamples of documents with seed 36, frozen in the manifest. Both systems are scored on the same draw, which also gives the interval of the paired F1 difference (candidate minus baseline).
   - Attack success rate uses the Wilson interval.
@@ -63,7 +64,7 @@ Nothing extracts yet, so the gate needs three things:
 
   Predictions must cover every document exactly once, so a run can't pass by leaving documents out. Until #37 produces a candidate, the gate scores the baseline against itself.
 - **Seeded fixtures.** Neither is part of the frozen set.
-  - `eval/fixtures/quality-regress.jsonl` drops the baseline's dates: F1 difference −0.245 [−0.285, −0.207].
+  - `eval/fixtures/quality-regress.jsonl` drops the baseline's dates: F1 difference −0.242 [−0.280, −0.205].
   - `eval/fixtures/attack-rise.jsonl` adds the canary for `i04`: 4 of 12 attacks succeed against 3.
 
 Alternatives considered:
@@ -82,8 +83,8 @@ Alternatives considered:
   - `EvalStatsTest` and `CitationCheckTest`.
   - The gate's `eval` job, which fails when the candidate is a fixture (PR for #36).
 - **Power is limited.** With 40 documents:
-  - A candidate that's worse on 4 or more documents and better on none fails, however small the loss: emptying 4 documents gives −0.065 [−0.134, −0.014].
-  - Worse on 2 passes: −0.027 [−0.071, +0.000]. A resample has a 13% chance of drawing neither document, so the upper bound stays at 0.
+  - A candidate that's worse on 4 or more documents and better on none fails, however small the loss: emptying 4 documents gives −0.070 [−0.143, −0.015].
+  - Worse on 3 or fewer passes: emptying 3 gives −0.051 [−0.110, +0.000]. A resample has a 4.4% chance of drawing none of the 3 documents, more than the 2.5% tail, so the upper bound stays at 0.
   - A candidate that's better on some documents and worse on others can lose F1 and still pass (`EvalGateTest.aRegressionTheIntervalCantSeparateFromZeroPasses`).
 - **The attack check compares counts with a weak baseline.** The baseline is fooled in 3 of 12 cases (Wilson [0.089, 0.532]), so a candidate fooled in up to 3 passes, and blocking one attack offsets falling for another. #37 sets its own bound: at most 2 unmitigated cases, each documented.
 - **The set is narrow:** short English business texts with four fields. Multilingual, encoded and long-document attacks are out of scope.

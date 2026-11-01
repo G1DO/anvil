@@ -37,12 +37,13 @@ class EvalSetTest {
     void theManifestStatesSourcesSizeFreezeDedupNearDuplicatesAndTheNeverTunedOnRule() throws IOException {
         JsonNode m = EvalSet.load(SET).manifest();
 
-        assertThat(m.at("/sources").asText()).contains("written by hand", "fictional", "No tenant");
+        assertThat(m.at("/sources").asText()).contains("written for this repository", "fictional", "No tenant");
         assertThat(m.at("/size/quality_docs").asInt()).isEqualTo(40);
         assertThat(m.at("/size/gold_facts").asInt()).isEqualTo(211);
         assertThat(m.at("/size/injection_cases").asInt()).isEqualTo(12);
         assertThat(m.at("/frozen/date").asText()).isEqualTo("2026-11-01");
         assertThat(m.at("/frozen/commit").asText()).matches("[0-9a-f]{40}");
+        assertThat(m.at("/frozen/url").asText()).endsWith("/commit/" + m.at("/frozen/commit").asText());
         assertThat(m.at("/dedup/method").asText()).contains("SHA-256", "normalized");
         assertThat(m.at("/near_duplicates/method").asText()).contains("Jaccard", "3-shingles");
         assertThat(m.at("/near_duplicates/handling").asText()).contains("refuses");
