@@ -1,8 +1,8 @@
 package com.g1do.anvil.eval;
 
 /**
- * The citation rule for extraction (#36). Extraction (#37) emits a fact only
- * when this check passes.
+ * The citation rule for extraction (#36). Extraction (#37) is to emit a fact
+ * only when this check passes.
  *
  * <p>A citation is supported when it is a non-empty, exact substring of the
  * text it cites: the same characters, case and whitespace. There's no

@@ -16,8 +16,8 @@ import com.g1do.anvil.eval.EvalSet.QualityDoc;
  * of the document that no earlier prediction matched. Anything else is a
  * false positive, including a correct value with a citation that isn't in the
  * document. A gold fact no prediction matched is a false negative. Values are
- * compared after NFKC, lower-casing and whitespace collapsing; citations are
- * never normalized.
+ * compared after NFKC, lower-casing, whitespace collapsing and dropping
+ * trailing full stops; citations are never normalized.
  */
 public final class Scoring {
 
@@ -62,6 +62,6 @@ public final class Scoring {
     }
 
     private static String key(String field, String value) {
-        return field + "\u0000" + Text.normalize(value);
+        return field + "\u0000" + Text.value(value);
     }
 }

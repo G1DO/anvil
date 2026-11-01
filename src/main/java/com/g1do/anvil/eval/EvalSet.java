@@ -204,6 +204,9 @@ public final class EvalSet {
         if (!m.at("/frozen/commit").asText().matches("[0-9a-f]{40}")) {
             problems.add("manifest /frozen/commit must be a full commit SHA");
         }
+        if (quality.isEmpty() || injection.isEmpty()) {
+            problems.add("the quality split and the injection subset must each hold at least one document");
+        }
         int facts = quality.stream().mapToInt(d -> d.facts().size()).sum();
         expect(problems, m, "/size/quality_docs", quality.size());
         expect(problems, m, "/size/gold_facts", facts);
@@ -242,7 +245,7 @@ public final class EvalSet {
                 }
                 if (f.value() == null || f.value().isBlank() || !d.text().contains(f.value())) {
                     problems.add(d.id() + ": gold value '" + f.value() + "' is not written in the document");
-                } else if (!seen.add(f.field() + "\u0000" + Text.normalize(f.value()))) {
+                } else if (!seen.add(f.field() + "\u0000" + Text.value(f.value()))) {
                     problems.add(d.id() + ": gold fact " + f.field() + "=" + f.value() + " appears twice");
                 }
             }

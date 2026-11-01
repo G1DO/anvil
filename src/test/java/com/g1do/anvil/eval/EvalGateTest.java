@@ -36,7 +36,7 @@ class EvalGateTest {
         assertThat(r.quality().deltaF1Interval().hi()).isZero();
         assertThat(r.candidateSuccesses()).isEqualTo(r.baselineSuccesses()).isEqualTo(3);
         assertThat(r.unsupported()).isEmpty();
-        assertThat(r.report()).contains("Gate: PASS", "| baseline | 0.910 [0.867, 0.953] | 0.626 [0.563, 0.683] | 0.742");
+        assertThat(r.report()).contains("Gate: PASS", "| baseline | 0.931 [0.886, 0.971] | 0.640 [0.575, 0.701] | 0.758 [0.702, 0.808] |");
     }
 
     @Test
@@ -106,6 +106,33 @@ class EvalGateTest {
     }
 
     @Test
+    void runRefusesPredictionsThatSkipADocument() throws IOException {
+        EvalSet set = EvalSet.load(SET);
+        Map<String, Prediction> candidate = new LinkedHashMap<>(set.baseline());
+        candidate.remove("i12");
+
+        assertThatThrownBy(() -> EvalGate.run(set, candidate, "partial")).isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("partial: no prediction for i12");
+    }
+
+    @Test
+    void theCommandLineExitsZeroOnPassOneOnFailAndTwoOnBadInput(@TempDir Path tmp) throws IOException {
+        Path report = tmp.resolve("out/report.md");
+
+        assertThat(cli(SET.resolve(EvalSet.BASELINE).toString(), report.toString())).isZero();
+        assertThat(Files.readString(report)).contains("Gate: PASS");
+        assertThat(cli("eval/fixtures/quality-regress.jsonl")).isEqualTo(1);
+        assertThat(cli("eval/fixtures/attack-rise.jsonl")).isEqualTo(1);
+        assertThat(cli(tmp.resolve("missing.jsonl").toString())).as("unreadable predictions").isEqualTo(2);
+        Path broken = tmp.resolve("broken.jsonl");
+        Files.writeString(broken, "{not json\n");
+        assertThat(cli(broken.toString())).as("malformed predictions").isEqualTo(2);
+        assertThat(EvalGate.cli(new String[] {tmp.toString(), broken.toString()}, sink(), sink()))
+                .as("a directory that isn't a set").isEqualTo(2);
+        assertThat(EvalGate.cli(new String[] {SET.toString()}, sink(), sink())).as("usage").isEqualTo(2);
+    }
+
+    @Test
     void ciRunsTheEvalGateAndTheFreezeCheck() throws IOException {
         String workflow = Files.readString(Path.of(".github/workflows/gate.yml"));
         String taskfile = Files.readString(Path.of("Taskfile.yml"));
@@ -116,6 +143,17 @@ class EvalGateTest {
                 .contains("default \"eval/sets/pilot-v1/baseline.jsonl\"")
                 .contains("      - task: test:contract:eval\n")
                 .contains("      - task eval\n");
+    }
+
+    private static int cli(String... args) {
+        String[] all = new String[args.length + 1];
+        all[0] = SET.toString();
+        System.arraycopy(args, 0, all, 1, args.length);
+        return EvalGate.cli(all, sink(), sink());
+    }
+
+    private static java.io.PrintStream sink() {
+        return new java.io.PrintStream(java.io.OutputStream.nullOutputStream());
     }
 
     private static Result gate(Path candidate) throws IOException {

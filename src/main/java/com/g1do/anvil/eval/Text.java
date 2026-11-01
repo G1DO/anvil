@@ -17,6 +17,7 @@ import java.util.regex.Pattern;
 final class Text {
 
     private static final Pattern SPACE = Pattern.compile("\\s+");
+    private static final Pattern TRAILING_STOPS = Pattern.compile("[.\\s]+$");
     private static final Pattern WORD = Pattern.compile("[\\p{L}\\p{N}]+");
 
     private Text() {
@@ -26,6 +27,15 @@ final class Text {
     static String normalize(String s) {
         String nfkc = Normalizer.normalize(s, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT);
         return SPACE.matcher(nfkc).replaceAll(" ").strip();
+    }
+
+    /**
+     * How fact values are compared: {@link #normalize}, then any trailing full
+     * stops dropped, so "Ltd" and "Ltd." at the end of a sentence are the same
+     * value. Citations are never normalized.
+     */
+    static String value(String s) {
+        return TRAILING_STOPS.matcher(normalize(s)).replaceAll("");
     }
 
     /** Lower-cased NFKC words: runs of letters and digits. */

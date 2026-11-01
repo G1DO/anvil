@@ -43,6 +43,19 @@ class EvalStatsTest {
     }
 
     @Test
+    void aTrailingFullStopDoesNotChangeAValue() {
+        QualityDoc doc = new QualityDoc("d2", "Invoice to Brightmoor Supplies Ltd. Paid by Kettleby Packaging Co.",
+                List.of(new GoldFact("party", "Brightmoor Supplies Ltd"), new GoldFact("party", "Kettleby Packaging Co.")));
+        Counts c = Scoring.score(doc, List.of(
+                new Fact("party", "Brightmoor Supplies Ltd.", "Brightmoor Supplies Ltd."),
+                new Fact("party", "Kettleby Packaging Co", "Kettleby Packaging Co")));
+
+        assertThat(c).isEqualTo(new Counts(2, 0, 0));
+        assertThat(Scoring.score(doc, List.of(new Fact("party", "Brightmoor Supplies", "Brightmoor Supplies"))))
+                .as("only a trailing full stop is dropped").isEqualTo(new Counts(0, 1, 2));
+    }
+
+    @Test
     void precisionRecallAndF1AreMicroAveraged() {
         Stats.Prf prf = Stats.Prf.of(new Counts(6, 2, 4));
         assertThat(prf.precision()).isEqualTo(0.75);

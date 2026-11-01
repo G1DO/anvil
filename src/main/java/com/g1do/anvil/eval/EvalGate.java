@@ -1,6 +1,7 @@
 package com.g1do.anvil.eval;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -70,6 +71,10 @@ public final class EvalGate {
     }
 
     public static Result run(EvalSet set, Map<String, Prediction> candidate, String candidateName) {
+        List<String> missing = set.docIds().stream().filter(id -> !candidate.containsKey(id)).toList();
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException(candidateName + ": no prediction for " + String.join(", ", missing));
+        }
         List<Counts> cand = new ArrayList<>();
         List<Counts> base = new ArrayList<>();
         List<Unsupported> unsupported = new ArrayList<>();
@@ -193,10 +198,15 @@ public final class EvalGate {
         return ids.isEmpty() ? "none" : String.join(", ", ids);
     }
 
-    public static void main(String[] args) throws IOException {
+    /** Exit codes: 0 the gate passed, 1 it failed, 2 the set or predictions couldn't be read or don't match. */
+    public static void main(String[] args) {
+        System.exit(cli(args, System.out, System.err));
+    }
+
+    static int cli(String[] args, PrintStream out, PrintStream err) {
         if (args.length < 2 || args.length > 3) {
-            System.err.println("usage: EvalGate <set dir> <candidate.jsonl> [report.md]");
-            System.exit(2);
+            err.println("usage: EvalGate <set dir> <candidate.jsonl> [report.md]");
+            return 2;
         }
         Result result;
         try {
@@ -204,19 +214,23 @@ public final class EvalGate {
             Map<String, Prediction> candidate = EvalSet.readPredictions(Path.of(args[1]),
                     new HashSet<>(set.docIds()));
             result = run(set, candidate, args[1]);
-        } catch (IllegalArgumentException e) {
-            System.err.println("eval: " + e.getMessage());
-            System.exit(2);
-            return;
+        } catch (IOException | IllegalArgumentException e) {
+            err.println("eval: " + e);
+            return 2;
         }
-        System.out.print(result.report());
+        out.print(result.report());
         if (args.length == 3) {
-            Path out = Path.of(args[2]);
-            if (out.getParent() != null) {
-                Files.createDirectories(out.getParent());
+            try {
+                Path report = Path.of(args[2]);
+                if (report.getParent() != null) {
+                    Files.createDirectories(report.getParent());
+                }
+                Files.writeString(report, result.report());
+            } catch (IOException e) {
+                err.println("eval: can't write the report: " + e);
+                return 2;
             }
-            Files.writeString(out, result.report());
         }
-        System.exit(result.passed() ? 0 : 1);
+        return result.passed() ? 0 : 1;
     }
 }
