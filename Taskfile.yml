@@ -28,6 +28,7 @@ tasks:
     cmds:
       - task: test:contract:api
       - task: test:contract:schema
+      - task: test:contract:eval
 
   test:contract:api:
     desc: "oasdiff breaking --fail-on ERR against {{.BASE}}; fails when the baseline is missing unless this change adds the spec"
@@ -74,6 +75,28 @@ tasks:
         print("\n".join(bad) if bad else "schema: no breaking migration changes")
         sys.exit(1 if bad else 0)
         EOF
+
+  test:contract:eval:
+    desc: "Fail when a file of a frozen eval set under eval/sets/ is edited or removed; a new set version goes in a new directory (record 0021)"
+    cmds:
+      - |
+        set -e
+        git rev-parse --verify {{.BASE}} >/dev/null
+        changed=$(git diff --name-status --no-renames {{.BASE}}...HEAD -- eval/sets | grep -v '^A' || true)
+        if [ -n "$changed" ]; then
+          echo "eval: frozen set files edited or removed; freeze a new version in a new directory instead:"
+          echo "$changed"
+          exit 1
+        fi
+        echo "eval: no frozen set file changed"
+
+  eval:
+    desc: "Eval gate: score EVAL_CANDIDATE (default: the frozen baseline) against eval/sets/pilot-v1; fails on a quality regression, a rise in attack success, or a citation not in its source. Report: target/eval/report.md"
+    vars:
+      CANDIDATE: '{{.EVAL_CANDIDATE | default "eval/sets/pilot-v1/baseline.jsonl"}}'
+    cmds:
+      - ./mvnw -q -B -ntp compile dependency:build-classpath -Dmdep.outputFile=target/eval.classpath -Dmdep.includeScope=runtime
+      - java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.eval.EvalGate eval/sets/pilot-v1 "{{.CANDIDATE}}" target/eval/report.md
 
   check:sast:
     desc: "Static analysis via Semgrep registry p/default --error, minus rules that only flagged parameterized SQL and the jail's validated argv"
@@ -223,3 +246,4 @@ tasks:
       - task check:audit
       - task check:diagrams
       - task check:tla
+      - task eval
