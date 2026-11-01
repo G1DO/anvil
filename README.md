@@ -82,6 +82,7 @@ task test      # full suite against Testcontainers Postgres restored from a back
 task verify    # everything the gate runs
 task faults:sim   # the nightly simulator runs (FAULT_SEED, FAULT_SIM_RUNS, FAULT_SIM_BREAK)
 task faults:pg    # one weekly real-Postgres fault run (FAULT_SEED)
+task eval         # eval gate on the frozen set (EVAL_CANDIDATE, default the baseline)
 ```
 
 A failed fault run writes its seed, trace and rerun command to `target/fault-runs/`.
@@ -122,8 +123,11 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | Architecture diagrams | [`docs/architecture/`](docs/architecture/README.md) |
 | Decisions | [`docs/decisions/`](docs/decisions/) |
 | Threat model | [`docs/threat-model.md`](docs/threat-model.md) |
+| Frozen eval set and gate fixtures | `eval/sets/pilot-v1/` (never edited; record 0021), `eval/fixtures/` |
 | Fencing model (TLA+ spec) | [`docs/faults/fencing.tla`](docs/faults/fencing.tla) |
 | Gate | `.github/workflows/gate.yml`, which runs the same `task` commands as `Taskfile.yml` |
 | Scheduled fault runs | `.github/workflows/faults.yml` (`task faults:sim`, `task faults:pg`, `task faults:issue`) |
 
-The breaking-change check (`task test:contract`) watches `contracts/openapi.yaml` and `src/main/resources/db/migration/`.
+The breaking-change check (`task test:contract`) watches `contracts/openapi.yaml`, `src/main/resources/db/migration/` and `eval/sets/`.
+
+`task eval` scores a candidate's predictions (one JSON line per document) against the frozen eval set and its baseline. It prints precision, recall and F1 with intervals, the paired F1 difference, attack success and the citation check, and writes the report to `target/eval/report.md`. It fails on a difference interval wholly below 0, a rise in attack success, or a citation that isn't an exact substring of its document. No extractor exists yet (#37), so the gate scores the baseline against itself.
