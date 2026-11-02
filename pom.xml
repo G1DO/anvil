@@ -25,6 +25,7 @@
 		<jackson-2-bom.version>2.21.7</jackson-2-bom.version>
 		<jackson-bom.version>3.1.7</jackson-bom.version>
 		<tomcat.version>11.0.25</tomcat.version>
+		<opentelemetry.version>1.67.0</opentelemetry.version>
 	</properties>
 	<dependencies>
 		<dependency>
