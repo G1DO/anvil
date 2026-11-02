@@ -155,6 +155,38 @@ class GeminiExtractionModelTest {
         assertThat(GeminiExtractionModel.backoff(0, Optional.of("600"))).isEqualTo(Duration.ofSeconds(60));
     }
 
+    static String quota(String quotaId, String retryDelay) {
+        return """
+                {"error":{"code":429,"message":"You exceeded your current quota for prompt 'Acme'.","status":"RESOURCE_EXHAUSTED",
+                 "details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"m",
+                 "quotaId":"%s","quotaValue":"20"}]},
+                 {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"%s"}]}}"""
+                .formatted(quotaId, retryDelay);
+    }
+
+    @Test
+    void aPerMinuteQuotaWaitsAsLongAsGoogleAsks() throws Exception {
+        Scripted t = new Scripted()
+                .then(429, quota("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "37.25s"))
+                .then(200, candidate("{\"facts\":[]}", "STOP"));
+        assertThat(model(t, KEY, 3).complete(BoundedText.of("Doc.")).stopReason()).isEqualTo("end_turn");
+        assertThat(waits).containsExactly(Duration.ofSeconds(38));
+    }
+
+    @Test
+    void aDailyQuotaFailsAtOnceAndSaysWhichQuota() {
+        Scripted t = new Scripted().then(429, quota("GenerateRequestsPerDayPerProjectPerModel-FreeTier", "40s"));
+        assertThatThrownBy(() -> model(t, KEY, 6).complete(BoundedText.of("Doc.")))
+                .isInstanceOf(ModelUnavailableException.class)
+                .hasMessage("model call failed with HTTP 429 (quota GenerateRequestsPerDayPerProjectPerModel-FreeTier,"
+                        + " limit 20)");
+        assertThat(t.sent).hasSize(1);
+        assertThat(waits).isEmpty();
+        // The free-text message, which can quote the request, is never read.
+        assertThat(GeminiExtractionModel.Problem.of(quota("a b'c", "x")).describe()).isEmpty();
+        assertThat(GeminiExtractionModel.Problem.of("not json")).isEqualTo(GeminiExtractionModel.Problem.NONE);
+    }
+
     @Test
     void anOutageIsUnavailableNotPoisonAndTheKeyIsNeverInTheError() {
         Scripted down = new Scripted().then(503, "{}").then(503, "{}").then(503, "{}");

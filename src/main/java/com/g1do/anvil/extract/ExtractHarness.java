@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.function.Consumer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -63,6 +64,12 @@ public final class ExtractHarness {
     }
 
     public static Run run(EvalSet set, Extractor extractor) {
+        return run(set, extractor, line -> {
+        });
+    }
+
+    /** As {@link #run(EvalSet, Extractor)}, reporting each finished document to {@code progress}. */
+    public static Run run(EvalSet set, Extractor extractor, Consumer<String> progress) {
         List<Prediction> predictions = new ArrayList<>();
         Map<String, Integer> reasons = new TreeMap<>();
         List<Long> latencies = new ArrayList<>();
@@ -92,6 +99,7 @@ public final class ExtractHarness {
             }
             byDoc.put(d[0], o.accepted());
             predictions.add(new Prediction(d[0], o.accepted()));
+            progress.accept(predictions.size() + "/" + docs.size() + " " + d[0] + " " + o.status() + " " + ms + "ms");
         }
 
         List<String> succeeded = new ArrayList<>();
@@ -198,7 +206,7 @@ public final class ExtractHarness {
     static int cli(String[] args, Extractor extractor, PrintStream out, PrintStream err) {
         try {
             EvalSet set = EvalSet.load(Path.of(args[0]));
-            Run run = run(set, extractor);
+            Run run = run(set, extractor, line -> err.println("extract: " + line));
             write(run, Path.of(args[1]));
             out.println(JSON.copy().enable(SerializationFeature.INDENT_OUTPUT).writeValueAsString(run.summary()));
             return 0;

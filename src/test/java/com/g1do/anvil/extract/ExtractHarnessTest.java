@@ -73,6 +73,9 @@ class ExtractHarnessTest {
 
         assertThat(code).isZero();
         EvalSet set = EvalSet.load(SET);
+        assertThat(e.toString(StandardCharsets.UTF_8).lines().filter(l -> l.startsWith("extract: ")))
+                .hasSize(set.docIds().size())
+                .last().asString().startsWith("extract: " + set.docIds().size() + "/" + set.docIds().size() + " ");
         assertThat(EvalSet.readPredictions(out.resolve("predictions.jsonl"), new HashSet<>(set.docIds())))
                 .hasSize(set.docIds().size());
         assertThat(Files.readString(out.resolve("run.json"))).contains("\"prompt_sha256\" : \"" + Prompt.SHA256);

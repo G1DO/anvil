@@ -13,6 +13,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -138,12 +139,13 @@ public final class GeminiExtractionModel implements ExtractionModel {
             if (r.status() == 200) {
                 return reply(r.body());
             }
-            if (RETRYABLE.contains(r.status()) && attempt < settings.maxRetries()) {
-                pause(backoff(attempt, r.retryAfter()));
+            Problem p = Problem.of(r.body());
+            if (RETRYABLE.contains(r.status()) && !p.daily() && attempt < settings.maxRetries()) {
+                pause(backoff(attempt, r.retryAfter().or(p::retryDelay)));
                 continue;
             }
-            // Any other code is a configuration fault (key, model, quota); neither is the document's.
-            throw new ModelUnavailableException("model call failed with HTTP " + r.status());
+            // A daily quota, a retry budget spent, or a configuration fault (key, model); none is the document's.
+            throw new ModelUnavailableException("model call failed with HTTP " + r.status() + p.describe());
         }
     }
 
@@ -190,6 +192,56 @@ public final class GeminiExtractionModel implements ExtractionModel {
             default -> REFUSALS.contains(finish) ? "refusal" : finish.toLowerCase(Locale.ROOT);
         };
         return new ModelReply(text.toString(), stop);
+    }
+
+    /**
+     * What a Google error body says about a quota: the quota hit, its limit,
+     * and how long to wait. Only these fields are read, never the free-text
+     * message, so nothing from the request is echoed into logs.
+     */
+    record Problem(String quotaId, String quotaValue, Optional<String> retryDelay) {
+
+        static final Problem NONE = new Problem("", "", Optional.empty());
+        private static final Pattern SAFE = Pattern.compile("[A-Za-z0-9_.\\-]{1,128}");
+        private static final Pattern DELAY = Pattern.compile("(\\d{1,6})(?:\\.\\d+)?s");
+
+        static Problem of(String body) {
+            JsonNode details;
+            try {
+                details = JSON.readTree(body == null ? "" : body).path("error").path("details");
+            } catch (JsonProcessingException e) {
+                return NONE;
+            }
+            String quota = "";
+            String value = "";
+            Optional<String> delay = Optional.empty();
+            for (JsonNode d : details) {
+                for (JsonNode v : d.path("violations")) {
+                    quota = safe(v.path("quotaId").asText(""));
+                    value = safe(v.path("quotaValue").asText(""));
+                }
+                Matcher m = DELAY.matcher(d.path("retryDelay").asText(""));
+                if (m.matches()) {
+                    delay = Optional.of(String.valueOf(Long.parseLong(m.group(1)) + 1));
+                }
+            }
+            return new Problem(quota, value, delay);
+        }
+
+        boolean daily() {
+            return quotaId.contains("PerDay");
+        }
+
+        String describe() {
+            if (quotaId.isEmpty()) {
+                return "";
+            }
+            return " (quota " + quotaId + (quotaValue.isEmpty() ? "" : ", limit " + quotaValue) + ")";
+        }
+
+        private static String safe(String s) {
+            return SAFE.matcher(s).matches() ? s : "";
+        }
     }
 
     static Duration backoff(int attempt, Optional<String> retryAfter) {
