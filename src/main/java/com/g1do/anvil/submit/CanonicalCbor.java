@@ -74,6 +74,15 @@ public final class CanonicalCbor {
         }
     }
 
+    /** Reads canonical bytes written by {@link #encode} back into their fields. */
+    public static CanonicalForm decode(byte[] cbor) {
+        try {
+            return MAPPER.readValue(cbor, CanonicalForm.class);
+        } catch (Exception e) {
+            throw new IllegalStateException("canonical CBOR decoding failed", e);
+        }
+    }
+
     public static Encoded encode(String title, String mimeType, byte[] body) {
         try {
             byte[] cbor = MAPPER.writeValueAsBytes(new CanonicalForm(title, mimeType, body));

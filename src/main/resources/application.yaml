@@ -1,3 +1,15 @@
 spring:
   application:
     name: anvil
+
+# AI extraction (#37, record 0022). The credential comes only from the
+# environment; with none set, extraction answers 503 and calls no model.
+# ANVIL_MODEL_BASE_URL and ANVIL_MODEL override the provider URL and model,
+# for the service and for task eval:extract alike.
+anvil:
+  extraction:
+    base-url: ${ANVIL_MODEL_BASE_URL:https://api.deepseek.com}
+    model: ${ANVIL_MODEL:deepseek-flash}
+    api-key: ${ANVIL_MODEL_API_KEY:}
+    timeout: 60s
+    max-tokens: 4096

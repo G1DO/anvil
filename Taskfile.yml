@@ -91,12 +91,22 @@ tasks:
         echo "eval: no frozen set file changed"
 
   eval:
-    desc: "Eval gate: score EVAL_CANDIDATE (default: the frozen baseline) against eval/sets/pilot-v1; fails on a quality regression, a rise in attack success, or a citation not in its source. Report: target/eval/report.md"
+    desc: "Eval gate: score EVAL_CANDIDATE (default: the committed extraction run) against eval/sets/pilot-v1; fails on a quality regression, a rise in attack success, or a citation not in its source. Report: target/eval/report.md"
     vars:
-      CANDIDATE: '{{.EVAL_CANDIDATE | default "eval/sets/pilot-v1/baseline.jsonl"}}'
+      CANDIDATE: '{{.EVAL_CANDIDATE | default "eval/runs/extract-v1-deepseek-flash/predictions.jsonl"}}'
     cmds:
       - ./mvnw -q -B -ntp compile dependency:build-classpath -Dmdep.outputFile=target/eval.classpath -Dmdep.includeScope=runtime
       - java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.eval.EvalGate eval/sets/pilot-v1 "{{.CANDIDATE}}" target/eval/report.md
+
+  eval:extract:
+    desc: "Harness run: the extraction path over eval/sets/pilot-v1 with the configured model (ANVIL_MODEL_API_KEY from the environment or an untracked .env). Writes predictions.jsonl and run.json to EVAL_RUN, by default eval/runs/extract-v1-<model>"
+    cmds:
+      - ./mvnw -q -B -ntp compile dependency:build-classpath -Dmdep.outputFile=target/eval.classpath -Dmdep.includeScope=runtime
+      - |
+        set -a; [ -f .env ] && . ./.env; set +a
+        run='{{.EVAL_RUN | default ""}}'
+        run="${run:-eval/runs/extract-v1-${ANVIL_MODEL:-deepseek-flash}}"
+        java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.extract.ExtractHarness eval/sets/pilot-v1 "$run"
 
   check:sast:
     desc: "Static analysis via Semgrep registry p/default --error, minus rules that only flagged parameterized SQL and the jail's validated argv"

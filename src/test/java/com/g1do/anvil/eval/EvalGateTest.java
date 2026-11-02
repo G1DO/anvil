@@ -140,9 +140,20 @@ class EvalGateTest {
         assertThat(workflow).contains("  eval:\n").contains("      - run: task eval\n")
                 .containsPattern("needs: \\[[^]]*\\beval\\b[^]]*]");
         assertThat(taskfile).contains("com.g1do.anvil.eval.EvalGate eval/sets/pilot-v1")
-                .contains("default \"eval/sets/pilot-v1/baseline.jsonl\"")
+                // CI scores the committed extraction run (#37), not the baseline against itself.
+                .contains("default \"eval/runs/extract-v1-deepseek-flash/predictions.jsonl\"")
                 .contains("      - task: test:contract:eval\n")
                 .contains("      - task eval\n");
+        assertThat(Path.of("eval/runs/extract-v1-deepseek-flash/predictions.jsonl")).isRegularFile();
+    }
+
+    @Test
+    void theCommittedReportIsAFreshRescoreOfTheCommittedRun(@TempDir Path tmp) throws IOException {
+        Path run = Path.of("eval/runs/extract-v1-deepseek-flash");
+        Path report = tmp.resolve("report.md");
+        assertThat(EvalGate.cli(new String[] { SET.toString(), run.resolve("predictions.jsonl").toString(),
+                report.toString() }, sink(), sink())).isZero();
+        assertThat(Files.readString(report)).isEqualTo(Files.readString(run.resolve("report.md")));
     }
 
     private static int cli(String... args) {

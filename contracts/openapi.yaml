@@ -56,6 +56,51 @@ paths:
                   $ref: '#/components/schemas/Document'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /api/documents/{id}/extract:
+    post:
+      summary: Extract cited facts from the caller's document once (record 0022)
+      description: >
+        Truncates the latest version's text to 500 characters, asks the model once,
+        and indexes only facts whose citation is an exact substring of that text.
+        Poison input and failing facts go to a dead-letter queue that no route serves.
+        A repeat request returns the stored result without a model call.
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/DocumentId'
+      responses:
+        '200':
+          description: The stored extraction for the document's latest version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Extraction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: The model is unconfigured or unreachable; nothing was stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/documents/{id}/facts:
+    get:
+      summary: The indexed facts of the caller's document (record 0022)
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/DocumentId'
+      responses:
+        '200':
+          description: Only facts that passed the citation check; never dead letters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Facts'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /audit/events:
     get:
       summary: Per-job hash-chain reads, tenant solely from X-Tenant-Id
@@ -170,6 +215,12 @@ components:
       in: header
       required: true
       schema: { type: string, maxLength: 255 }
+    DocumentId:
+      name: id
+      in: path
+      required: true
+      description: A malformed, missing or other tenant's ID gets the same 404
+      schema: { type: string }
   schemas:
     SubmitRequest:
       type: object
@@ -212,7 +263,47 @@ components:
         input_sha: { type: string }
         output_sha: { type: string }
         match: { type: boolean }
+    Extraction:
+      type: object
+      required: [extraction_id, document_id, version_id, status, facts, quarantined, truncated]
+      properties:
+        extraction_id: { type: string, format: uuid }
+        document_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        status: { type: string, enum: [ACCEPTED, QUARANTINED] }
+        facts: { type: integer, description: facts indexed }
+        quarantined: { type: integer, description: inputs or facts sent to the dead-letter queue }
+        truncated: { type: boolean, description: the text was cut to 500 characters }
+    Fact:
+      type: object
+      required: [field, value, citation]
+      properties:
+        field: { type: string, enum: [party, person, date, amount] }
+        value: { type: string }
+        citation: { type: string, description: an exact substring of the document's first 500 characters }
+    Facts:
+      type: object
+      required: [document_id, version_id, status, facts]
+      properties:
+        document_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        status: { type: string, enum: [NOT_EXTRACTED, ACCEPTED, QUARANTINED] }
+        facts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Fact'
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
   responses:
+    NotFound:
+      description: Missing, malformed or another tenant's document; the same body for all
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     BadRequest:
       description: malformed request
     Unauthorized:

@@ -48,7 +48,12 @@ Each guarantee links to the tests that prove it. All tests run against real Post
 5. **One tenant's flood can't starve the others.**
    - A claim never takes a tenant past its quota of running jobs, even with 64 claims at once. Jobs are claimed in the order of a penalty (the tenant's running count), then `next_run_at` on the database clock, then arrival: [`FairClaimTest`](src/test/java/com/g1do/anvil/FairClaimTest.java). Why: [record 0020](docs/decisions/0020-fair-claim-under-quota.md).
    - While one tenant floods 8 workers, a quiet tenant's jobs are each claimed within 16 flood claims of their submit. This holds whether the flood's quota is below the pool or above it: [`FairClaimTest`](src/test/java/com/g1do/anvil/FairClaimTest.java).
-6. **Saturation is visible.** Queue age, claim latency and pool wait are exported without tenant data. The burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
+6. **Extracted facts cite their source, stay in their tenant, and poison never reaches the index.** Why: [record 0022](docs/decisions/0022-single-bounded-extraction.md).
+   - There is one extraction path, and it cuts a document to 500 characters in code before any model call: [`ExtractorTest`](src/test/java/com/g1do/anvil/extract/ExtractorTest.java).
+   - A fact is indexed only when its citation is an exact substring of the text the model saw and holds its value. Anything else is quarantined: [`ExtractorTest`](src/test/java/com/g1do/anvil/extract/ExtractorTest.java), [`ExtractHarnessTest`](src/test/java/com/g1do/anvil/extract/ExtractHarnessTest.java).
+   - Forged, malformed and other tenants' document IDs get the same `404` before any model call, and identical content in two tenants is extracted separately, with no shared cache or dedup: [`ExtractionIsolationTest`](src/test/java/com/g1do/anvil/ExtractionIsolationTest.java).
+   - Poison input and rejected facts go to a dead-letter table with a reason, and no route serves it: [`ExtractionIsolationTest`](src/test/java/com/g1do/anvil/ExtractionIsolationTest.java).
+7. **Saturation is visible.** Queue age, claim latency and pool wait are exported without tenant data. The burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 
 Not yet guaranteed: a target for recovery time or data loss (the drill measures them; it doesn't promise them), or detecting a restore that keeps the database timeline, such as a storage snapshot rolled back in place. See [record 0016](docs/decisions/0016-restore-timeline-gate.md).
 
@@ -69,6 +74,8 @@ Success is measured by the guarantees above. Each measure names the test that sh
 - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java).
 - Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
 - A tenant never exceeds its quota of running jobs, and a quiet tenant's jobs keep moving while another tenant floods the workers: [`FairClaimTest`](src/test/java/com/g1do/anvil/FairClaimTest.java).
+- Extraction sends a model at most 500 characters, indexes only facts with an exact citation, and dead-letters the rest: [`ExtractorTest`](src/test/java/com/g1do/anvil/extract/ExtractorTest.java).
+- Extraction shows 0 cross-tenant reads, results or dedup hits, and never serves a dead letter: [`ExtractionIsolationTest`](src/test/java/com/g1do/anvil/ExtractionIsolationTest.java).
 - An unconfirmed or rewound database timeline refuses claims, heartbeats and commits: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java).
 - A backup, clean and point-in-time restore reports its measured recovery time and data loss, with no target claimed: [`PitrRestoreDrillTest`](src/test/java/com/g1do/anvil/PitrRestoreDrillTest.java).
 
@@ -82,7 +89,8 @@ task test      # full suite against Testcontainers Postgres restored from a back
 task verify    # everything the gate runs
 task faults:sim   # the nightly simulator runs (FAULT_SEED, FAULT_SIM_RUNS, FAULT_SIM_BREAK)
 task faults:pg    # one weekly real-Postgres fault run (FAULT_SEED)
-task eval         # eval gate on the frozen set (EVAL_CANDIDATE, default the baseline)
+task eval         # eval gate on the frozen set (EVAL_CANDIDATE, default the committed extraction run)
+task eval:extract # harness run: the extraction path over the frozen set (needs ANVIL_MODEL_API_KEY)
 ```
 
 A failed fault run writes its seed, trace and rerun command to `target/fault-runs/`.
@@ -97,6 +105,8 @@ curl -s localhost:8080/readyz     # readiness (checks the database)
 
 Compose reads `POSTGRES_PASSWORD` from your environment or an untracked `.env`; the names are in `.env.example`. With nothing set it uses a local-only default.
 
+Extraction calls the model configured under `anvil.extraction` in `application.yaml` (DeepSeek's chat completions API, `deepseek-flash`) with the key in `ANVIL_MODEL_API_KEY`. `ANVIL_MODEL` and `ANVIL_MODEL_BASE_URL` override the model and URL for the app and `task eval:extract` alike. Without a key the app still starts, and extraction answers `503` without calling anything.
+
 To run one test class: `./mvnw -B -ntp -Dtest=JobServiceTest test`.
 
 HTTP API (spec in `contracts/openapi.yaml`):
@@ -105,6 +115,8 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | --- | --- |
 | `POST /api/documents` | Submit a document |
 | `GET /api/documents?query=&limit=&cursor=` | Title-prefix search |
+| `POST /api/documents/{id}/extract` | Extract cited facts from a document, once per version, prompt and model |
+| `GET /api/documents/{id}/facts` | The document's indexed facts |
 | `GET /audit/events?job_id=` | A job's audit chain |
 | `GET /audit/replay?job_id=` | Replay a job |
 | `GET /observe/saturation`, `GET /metrics` | Saturation signals |
@@ -124,10 +136,11 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | Decisions | [`docs/decisions/`](docs/decisions/) |
 | Threat model | [`docs/threat-model.md`](docs/threat-model.md) |
 | Frozen eval set and gate fixtures | `eval/sets/pilot-v1/` (never edited; record 0021), `eval/fixtures/` |
+| Extraction harness runs | `eval/runs/` (record 0022) |
 | Fencing model (TLA+ spec) | [`docs/faults/fencing.tla`](docs/faults/fencing.tla) |
 | Gate | `.github/workflows/gate.yml`, which runs the same `task` commands as `Taskfile.yml` |
 | Scheduled fault runs | `.github/workflows/faults.yml` (`task faults:sim`, `task faults:pg`, `task faults:issue`) |
 
 The breaking-change check (`task test:contract`) watches `contracts/openapi.yaml`, `src/main/resources/db/migration/` and `eval/sets/`.
 
-`task eval` scores a candidate's predictions (one JSON line per document) against the frozen eval set and its baseline. It prints precision, recall and F1 with intervals, the paired F1 difference, attack success and the citation check, and writes the report to `target/eval/report.md`. It fails on a difference interval wholly below 0, a rise in attack success, or a citation that isn't an exact substring of its document. No extractor exists yet (#37), so the gate scores the baseline against itself.
+`task eval` scores a candidate's predictions (one JSON line per document) against the frozen eval set and its baseline. It prints precision, recall and F1 with intervals, the paired F1 difference, attack success and the citation check, and writes the report to `target/eval/report.md`. It fails on a difference interval wholly below 0, a rise in attack success, or a citation that isn't an exact substring of its document. By default it scores the committed extraction run, `eval/runs/extract-v1-deepseek-flash` (record 0022).

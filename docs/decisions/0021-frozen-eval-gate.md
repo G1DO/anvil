@@ -1,6 +1,6 @@
 # 0021 — Frozen pilot eval set and a paired gate for extraction
 
-Status: proposed 2026-11-01 (#36). Comes before AI extraction (#37) and its keep, restrict or remove decision (#38). No production code extracts yet.
+Status: proposed 2026-11-01 (#36). Comes before AI extraction (#37) and its keep, restrict or remove decision (#38). Record 0022 (#37) adds the extractor; `task eval` now scores its committed run by default instead of the baseline against itself.
 
 ## Context
 
