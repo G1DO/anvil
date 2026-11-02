@@ -76,8 +76,9 @@ public final class Text {
 
     /**
      * The decoded text of each base64 run of 16 or more characters that
-     * decodes to valid UTF-8 with a space in it, so an ordinary long word or
-     * reference number isn't counted (#79).
+     * decodes to valid UTF-8 without control characters, so an ordinary long
+     * word or reference number isn't counted (#79). Text encoded twice
+     * decodes to its inner base64.
      */
     static List<String> base64Payloads(String s) {
         List<String> out = new ArrayList<>();
@@ -94,7 +95,7 @@ public final class Text {
                         .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
                         .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
                         .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
-                if (text.contains(" ")) {
+                if (text.codePoints().noneMatch(c -> Character.isISOControl(c) && c != '\n' && c != '\t')) {
                     out.add(text);
                 }
             } catch (java.nio.charset.CharacterCodingException e) {

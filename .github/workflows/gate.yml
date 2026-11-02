@@ -112,7 +112,7 @@ jobs:
           version: 3.54.0
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: task check:tla
-  # The eval gate (record 0021): the candidate against the frozen set and baseline.
+  # The eval gate (records 0021, 0024): the committed runs against the frozen sets and baseline.
   eval:
     runs-on: ubuntu-latest
     steps:
@@ -127,6 +127,7 @@ jobs:
           version: 3.54.0
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: task eval
+      - run: task eval:full
   pr-description:
     runs-on: ubuntu-latest
     steps:

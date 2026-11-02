@@ -99,14 +99,61 @@ tasks:
       - java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.eval.EvalGate eval/sets/pilot-v1 "{{.CANDIDATE}}" target/eval/report.md
 
   eval:extract:
-    desc: "Harness run: the extraction path over eval/sets/pilot-v1 with the configured model (ANVIL_MODEL_API_KEY from the environment or an untracked .env). Writes predictions.jsonl and run.json to EVAL_RUN, by default eval/runs/extract-v1-<model>"
+    desc: "Harness run: the extraction path over EVAL_SET (default eval/sets/pilot-v1) with the configured model (ANVIL_MODEL_API_KEY from the environment or an untracked .env). Writes predictions.jsonl and run.json to EVAL_RUN, by default eval/runs/extract-v1-<model> for pilot-v1 and eval/runs/extract-v1-<model>-<set> for another set"
     cmds:
       - ./mvnw -q -B -ntp compile dependency:build-classpath -Dmdep.outputFile=target/eval.classpath -Dmdep.includeScope=runtime
       - |
         set -a; [ -f .env ] && . ./.env; set +a
+        set_dir='{{.EVAL_SET | default "eval/sets/pilot-v1"}}'
         run='{{.EVAL_RUN | default ""}}'
-        run="${run:-eval/runs/extract-v1-${ANVIL_MODEL:-deepseek-flash}}"
-        java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.extract.ExtractHarness eval/sets/pilot-v1 "$run"
+        suffix=""; [ "$(basename "$set_dir")" = pilot-v1 ] || suffix="-$(basename "$set_dir")"
+        run="${run:-eval/runs/extract-v1-${ANVIL_MODEL:-deepseek-flash}$suffix}"
+        java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.extract.ExtractHarness "$set_dir" "$run"
+
+  eval:full:
+    desc: "Eval gate on the full set (#79): score EVAL_CANDIDATE (default: the committed live run over it) against eval/sets/full-v1 with 10,000 resamples and McNemar; fails as task eval does. Report: EVAL_REPORT (default target/eval/full/report.md)"
+    vars:
+      CANDIDATE: '{{.EVAL_CANDIDATE | default "eval/runs/extract-v1-deepseek-flash-full-v1/predictions.jsonl"}}'
+      REPORT: '{{.EVAL_REPORT | default "target/eval/full/report.md"}}'
+    cmds:
+      - ./mvnw -q -B -ntp compile dependency:build-classpath -Dmdep.outputFile=target/eval.classpath -Dmdep.includeScope=runtime
+      - java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.eval.EvalGate eval/sets/full-v1 "{{.CANDIDATE}}" "{{.REPORT}}"
+
+  eval:nightly:
+    desc: "Nightly live eval (#79): the extraction path over eval/sets/full-v1 with the live model, then the full-set gate on its predictions. Needs ANVIL_MODEL_API_KEY; fails without it. Writes run, predictions and report to target/eval/nightly/"
+    cmds:
+      - |
+        set -a; [ -f .env ] && . ./.env; set +a
+        if [ -z "${ANVIL_MODEL_API_KEY:-}" ]; then
+          echo "eval:nightly: ANVIL_MODEL_API_KEY is not set, so the live model can't be asked; nothing was scored"
+          exit 1
+        fi
+      - rm -rf target/eval/nightly
+      - task: eval:extract
+        vars: { EVAL_SET: eval/sets/full-v1, EVAL_RUN: target/eval/nightly }
+      - task: eval:full
+        vars: { EVAL_CANDIDATE: target/eval/nightly/predictions.jsonl, EVAL_REPORT: target/eval/nightly/report.md }
+
+  eval:issue:
+    desc: "Open an issue for a failed nightly live eval with its report and run summary from target/eval/nightly; needs GH_TOKEN with issues: write and RUN_URL"
+    cmds:
+      - |
+        set -e
+        mkdir -p target
+        body=target/eval-issue.md
+        {
+          echo "The nightly live eval failed: ${RUN_URL:?RUN_URL is required}"
+          echo
+          if [ -f target/eval/nightly/report.md ]; then
+            cat target/eval/nightly/report.md
+          else
+            echo "No report was written, so the run failed before scoring (no key, the model unreachable, or a harness error). See the run log."
+          fi
+          if [ -f target/eval/nightly/run.json ]; then
+            echo; echo '```json'; cat target/eval/nightly/run.json; echo '```'
+          fi
+        } > "$body"
+        gh issue create --repo "${GITHUB_REPOSITORY:-G1DO/anvil}" --title "Nightly live eval failed" --body-file "$body"
 
   check:sast:
     desc: "Static analysis via Semgrep registry p/default --error, minus rules that only flagged parameterized SQL and the jail's validated argv"
@@ -257,3 +304,4 @@ tasks:
       - task check:diagrams
       - task check:tla
       - task eval
+      - task eval:full
