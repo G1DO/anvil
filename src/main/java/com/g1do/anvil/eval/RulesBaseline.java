@@ -1,10 +1,14 @@
 package com.g1do.anvil.eval;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,8 +32,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * </ul>
  * Each fact cites the text it matched, and repeats of a field and value are
  * dropped. Run {@code main} with the set's directory to print baseline.jsonl.
+ *
+ * <p>It is also extraction's fallback when the kill-switch is on or a
+ * tenant's budget is spent (#38, record 0023). It moved here from the test
+ * sources unchanged, so the fallback is exactly the frozen baseline.
  */
-final class RulesBaseline {
+public final class RulesBaseline {
 
     private static final String MONTH = "(?:January|February|March|April|May|June|July|August|September|October"
             + "|November|December)";
@@ -46,10 +54,29 @@ final class RulesBaseline {
     private static final Pattern PERSON = Pattern.compile(
             "\\b(?:Mr|Ms|Mrs|Mx|Dr|Prof)\\.? ([A-Z][a-z'-]+(?: [A-Z][a-z'-]+){0,2})");
 
+    /** The identifier a fallback result is stored under, in place of a model's. */
+    public static final String ID = "rules-baseline";
+
+    /**
+     * SHA-256 of the four patterns, stored in place of a prompt hash, so a
+     * change to the rules is a new key rather than a silent change.
+     */
+    public static final String SHA256 = sha256(String.join("\n", PARTY.pattern(), PERSON.pattern(),
+            DATE.pattern(), AMOUNT.pattern()));
+
     private RulesBaseline() {
     }
 
-    static List<Fact> extract(String text) {
+    private static String sha256(String s) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(s.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    public static List<Fact> extract(String text) {
         List<Fact> out = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         add(out, seen, "party", PARTY, text, 0);
