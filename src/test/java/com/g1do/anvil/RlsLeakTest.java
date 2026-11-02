@@ -69,7 +69,8 @@ class RlsLeakTest {
     private static final String TENANT_A = "t_rls_a";
     private static final String TENANT_B = "t_rls_b";
 
-    // Every tenant-scoped table: V1/V2 (7), cap_grants (V3), audit_events (V4), job_checkpoints (V5).
+    // Every tenant-scoped table: V1/V2 (7), cap_grants (V3), audit_events (V4), job_checkpoints (V5),
+    // and the extraction tables (V8).
     private static final List<String> TENANT_TABLES = List.of(
             "documents", "document_versions", "jobs", "attempts", "artifacts", "outbox", "processed_events",
             "cap_grants", "audit_events", "job_checkpoints", "extractions", "extracted_facts",

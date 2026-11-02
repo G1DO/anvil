@@ -13,7 +13,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Text rules shared by the eval set checks and scoring. */
+/** Text rules shared by the eval set checks, scoring, and the extractor's duplicate check. */
 public final class Text {
 
     private static final Pattern SPACE = Pattern.compile("\\s+");

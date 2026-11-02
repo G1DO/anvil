@@ -109,14 +109,17 @@ public final class Extractor {
         if (!isText(mimeType)) {
             return poisoned(false, false, Reason.UNSUPPORTED_MEDIA_TYPE, "media type " + safe(mimeType));
         }
-        BoundedText bounded = BoundedText.of(text);
+        // Leading whitespace is dropped before the cut, so padding can't push the text out of the window.
+        BoundedText bounded = BoundedText.of(text == null ? "" : text.stripLeading());
         if (bounded.text().isBlank()) {
             return poisoned(bounded.truncated(), false, Reason.EMPTY_TEXT, "no text");
         }
-        int bad = firstControlChar(bounded.text());
+        int bad = firstHiddenChar(bounded.text());
         if (bad >= 0) {
-            return poisoned(bounded.truncated(), false, Reason.NOT_TEXT,
-                    String.format(Locale.ROOT, "control character U+%04X at %d", (int) bounded.text().charAt(bad), bad));
+            int cp = bounded.text().codePointAt(bad);
+            return poisoned(bounded.truncated(), false, Reason.NOT_TEXT, String.format(Locale.ROOT,
+                    "%s character U+%04X at %d", Character.getType(cp) == Character.CONTROL ? "control" : "hidden",
+                    cp, bad));
         }
 
         ModelReply reply = model.complete(bounded);
@@ -181,11 +184,37 @@ public final class Extractor {
         if (!CitationCheck.isExactSubstring(shown, f.citation())) {
             return Reason.CITATION_NOT_IN_SOURCE;
         }
-        String value = Text.value(f.value());
-        if (value.isEmpty() || !Text.normalize(f.citation()).contains(value)) {
+        if (!containsWord(f.citation(), f.value())) {
             return Reason.VALUE_NOT_IN_CITATION;
         }
         return null;
+    }
+
+    /**
+     * Whether {@code value} is non-blank and appears in {@code citation} exactly,
+     * case included, as whole words: a match may not start or end inside a word,
+     * so {@code $5} isn't in {@code $500} and {@code 1 May} isn't in {@code 11 May}.
+     * The value served is then text the document holds as written.
+     */
+    static boolean containsWord(String citation, String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        for (int i = citation.indexOf(value); i >= 0; i = citation.indexOf(value, i + 1)) {
+            int end = i + value.length();
+            boolean startsInWord = i > 0 && isWordChar(citation.codePointBefore(i))
+                    && isWordChar(value.codePointAt(0));
+            boolean endsInWord = end < citation.length() && isWordChar(citation.codePointAt(end))
+                    && isWordChar(value.codePointBefore(value.length()));
+            if (!startsInWord && !endsInWord) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isWordChar(int cp) {
+        return Character.isLetterOrDigit(cp);
     }
 
     /** Parses {@code {"facts":[{"field","value","citation"}]}} and nothing else. */
@@ -222,15 +251,30 @@ public final class Extractor {
         return base.startsWith("text/") && base.length() > "text/".length();
     }
 
-    /** Index of the first control character other than tab, line feed and carriage return, or -1. */
-    static int firstControlChar(String s) {
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (Character.getType(c) == Character.CONTROL && c != '\t' && c != '\n' && c != '\r') {
+    /**
+     * Index of the first character that can carry text a reader doesn't see, or
+     * -1: a control character other than tab, line feed and carriage return; a
+     * Unicode tag character (U+E0000 to U+E007F, used to smuggle hidden
+     * instructions); a bidirectional embedding, override or isolate (U+202A to
+     * U+202E, U+2066 to U+2069); or an invisible operator (U+2061 to U+2064).
+     * Zero-width joiners and marks used by real scripts are allowed.
+     */
+    static int firstHiddenChar(String s) {
+        for (int i = 0; i < s.length(); i += Character.charCount(s.codePointAt(i))) {
+            int cp = s.codePointAt(i);
+            boolean control = Character.getType(cp) == Character.CONTROL && cp != '\t' && cp != '\n' && cp != '\r';
+            boolean hidden = (cp >= 0xE0000 && cp <= 0xE007F) || (cp >= 0x202A && cp <= 0x202E)
+                    || (cp >= 0x2066 && cp <= 0x2069) || (cp >= 0x2061 && cp <= 0x2064);
+            if (control || hidden) {
                 return i;
             }
         }
         return -1;
+    }
+
+    /** A whole-document quarantine decided before any model call, such as a stored body that can't be read. */
+    public static Outcome quarantine(Reason reason, String detail) {
+        return poisoned(false, false, reason, detail);
     }
 
     private static Outcome poisoned(boolean truncated, boolean modelCalled, Reason r, String detail) {

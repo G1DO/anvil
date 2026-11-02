@@ -5,6 +5,11 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
@@ -24,6 +29,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.g1do.anvil.extract.BoundedText;
+import com.g1do.anvil.extract.ExtractionService;
 import com.g1do.anvil.extract.ModelReply;
 import com.g1do.anvil.extract.ModelUnavailableException;
 import com.g1do.anvil.extract.ScriptedModel;
@@ -83,6 +89,15 @@ class ExtractionIsolationTest {
 
     @Autowired
     MockMvc mvc;
+
+    @Autowired
+    ExtractionService service;
+
+    @Autowired
+    org.springframework.transaction.PlatformTransactionManager txManager;
+
+    @Autowired
+    com.g1do.anvil.extract.Extractor extractor;
 
     private final ObjectMapper json = new ObjectMapper();
 
@@ -296,6 +311,134 @@ class ExtractionIsolationTest {
 
         model.script(ExtractionIsolationTest::firstWord);
         assertThat(body(extract(A, id.toString())).path("status").asText()).isEqualTo("ACCEPTED");
+    }
+
+    // Concurrent requests for one version: one result is stored, and every request gets it.
+
+    /** Holds every model call until {@code n} calls, or one call and then a release, have arrived. */
+    private CountDownLatch holdModel(int n) {
+        CountDownLatch gate = new CountDownLatch(n);
+        model.script(d -> {
+            gate.countDown();
+            try {
+                assertThat(gate.await(30, TimeUnit.SECONDS)).isTrue();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+            return firstWord(d);
+        });
+        return gate;
+    }
+
+    @Test
+    void concurrentExtractsInOneProcessShareOneModelCall() throws Exception {
+        UUID id = doc(A, "Northwind paid the invoice.");
+        CountDownLatch gate = holdModel(2);
+        ExecutorService pool = Executors.newFixedThreadPool(5);
+        try {
+            List<Future<ExtractionService.Result>> all = new java.util.ArrayList<>();
+            for (int i = 0; i < 5; i++) {
+                all.add(pool.submit(() -> service.extract(A, id).orElseThrow()));
+            }
+            // Let the five requests reach the claim, then release the one call that was made.
+            Thread.sleep(500);
+            gate.countDown();
+            List<ExtractionService.Result> results = new java.util.ArrayList<>();
+            for (Future<ExtractionService.Result> f : all) {
+                results.add(f.get(60, TimeUnit.SECONDS));
+            }
+            assertThat(model.calls()).hasSize(1);
+            assertThat(results).allSatisfy(r -> assertThat(r).isEqualTo(results.getFirst()));
+            assertThat(count("extractions", A)).isEqualTo(1);
+            assertThat(count("extracted_facts", A)).isEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void concurrentExtractsInTwoProcessesStoreOneResultAndBothReturnIt() throws Exception {
+        UUID id = doc(A, "Northwind paid the invoice.");
+        holdModel(2);
+        // A second service instance stands in for another process: it shares the database, not the claim.
+        ExtractionService other = new ExtractionService(jdbc, txManager, extractor);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<ExtractionService.Result> one = pool.submit(() -> service.extract(A, id).orElseThrow());
+            Future<ExtractionService.Result> two = pool.submit(() -> other.extract(A, id).orElseThrow());
+            ExtractionService.Result r1 = one.get(60, TimeUnit.SECONDS);
+            ExtractionService.Result r2 = two.get(60, TimeUnit.SECONDS);
+
+            // Both asked the model; the unique key kept one result, and the loser returned it.
+            assertThat(model.calls()).hasSize(2);
+            assertThat(r1).isEqualTo(r2);
+            assertThat(count("extractions", A)).isEqualTo(1);
+            assertThat(count("extracted_facts", A)).isEqualTo(1);
+            assertThat(count("extraction_dead_letters", A)).isZero();
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    // A result belongs to its prompt and model.
+
+    @Test
+    void aResultFromAnotherPromptIsNotServedAndTheVersionIsExtractedAfresh() throws Exception {
+        UUID id = doc(A, "Northwind paid the invoice.");
+        JsonNode first = body(extract(A, id.toString()));
+        // Stand in for a result stored under an earlier prompt.
+        jdbc.update("UPDATE extractions SET prompt_sha256 = ? WHERE tenant_id = ?", "0".repeat(64), A);
+
+        assertThat(body(facts(A, id.toString())).path("status").asText()).isEqualTo("NOT_EXTRACTED");
+        JsonNode again = body(extract(A, id.toString()));
+        assertThat(again.path("extraction_id").asText()).isNotEqualTo(first.path("extraction_id").asText());
+        assertThat(model.calls()).hasSize(2);
+        assertThat(count("extractions", A)).isEqualTo(2);
+        assertThat(body(facts(A, id.toString())).path("facts")).hasSize(1);
+    }
+
+    // Model output and stored bodies that would break the write are quarantined, not 500s.
+
+    @Test
+    void aNulInModelOutputIsStillDeadLettered() throws Exception {
+        UUID id = doc(A, "Northwind paid the invoice.");
+        model.script(d -> ScriptedModel.ok(
+                "{\"facts\":[{\"field\":\"party\\u0000\",\"value\":\"x\\u0000\",\"citation\":\"y\"}]}"));
+        MvcResult r = extract(A, id.toString());
+        assertThat(r.getResponse().getStatus()).isEqualTo(200);
+        assertThat(body(r).path("quarantined").asInt()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT reason || ':' || field || ':' || value FROM extraction_dead_letters "
+                + "WHERE tenant_id = ?", String.class, A)).isEqualTo("UNKNOWN_FIELD:party\uFFFD:x\uFFFD");
+    }
+
+    @Test
+    void aVersionWithAMissingOrCorruptBodyIsQuarantinedWithoutAModelCall() throws Exception {
+        UUID missing = doc(A, "Northwind paid.");
+        UUID corrupt = doc(A, "Contoso paid.");
+        jdbc.update("UPDATE document_versions SET canonical_cbor = NULL WHERE document_id = ?", missing);
+        jdbc.update("UPDATE document_versions SET canonical_cbor = decode('ff00', 'hex') WHERE document_id = ?",
+                corrupt);
+
+        for (UUID id : List.of(missing, corrupt)) {
+            MvcResult r = extract(A, id.toString());
+            assertThat(r.getResponse().getStatus()).isEqualTo(200);
+            assertThat(body(r).path("status").asText()).isEqualTo("QUARANTINED");
+        }
+        assertThat(model.calls()).isEmpty();
+        assertThat(jdbc.queryForList("SELECT reason FROM extraction_dead_letters WHERE tenant_id = ? ORDER BY reason",
+                String.class, A)).containsExactly("EMPTY_TEXT", "NOT_TEXT");
+    }
+
+    // The runtime role can only add rows: an indexed fact can't be edited, a dead letter can't be deleted.
+
+    @Test
+    void theRuntimeRoleCanOnlyReadAndAppendExtractionRows() {
+        for (String t : List.of("extractions", "extracted_facts", "extraction_dead_letters")) {
+            assertThat(jdbc.queryForList("SELECT privilege_type FROM information_schema.role_table_grants "
+                    + "WHERE grantee = 'anvil_app' AND table_name = ? ORDER BY privilege_type", String.class, t))
+                    .as(t).containsExactly("INSERT", "SELECT");
+        }
     }
 
     // The service path bounds the text too.

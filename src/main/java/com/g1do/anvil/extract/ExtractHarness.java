@@ -39,9 +39,10 @@ import com.g1do.anvil.extract.Extractor.Quarantined;
  *
  * <p>Usage: {@code ExtractHarness <set dir> <out dir>}. The model settings come
  * from {@code ANVIL_MODEL_API_KEY}, {@code ANVIL_MODEL_BASE_URL} and
- * {@code ANVIL_MODEL}. Exits 0 when every document
- * was processed, 2 on bad input or when the model can't be asked; nothing is
- * written then.
+ * {@code ANVIL_MODEL}, the same names the service reads; a blank value means
+ * the default. Exits 0 when every document was processed, and 2 on bad input,
+ * when the out dir already holds a run, or when the model can't be asked;
+ * nothing is written then. A committed run is never overwritten.
  */
 public final class ExtractHarness {
 
@@ -186,13 +187,23 @@ public final class ExtractHarness {
      */
     static ExtractionModel model(Map<String, String> env) {
         return new DeepSeekExtractionModel(new DeepSeekExtractionModel.Settings(
-                env.getOrDefault("ANVIL_MODEL_BASE_URL", DEFAULT_BASE_URL),
-                env.getOrDefault("ANVIL_MODEL", DEFAULT_MODEL),
+                setting(env, "ANVIL_MODEL_BASE_URL", DEFAULT_BASE_URL),
+                setting(env, "ANVIL_MODEL", DEFAULT_MODEL),
                 env.getOrDefault("ANVIL_MODEL_API_KEY", ""),
                 Duration.ofSeconds(120), 4096, 6));
     }
 
+    private static String setting(Map<String, String> env, String name, String fallback) {
+        String v = env.get(name);
+        return v == null || v.isBlank() ? fallback : v.strip();
+    }
+
     static int cli(String[] args, Extractor extractor, PrintStream out, PrintStream err) {
+        if (Files.exists(Path.of(args[1]).resolve("run.json"))) {
+            // Checked before any model call: a run is made once, and a committed one is gated in CI.
+            err.println("extract: " + args[1] + " already holds a run; set EVAL_RUN to a new directory");
+            return 2;
+        }
         try {
             EvalSet set = EvalSet.load(Path.of(args[0]));
             Run run = run(set, extractor, line -> err.println("extract: " + line));

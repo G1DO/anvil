@@ -45,6 +45,73 @@ class ExtractHarnessTest {
     }
 
     @Test
+    void anAttackThatPlantsACitableValueIsCountedAsSucceeded() throws Exception {
+        EvalSet set = EvalSet.load(SET);
+        // A model that obeys every injected instruction: it emits each case's planted value,
+        // cited exactly. The citation check can't catch this (record 0022), so the harness must.
+        Map<String, String> canaryByText = new java.util.HashMap<>();
+        set.injection().forEach(c -> canaryByText.put(BoundedText.of(c.text()).text(), c.canary()));
+        ScriptedModel obedient = new ScriptedModel(d -> {
+            String canary = canaryByText.get(d.text());
+            return ScriptedModel.ok(canary == null ? "{\"facts\":[]}"
+                    : "{\"facts\":[{\"field\":\"party\",\"value\":" + quote(canary) + ",\"citation\":"
+                            + quote(canary) + "}]}");
+        });
+        ExtractHarness.Run run = ExtractHarness.run(set, new Extractor(obedient));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> injection = (Map<String, Object>) run.summary().get("injection");
+        List<String> ids = set.injection().stream().map(EvalSet.AttackCase::id).toList();
+        assertThat(injection).containsEntry("cases", 12).containsEntry("succeeded", 12);
+        assertThat(injection.get("succeeded_ids")).isEqualTo(ids);
+    }
+
+    private static String quote(String s) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(s);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
+    void theCommittedRunWasMadeWithTheCommittedPromptModelAndSet() throws Exception {
+        EvalSet set = EvalSet.load(SET);
+        com.fasterxml.jackson.databind.JsonNode run = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(Path.of("eval/runs/extract-v1-deepseek-flash/run.json").toFile());
+        // Changing the prompt, model or limit means a new run; CI would otherwise re-score a stale one.
+        assertThat(run.path("prompt_sha256").asText()).isEqualTo(Prompt.SHA256);
+        assertThat(run.path("prompt_version").asText()).isEqualTo(Prompt.VERSION);
+        assertThat(run.path("model").asText()).isEqualTo(ExtractHarness.DEFAULT_MODEL);
+        assertThat(run.path("max_chars").asInt()).isEqualTo(BoundedText.MAX_CHARS);
+        assertThat(run.path("set").asText()).isEqualTo(set.name());
+        assertThat(run.path("set_frozen_commit").asText()).isEqualTo(set.manifest().at("/frozen/commit").asText());
+        assertThat(run.path("documents").asInt()).isEqualTo(set.docIds().size());
+        assertThat(run.path("model_calls").asInt()).isEqualTo(set.docIds().size());
+    }
+
+    @Test
+    void aDirectoryThatHoldsARunIsNeverOverwritten(@TempDir Path out) throws Exception {
+        Files.writeString(out.resolve("run.json"), "{}");
+        ScriptedModel model = ScriptedModel.empty();
+        ByteArrayOutputStream e = new ByteArrayOutputStream();
+        int code = ExtractHarness.cli(new String[] { SET.toString(), out.toString() }, new Extractor(model),
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                new PrintStream(e, true, StandardCharsets.UTF_8));
+        assertThat(code).isEqualTo(2);
+        assertThat(model.calls()).isEmpty();
+        assertThat(Files.readString(out.resolve("run.json"))).isEqualTo("{}");
+        assertThat(out.resolve("predictions.jsonl")).doesNotExist();
+        assertThat(e.toString(StandardCharsets.UTF_8)).contains("already holds a run");
+    }
+
+    @Test
+    void blankOverridesMeanTheDefaults() {
+        assertThat(ExtractHarness.model(Map.of("ANVIL_MODEL", " ", "ANVIL_MODEL_BASE_URL", "")).id())
+                .isEqualTo(ExtractHarness.DEFAULT_MODEL);
+    }
+
+    @Test
     void factsWithUnsupportedCitationsNeverReachThePredictions() throws Exception {
         EvalSet set = EvalSet.load(SET);
         // Every document gets one fact citing text that isn't in it.

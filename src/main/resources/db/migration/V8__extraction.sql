@@ -1,21 +1,28 @@
 -- V8 single bounded extraction (issue #37, record 0022).
 --
---   * extractions: one per (tenant, document version). UNIQUE(tenant_id,
---     version_id) means a version is extracted once per tenant; a repeat
---     request returns the stored result without a model call. The key holds the
---     tenant, so two tenants with identical content never share a result: there
---     is no cross-tenant dedup or cache hit. status is ACCEPTED (facts may be
---     indexed) or QUARANTINED (the whole document was poison; nothing indexed).
+--   * extractions: one per (tenant, document version, prompt hash, model).
+--     UNIQUE(tenant_id, version_id, prompt_sha256, model) means a version is
+--     extracted once per tenant with a given prompt and model; a repeat request
+--     returns the stored result without a model call, and a new prompt or model
+--     extracts afresh. The key holds the tenant, so two tenants with identical
+--     content never share a result: there is no cross-tenant dedup or cache
+--     hit. status is ACCEPTED (facts may be indexed) or QUARANTINED (the whole
+--     document was poison; nothing indexed).
 --   * extracted_facts: the index. Only facts whose citation passed the exact
 --     substring check against the text the model saw are inserted. This is the
---     only table GET /api/documents/{id}/facts reads.
+--     only table GET /api/documents/{id}/facts serves facts from.
 --   * extraction_dead_letters: what was quarantined, with a reason. A whole-
 --     document reason has no fact; a per-fact reason keeps the rejected fact.
---     No route reads this table: dead letters are kept and never served.
+--     No route serves its rows: dead letters are kept and never served. POST
+--     /api/documents/{id}/extract reports only how many there are.
 --   * Every table carries tenant_id, references its parent through a composite
 --     (tenant_id, id) foreign key, and has RLS FORCE with the same
 --     tenant_isolation policy as the other tenant tables (V2). Deleting a
 --     document cascades to its extractions, facts and dead letters.
+--   * All three are append-only for the runtime role, like audit_events (V4)
+--     and job_checkpoints (V5): REVOKE ALL, then GRANT SELECT, INSERT. An
+--     indexed fact can't be edited after its citation check, and a dead letter
+--     can't be deleted. Cascades run as the table owner.
 
 CREATE TABLE extractions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -28,7 +35,7 @@ CREATE TABLE extractions (
     truncated BOOLEAN NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (tenant_id, id),
-    UNIQUE (tenant_id, version_id),
+    UNIQUE (tenant_id, version_id, prompt_sha256, model),
     FOREIGN KEY (tenant_id, document_id) REFERENCES documents (tenant_id, id) ON DELETE CASCADE,
     FOREIGN KEY (tenant_id, version_id) REFERENCES document_versions (tenant_id, id) ON DELETE CASCADE
 );
@@ -64,7 +71,8 @@ CREATE INDEX extraction_dead_letters_lookup_idx ON extraction_dead_letters (tena
 ALTER TABLE extractions OWNER TO anvil_migrator;
 ALTER TABLE extracted_facts OWNER TO anvil_migrator;
 ALTER TABLE extraction_dead_letters OWNER TO anvil_migrator;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE extractions, extracted_facts, extraction_dead_letters TO anvil_app;
+REVOKE ALL ON TABLE extractions, extracted_facts, extraction_dead_letters FROM anvil_app;
+GRANT SELECT, INSERT ON TABLE extractions, extracted_facts, extraction_dead_letters TO anvil_app;
 
 ALTER TABLE extractions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE extractions FORCE ROW LEVEL SECURITY;

@@ -147,6 +147,15 @@ class EvalGateTest {
         assertThat(Path.of("eval/runs/extract-v1-deepseek-flash/predictions.jsonl")).isRegularFile();
     }
 
+    @Test
+    void theCommittedReportIsAFreshRescoreOfTheCommittedRun(@TempDir Path tmp) throws IOException {
+        Path run = Path.of("eval/runs/extract-v1-deepseek-flash");
+        Path report = tmp.resolve("report.md");
+        assertThat(EvalGate.cli(new String[] { SET.toString(), run.resolve("predictions.jsonl").toString(),
+                report.toString() }, sink(), sink())).isZero();
+        assertThat(Files.readString(report)).isEqualTo(Files.readString(run.resolve("report.md")));
+    }
+
     private static int cli(String... args) {
         String[] all = new String[args.length + 1];
         all[0] = SET.toString();

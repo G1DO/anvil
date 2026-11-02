@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 
@@ -38,7 +39,12 @@ class DeepSeekExtractionModelTest {
         final List<Sent> sent = new ArrayList<>();
 
         Scripted then(int status, String body) {
-            replies.add(new DeepSeekExtractionModel.Response(status, body));
+            replies.add(new DeepSeekExtractionModel.Response(status, Optional.empty(), body));
+            return this;
+        }
+
+        Scripted then(DeepSeekExtractionModel.Response r) {
+            replies.add(r);
             return this;
         }
 
@@ -115,9 +121,21 @@ class DeepSeekExtractionModelTest {
         assertThat(DeepSeekExtractionModel.reply(choice("{}", "stop")).stopReason()).isEqualTo("end_turn");
         assertThat(DeepSeekExtractionModel.reply(choice("{\"fa", "length")).stopReason()).isEqualTo("max_tokens");
         assertThat(DeepSeekExtractionModel.reply(choice("", "content_filter")).stopReason()).isEqualTo("refusal");
-        assertThat(DeepSeekExtractionModel.reply(choice("", "insufficient_system_resource")).stopReason())
-                .isEqualTo("insufficient_system_resource");
-        assertThat(DeepSeekExtractionModel.reply("{\"choices\":[]}").stopReason()).isEqualTo("no_choice");
+        assertThat(DeepSeekExtractionModel.reply(choice("", "tool_calls")).stopReason()).isEqualTo("tool_calls");
+    }
+
+    @Test
+    void aProviderOutageThatAnswers200IsUnavailableNotPoison() throws Exception {
+        for (String body : List.of(choice("", "insufficient_system_resource"), choice("", "aborted"),
+                "{\"choices\":[]}", "\n\n")) {
+            assertThatThrownBy(() -> DeepSeekExtractionModel.reply(body))
+                    .isInstanceOf(ModelUnavailableException.class);
+        }
+        // Through the extractor, so nothing is quarantined and the version can be extracted later.
+        Extractor x = new Extractor(model(new Scripted().then(200, choice("", "insufficient_system_resource")),
+                KEY, 0));
+        assertThatThrownBy(() -> x.extract("Acme Ltd paid.", "text/plain"))
+                .isInstanceOf(ModelUnavailableException.class);
     }
 
     @Test
@@ -148,7 +166,98 @@ class DeepSeekExtractionModelTest {
         assertThat(model(t, KEY, 3).complete(BoundedText.of("Doc.")).stopReason()).isEqualTo("end_turn");
         assertThat(t.sent).hasSize(4);
         assertThat(waits).containsExactly(Duration.ofSeconds(2), Duration.ofSeconds(4), Duration.ofSeconds(8));
-        assertThat(DeepSeekExtractionModel.backoff(9)).isEqualTo(Duration.ofSeconds(60));
+        assertThat(DeepSeekExtractionModel.backoff(9, Optional.empty())).isEqualTo(Duration.ofSeconds(60));
+    }
+
+    @Test
+    void aRetryAfterHeaderSetsTheWaitUpToAMinute() throws Exception {
+        Scripted t = new Scripted()
+                .then(new DeepSeekExtractionModel.Response(429, Optional.of("17"), "{}"))
+                .then(new DeepSeekExtractionModel.Response(503, Optional.of("900"), "{}"))
+                .then(new DeepSeekExtractionModel.Response(503, Optional.of("soon"), "{}"))
+                .then(200, choice("{\"facts\":[]}", "stop"));
+        model(t, KEY, 3).complete(BoundedText.of("Doc."));
+        assertThat(waits).containsExactly(Duration.ofSeconds(17), Duration.ofSeconds(60), Duration.ofSeconds(8));
+    }
+
+    /** A plain-HTTP local server for the real transport; the HTTPS rule is the adapter's, not the transport's. */
+    private static com.sun.net.httpserver.HttpServer server(com.sun.net.httpserver.HttpHandler h) throws IOException {
+        com.sun.net.httpserver.HttpServer s = com.sun.net.httpserver.HttpServer
+                .create(new java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0), 0);
+        s.createContext("/", h);
+        s.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
+        s.start();
+        return s;
+    }
+
+    @Test
+    void theDeadlineCoversTheWholeReplyNotJustItsHeaders() throws Exception {
+        // Headers at once, then a blank line a second, as the API does while a request waits.
+        com.sun.net.httpserver.HttpServer s = server(ex -> {
+            ex.sendResponseHeaders(200, 0);
+            try (var out = ex.getResponseBody()) {
+                for (int i = 0; i < 30; i++) {
+                    out.write('\n');
+                    out.flush();
+                    Thread.sleep(1000);
+                }
+            } catch (InterruptedException | IOException e) {
+                // The client gave up.
+            }
+        });
+        try {
+            URI uri = URI.create("http://127.0.0.1:" + s.getAddress().getPort() + "/chat/completions");
+            long t0 = System.nanoTime();
+            assertThatThrownBy(() -> DeepSeekExtractionModel.httpTransport(Duration.ofSeconds(2))
+                    .post(uri, Map.of(), "{}")).isInstanceOf(HttpTimeoutException.class);
+            assertThat(Duration.ofNanos(System.nanoTime() - t0)).isLessThan(Duration.ofSeconds(10));
+        } finally {
+            s.stop(0);
+        }
+    }
+
+    @Test
+    void aReplyOverTheSizeCapIsRefused() throws Exception {
+        byte[] big = new byte[DeepSeekExtractionModel.MAX_REPLY_BYTES + 1];
+        java.util.Arrays.fill(big, (byte) ' ');
+        com.sun.net.httpserver.HttpServer s = server(ex -> {
+            ex.sendResponseHeaders(200, big.length);
+            try (var out = ex.getResponseBody()) {
+                out.write(big);
+            } catch (IOException e) {
+                // The client cut it off.
+            }
+        });
+        try {
+            URI uri = URI.create("http://127.0.0.1:" + s.getAddress().getPort() + "/chat/completions");
+            assertThatThrownBy(() -> DeepSeekExtractionModel.httpTransport(Duration.ofSeconds(10))
+                    .post(uri, Map.of(), "{}")).isInstanceOf(IOException.class)
+                    .hasMessageContaining("larger than");
+        } finally {
+            s.stop(0);
+        }
+    }
+
+    @Test
+    void theRealTransportReturnsStatusRetryAfterAndBody() throws Exception {
+        com.sun.net.httpserver.HttpServer s = server(ex -> {
+            byte[] b = "\n{\"ok\":true}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            ex.getResponseHeaders().add("Retry-After", "5");
+            ex.sendResponseHeaders(429, b.length);
+            try (var out = ex.getResponseBody()) {
+                out.write(b);
+            }
+        });
+        try {
+            URI uri = URI.create("http://127.0.0.1:" + s.getAddress().getPort() + "/chat/completions");
+            DeepSeekExtractionModel.Response r = DeepSeekExtractionModel.httpTransport(Duration.ofSeconds(10))
+                    .post(uri, Map.of("Authorization", "Bearer x"), "{}");
+            assertThat(r.status()).isEqualTo(429);
+            assertThat(r.retryAfter()).contains("5");
+            assertThat(r.body()).isEqualTo("\n{\"ok\":true}");
+        } finally {
+            s.stop(0);
+        }
     }
 
     @Test
