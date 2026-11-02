@@ -1,3 +1,15 @@
 spring:
   application:
     name: anvil
+
+# AI extraction (#37, record 0022). The credential comes only from the
+# environment; with none set, extraction answers 503 and calls no model.
+anvil:
+  extraction:
+    base-url: https://opencode.ai/inference/go/anthropic
+    model: claude-haiku-5-5
+    api-key: ${ANVIL_MODEL_API_KEY:}
+    auth: BEARER
+    session-header: x-opencode-session
+    timeout: 30s
+    max-tokens: 4096

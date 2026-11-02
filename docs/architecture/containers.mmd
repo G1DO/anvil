@@ -4,7 +4,7 @@ flowchart TB
     end
     operator["Operator<br/>compose up, health probes, logs"]
     subgraph anvil["ANVIL: one Spring Boot deployable"]
-        api["API service<br/>auth, validate, CBOR, submit, reads, audit, replay, URLs, health"]
+        api["API service<br/>auth, validate, CBOR, submit, reads, audit, replay, URLs, health, extraction"]
         workers["Workers<br/>claim, heartbeat, commit, relay, reconcile"]
         subgraph jailZone["Untrusted code: tenant-supplied execution"]
             jail["Exec jail<br/>bwrap namespaces: own workspace only, private /tmp, no network"]
@@ -16,12 +16,14 @@ flowchart TB
     casStore["CAS store<br/>per-tenant content, hash-verified reads"]
     execWorkspaces["Exec workspaces<br/>per-tenant writable directories"]
     network["Network<br/>egress denied by default"]
+    llm["Model provider<br/>Anthropic-compatible Messages API"]
     broker["JailEgress broker<br/>in the parent: allowlist, connect-time DNS check"]
     tenantClient -->|"TRUST BOUNDARY: X-Tenant-Id checked, input validated"| api
     operator -->|probes, logs| api
     api -->|"JDBC, SET LOCAL app.tenant + RLS"| postgres
     workers -->|"claim, heartbeat, commit, relay, reconcile under RLS"| postgres
     api -->|put and get, torn tails removed| casStore
+    api -.->|"TRUST BOUNDARY: HTTPS, first 500 chars of a document out; reply is untrusted and checked"| llm
     workers -->|put and link, refcount GC| casStore
     workers -.->|"TRUST BOUNDARY: run tenant argv, env, timeout (no production caller yet)"| jail
     jail -->|"own tenant's workspace only: bind mount at /work, resolveInWorkspace"| execWorkspaces

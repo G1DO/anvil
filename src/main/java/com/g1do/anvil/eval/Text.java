@@ -14,7 +14,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** Text rules shared by the eval set checks and scoring. */
-final class Text {
+public final class Text {
 
     private static final Pattern SPACE = Pattern.compile("\\s+");
     private static final Pattern TRAILING_STOPS = Pattern.compile("[.\\s]+$");
@@ -24,7 +24,7 @@ final class Text {
     }
 
     /** NFKC, lower case, runs of whitespace collapsed to one space, trimmed. */
-    static String normalize(String s) {
+    public static String normalize(String s) {
         String nfkc = Normalizer.normalize(s, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT);
         return SPACE.matcher(nfkc).replaceAll(" ").strip();
     }
@@ -34,7 +34,7 @@ final class Text {
      * stops dropped, so "Ltd" and "Ltd." at the end of a sentence are the same
      * value. Citations are never normalized.
      */
-    static String value(String s) {
+    public static String value(String s) {
         return TRAILING_STOPS.matcher(normalize(s)).replaceAll("");
     }
 
