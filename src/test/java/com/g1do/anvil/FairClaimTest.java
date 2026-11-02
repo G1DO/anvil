@@ -90,7 +90,7 @@ class FairClaimTest {
 
     @BeforeEach
     void clean() {
-        jdbc.execute("TRUNCATE TABLE extraction_dead_letters, extracted_facts, extractions, job_checkpoints, audit_events, "
+        jdbc.execute("TRUNCATE TABLE extraction_revocations, extraction_dead_letters, extracted_facts, extractions, job_checkpoints, audit_events, "
                 + "cap_grants, processed_events, outbox, attempts, "
                 + "jobs, document_versions, documents, artifacts");
         jdbc.execute("DELETE FROM tenants WHERE id <> 't_single'");

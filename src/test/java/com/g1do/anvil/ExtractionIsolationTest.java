@@ -106,6 +106,8 @@ class ExtractionIsolationTest {
         clean();
         jdbc.update("INSERT INTO tenants (id) VALUES (?) ON CONFLICT DO NOTHING", A);
         jdbc.update("INSERT INTO tenants (id) VALUES (?) ON CONFLICT DO NOTHING", B);
+        // Since #38 a model call needs budget; a tenant with none gets the rules fallback (ExtractionCostTest).
+        jdbc.update("INSERT INTO extraction_budgets (tenant_id, calls_remaining) VALUES (?, 1000), (?, 1000)", A, B);
         model.script(ExtractionIsolationTest::firstWord);
         model.calls().clear();
     }
@@ -114,6 +116,7 @@ class ExtractionIsolationTest {
     void clean() {
         // audit_events is append-only (V4 trigger); other suites clean it with TRUNCATE too.
         jdbc.execute("TRUNCATE TABLE audit_events");
+        jdbc.update("DELETE FROM extraction_budgets WHERE tenant_id IN (?, ?)", A, B);
         jdbc.update("DELETE FROM extractions WHERE tenant_id IN (?, ?)", A, B);
         for (String t : List.of("outbox", "jobs", "document_versions", "documents")) {
             jdbc.update("DELETE FROM " + t + " WHERE tenant_id IN (?, ?)", A, B);
