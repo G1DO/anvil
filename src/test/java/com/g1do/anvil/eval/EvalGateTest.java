@@ -140,9 +140,11 @@ class EvalGateTest {
         assertThat(workflow).contains("  eval:\n").contains("      - run: task eval\n")
                 .containsPattern("needs: \\[[^]]*\\beval\\b[^]]*]");
         assertThat(taskfile).contains("com.g1do.anvil.eval.EvalGate eval/sets/pilot-v1")
-                .contains("default \"eval/sets/pilot-v1/baseline.jsonl\"")
+                // CI scores the committed extraction run (#37), not the baseline against itself.
+                .contains("default \"eval/runs/extract-v1-deepseek-flash/predictions.jsonl\"")
                 .contains("      - task: test:contract:eval\n")
                 .contains("      - task eval\n");
+        assertThat(Path.of("eval/runs/extract-v1-deepseek-flash/predictions.jsonl")).isRegularFile();
     }
 
     private static int cli(String... args) {
