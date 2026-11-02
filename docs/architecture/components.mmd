@@ -16,8 +16,9 @@ flowchart TB
         replay["ReplayService + ReplayController<br/>input_sha + output_sha + match"]
         casPre["CasPresignedService<br/>HMAC URLs TTL 60s"]
         extractCtrl["ExtractionController<br/>POST documents id extract, GET documents id facts<br/>same 404 for forged, missing, other tenant"]
-        extractSvc["ExtractionService<br/>tenant-scoped read, model call outside txn<br/>one result per tenant + version + prompt + model"]
+        extractSvc["ExtractionService<br/>screens, then kill-switch, tenant cache, budget, model<br/>one result per tenant + version + prompt + model<br/>revoked never served"]
         extractor["Extractor, the one path<br/>BoundedText 500 chars, one model call<br/>CitationCheck exact substring, quarantine"]
+        rules["RulesBaseline fallback<br/>frozen regex, no model call<br/>same checks, marked fallback"]
         adapter["DeepSeekExtractionModel<br/>JSON mode, deadline over the whole reply<br/>1 MiB cap, retries with backoff"]
         observe["ObserveController<br/>saturation JSON + metrics text"]
         health["HealthController<br/>healthz readyz + correlation"]
@@ -53,8 +54,9 @@ flowchart TB
     filter --> replay
     filter --> extractCtrl --> extractSvc --> extractor
     extractor -->|"BoundedText"| adapter
+    extractor -->|"kill-switch, no budget, revoked"| rules
     adapter -->|"TRUST BOUNDARY: 500 chars out, reply checked before use"| llm
-    extractSvc -->|"facts + dead letters, JDBC SET LOCAL + RLS"| pg
+    extractSvc -->|"facts, dead letters, cache lookup, budget spend, switch read, JDBC SET LOCAL + RLS"| pg
     submitSvc -->|JDBC SET LOCAL + RLS| pg
     readSvc -->|JDBC SET LOCAL + RLS| pg
     auditRead -->|JDBC SET LOCAL + RLS| pg

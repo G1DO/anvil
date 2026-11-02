@@ -53,6 +53,10 @@ Each guarantee links to the tests that prove it. All tests run against real Post
    - A fact is indexed only when its citation is an exact substring of the text the model saw and holds its value. Anything else is quarantined: [`ExtractorTest`](src/test/java/com/g1do/anvil/extract/ExtractorTest.java), [`ExtractHarnessTest`](src/test/java/com/g1do/anvil/extract/ExtractHarnessTest.java).
    - Forged, malformed and other tenants' document IDs get the same `404` before any model call, and identical content in two tenants is extracted separately, with no shared cache or dedup: [`ExtractionIsolationTest`](src/test/java/com/g1do/anvil/ExtractionIsolationTest.java).
    - Poison input and rejected facts go to a dead-letter table with a reason, and no route serves it: [`ExtractionIsolationTest`](src/test/java/com/g1do/anvil/ExtractionIsolationTest.java).
+   - **Model calls are cached per tenant and capped, and can be stopped.** Why: [record 0023](docs/decisions/0023-restrict-extraction-behind-budget-and-kill-switch.md).
+     - A repeat of the same text, prompt and model in the same tenant makes no model call. Another tenant never hits that cache. Quarantined, failing or revoked entries are never served: [`ExtractionCostTest`](src/test/java/com/g1do/anvil/ExtractionCostTest.java), [`ExtractionFallbackTest`](src/test/java/com/g1do/anvil/extract/ExtractionFallbackTest.java).
+     - Each call takes one from the tenant's budget, even across processes. With no budget left or the kill-switch off, the frozen rules answer with zero model calls, and the result is marked as fallback: [`ExtractionCostTest`](src/test/java/com/g1do/anvil/ExtractionCostTest.java).
+     - Cost and latency are published in the [cost report](eval/runs/extract-v1-deepseek-flash-cost/cost.md): about $0.0001 to $0.0003 per document, with model-call p95 under 1.5 s.
 7. **Saturation is visible.** Queue age, claim latency and pool wait are exported without tenant data. The burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 
 Not yet guaranteed: a target for recovery time or data loss (the drill measures them; it doesn't promise them), or detecting a restore that keeps the database timeline, such as a storage snapshot rolled back in place. See [record 0016](docs/decisions/0016-restore-timeline-gate.md).
@@ -76,6 +80,7 @@ Success is measured by the guarantees above. Each measure names the test that sh
 - A tenant never exceeds its quota of running jobs, and a quiet tenant's jobs keep moving while another tenant floods the workers: [`FairClaimTest`](src/test/java/com/g1do/anvil/FairClaimTest.java).
 - Extraction sends a model at most 500 characters, indexes only facts with an exact citation, and dead-letters the rest: [`ExtractorTest`](src/test/java/com/g1do/anvil/extract/ExtractorTest.java).
 - Extraction shows 0 cross-tenant reads, results or dedup hits, and never serves a dead letter: [`ExtractionIsolationTest`](src/test/java/com/g1do/anvil/ExtractionIsolationTest.java).
+- A cache hit, an exhausted budget and the kill-switch each make 0 model calls, and the budget is never overspent: [`ExtractionCostTest`](src/test/java/com/g1do/anvil/ExtractionCostTest.java).
 - An unconfirmed or rewound database timeline refuses claims, heartbeats and commits: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java).
 - A backup, clean and point-in-time restore reports its measured recovery time and data loss, with no target claimed: [`PitrRestoreDrillTest`](src/test/java/com/g1do/anvil/PitrRestoreDrillTest.java).
 
@@ -105,7 +110,7 @@ curl -s localhost:8080/readyz     # readiness (checks the database)
 
 Compose reads `POSTGRES_PASSWORD` from your environment or an untracked `.env`; the names are in `.env.example`. With nothing set it uses a local-only default.
 
-Extraction calls the model configured under `anvil.extraction` in `application.yaml` (DeepSeek's chat completions API, `deepseek-flash`) with the key in `ANVIL_MODEL_API_KEY`. `ANVIL_MODEL` and `ANVIL_MODEL_BASE_URL` override the model and URL for the app and `task eval:extract` alike. Without a key the app still starts, and extraction answers `503` without calling anything.
+Extraction calls the model configured under `anvil.extraction` in `application.yaml` (DeepSeek's chat completions API, `deepseek-flash`) with the key in `ANVIL_MODEL_API_KEY`. `ANVIL_MODEL` and `ANVIL_MODEL_BASE_URL` override the model and URL for the app and `task eval:extract` alike. Without a key the app still starts, and extraction answers `503` without calling anything. A tenant also needs a call budget, which an operator grants in `extraction_budgets`. Without one, or with the kill-switch in `extraction_switch` off, the rules answer and the result is marked as fallback. The statements are in [record 0023](docs/decisions/0023-restrict-extraction-behind-budget-and-kill-switch.md).
 
 To run one test class: `./mvnw -B -ntp -Dtest=JobServiceTest test`.
 
@@ -115,8 +120,8 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | --- | --- |
 | `POST /api/documents` | Submit a document |
 | `GET /api/documents?query=&limit=&cursor=` | Title-prefix search |
-| `POST /api/documents/{id}/extract` | Extract cited facts from a document, once per version, prompt and model |
-| `GET /api/documents/{id}/facts` | The document's indexed facts |
+| `POST /api/documents/{id}/extract` | Extract cited facts from a document, once per version, prompt and model; from the tenant's cache, the model, or the rules fallback |
+| `GET /api/documents/{id}/facts` | The document's indexed facts, marked when they come from the fallback |
 | `GET /audit/events?job_id=` | A job's audit chain |
 | `GET /audit/replay?job_id=` | Replay a job |
 | `GET /observe/saturation`, `GET /metrics` | Saturation signals |
@@ -136,7 +141,7 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | Decisions | [`docs/decisions/`](docs/decisions/) |
 | Threat model | [`docs/threat-model.md`](docs/threat-model.md) |
 | Frozen eval set and gate fixtures | `eval/sets/pilot-v1/` (never edited; record 0021), `eval/fixtures/` |
-| Extraction harness runs | `eval/runs/` (record 0022) |
+| Extraction harness runs and the cost report | `eval/runs/` (records 0022, 0023) |
 | Fencing model (TLA+ spec) | [`docs/faults/fencing.tla`](docs/faults/fencing.tla) |
 | Gate | `.github/workflows/gate.yml`, which runs the same `task` commands as `Taskfile.yml` |
 | Scheduled fault runs | `.github/workflows/faults.yml` (`task faults:sim`, `task faults:pg`, `task faults:issue`) |
