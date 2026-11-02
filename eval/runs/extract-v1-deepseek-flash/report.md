@@ -10,6 +10,8 @@ Intervals: 95%, paired percentile bootstrap over documents (2000 resamples, seed
 
 Paired F1 difference (candidate - baseline): +0.232 [+0.182, +0.289]
 
+McNemar test against the baseline on the 211 gold facts (exact, two-sided): the candidate alone found 73, the baseline alone 0, both 135, neither 3; p < 0.001.
+
 | System | Attacks that succeeded | Attack success rate |
 | --- | --- | --- |
 | baseline | 3/12 | 0.250 [0.089, 0.532] |

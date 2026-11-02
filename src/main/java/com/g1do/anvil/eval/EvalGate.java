@@ -6,14 +6,19 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 
 import com.g1do.anvil.eval.EvalSet.AttackCase;
+import com.g1do.anvil.eval.EvalSet.GoldFact;
 import com.g1do.anvil.eval.EvalSet.QualityDoc;
 import com.g1do.anvil.eval.Scoring.Counts;
 import com.g1do.anvil.eval.Stats.Interval;
+import com.g1do.anvil.eval.Stats.McNemar;
 import com.g1do.anvil.eval.Stats.Paired;
 import com.g1do.anvil.eval.Stats.Scored;
 
@@ -31,6 +36,11 @@ import com.g1do.anvil.eval.Stats.Scored;
  * split, cites text that isn't an exact substring of its document.</li>
  * </ul>
  *
+ * <p>The report also gives McNemar's test against the baseline on the gold
+ * facts each system found, and, for sets whose injection cases say how they
+ * are written, attack success by encoding and language (#79). Neither
+ * changes the verdict.
+ *
  * <p>Run as {@code task eval}: {@code EvalGate <set dir> <candidate.jsonl> [report.md]}.
  * Exits 0 when the gate passes, 1 when it fails, and 2 when the set or the
  * predictions can't be read or don't match the set.
@@ -45,9 +55,14 @@ public final class EvalGate {
     public record Unsupported(String doc, Fact fact) {
     }
 
-    public record Result(String candidate, Paired quality, int attacks, int baselineSuccesses,
-            int candidateSuccesses, List<String> newlySucceeded, List<String> newlyBlocked, int citations,
-            List<Unsupported> unsupported, List<Failure> failures, String report) {
+    /** Attack outcomes for one group of injection cases, such as one language. */
+    public record Group(String name, int cases, int candidateSuccesses, int baselineSuccesses) {
+    }
+
+    public record Result(String candidate, Paired quality, McNemar mcnemar, int attacks, int baselineSuccesses,
+            int candidateSuccesses, List<String> newlySucceeded, List<String> newlyBlocked, List<Group> byEncoding,
+            List<Group> byLanguage, int citations, List<Unsupported> unsupported, List<Failure> failures,
+            String report) {
 
         public boolean passed() {
             return failures.isEmpty();
@@ -62,8 +77,8 @@ public final class EvalGate {
         }
 
         Result withReport(String text) {
-            return new Result(candidate, quality, attacks, baselineSuccesses, candidateSuccesses, newlySucceeded,
-                    newlyBlocked, citations, unsupported, failures, text);
+            return new Result(candidate, quality, mcnemar, attacks, baselineSuccesses, candidateSuccesses,
+                    newlySucceeded, newlyBlocked, byEncoding, byLanguage, citations, unsupported, failures, text);
         }
     }
 
@@ -79,19 +94,29 @@ public final class EvalGate {
         List<Counts> base = new ArrayList<>();
         List<Unsupported> unsupported = new ArrayList<>();
         int citations = 0;
+        int[] pairs = new int[4]; // candidate only, baseline only, both, neither
         for (QualityDoc d : set.quality()) {
             List<Fact> facts = candidate.get(d.id()).facts();
+            List<Fact> baseFacts = set.baseline().get(d.id()).facts();
             cand.add(Scoring.score(d, facts));
-            base.add(Scoring.score(d, set.baseline().get(d.id()).facts()));
+            base.add(Scoring.score(d, baseFacts));
             citations += facts.size();
             Scoring.unsupported(d.text(), facts).forEach(f -> unsupported.add(new Unsupported(d.id(), f)));
+            Set<GoldFact> c = Scoring.found(d, facts);
+            Set<GoldFact> b = Scoring.found(d, baseFacts);
+            for (GoldFact g : new LinkedHashSet<>(d.facts())) {
+                pairs[c.contains(g) ? (b.contains(g) ? 2 : 0) : (b.contains(g) ? 1 : 3)]++;
+            }
         }
         Paired quality = Stats.pairedBootstrap(cand, base, set.bootstrap().resamples(), set.bootstrap().seed());
+        McNemar mcnemar = Stats.mcnemar(pairs[0], pairs[1], pairs[2], pairs[3]);
 
         int baseHits = 0;
         int candHits = 0;
         List<String> newlySucceeded = new ArrayList<>();
         List<String> newlyBlocked = new ArrayList<>();
+        Map<String, int[]> encodings = new TreeMap<>();
+        Map<String, int[]> languages = new TreeMap<>();
         for (AttackCase c : set.injection()) {
             List<Fact> facts = candidate.get(c.id()).facts();
             citations += facts.size();
@@ -100,6 +125,8 @@ public final class EvalGate {
             boolean k = Scoring.attackSucceeded(c, facts);
             baseHits += b ? 1 : 0;
             candHits += k ? 1 : 0;
+            tally(encodings, c.encoding(), k, b);
+            tally(languages, c.language(), k, b);
             if (k && !b) {
                 newlySucceeded.add(c.id());
             } else if (b && !k) {
@@ -117,10 +144,26 @@ public final class EvalGate {
         if (!unsupported.isEmpty()) {
             failures.add(Failure.CITATION_NOT_IN_SOURCE);
         }
-        Result scored = new Result(candidateName, quality, set.injection().size(), baseHits, candHits,
-                List.copyOf(newlySucceeded), List.copyOf(newlyBlocked), citations, List.copyOf(unsupported),
-                List.copyOf(failures), "");
+        Result scored = new Result(candidateName, quality, mcnemar, set.injection().size(), baseHits, candHits,
+                List.copyOf(newlySucceeded), List.copyOf(newlyBlocked), groups(encodings), groups(languages),
+                citations, List.copyOf(unsupported), List.copyOf(failures), "");
         return scored.withReport(report(set, scored));
+    }
+
+    /** Counts a case under its group; a case that doesn't name one isn't grouped. */
+    private static void tally(Map<String, int[]> groups, String name, boolean candidate, boolean baseline) {
+        if (name == null) {
+            return;
+        }
+        int[] g = groups.computeIfAbsent(name, n -> new int[3]);
+        g[0]++;
+        g[1] += candidate ? 1 : 0;
+        g[2] += baseline ? 1 : 0;
+    }
+
+    private static List<Group> groups(Map<String, int[]> groups) {
+        return groups.entrySet().stream().map(e -> new Group(e.getKey(), e.getValue()[0], e.getValue()[1],
+                e.getValue()[2])).toList();
     }
 
     static String report(EvalSet set, Result r) {
@@ -141,6 +184,12 @@ public final class EvalGate {
         row(s, "candidate", q.candidate());
         s.append("\nPaired F1 difference (candidate - baseline): ").append(signed(q.deltaF1())).append(' ')
                 .append(interval(q.deltaF1Interval(), true)).append("\n\n");
+        McNemar m = r.mcnemar();
+        s.append("McNemar test against the baseline on the ").append(facts)
+                .append(" gold facts (exact, two-sided): the candidate alone found ").append(m.candidateOnly())
+                .append(", the baseline alone ").append(m.baselineOnly()).append(", both ").append(m.both())
+                .append(", neither ").append(m.neither()).append("; p ").append(pValue(m.pValue()))
+                .append(".\n\n");
 
         s.append("| System | Attacks that succeeded | Attack success rate |\n| --- | --- | --- |\n");
         s.append("| baseline | ").append(r.baselineSuccesses()).append('/').append(r.attacks()).append(" | ")
@@ -151,6 +200,8 @@ public final class EvalGate {
                 .append(interval(Stats.wilson(r.candidateSuccesses(), r.attacks()), false)).append(" |\n\n");
         s.append("Newly succeeded: ").append(list(r.newlySucceeded())).append(". Newly blocked: ")
                 .append(list(r.newlyBlocked())).append(".\n\n");
+        groupTable(s, "Encoding", r.byEncoding());
+        groupTable(s, "Language", r.byLanguage());
 
         s.append("Citations: ").append(r.unsupported().size()).append(" of ").append(r.citations())
                 .append(" candidate citations are not exact substrings of their document.\n");
@@ -169,6 +220,26 @@ public final class EvalGate {
         s.append("- Citations: ").append(r.unsupported().size()).append(" not in their document")
                 .append(r.failures().contains(Failure.CITATION_NOT_IN_SOURCE) ? ". FAIL\n" : ". Pass\n");
         return s.toString();
+    }
+
+    private static void groupTable(StringBuilder s, String title, List<Group> groups) {
+        if (groups.isEmpty()) {
+            return;
+        }
+        s.append("| ").append(title).append(" | Cases | Candidate attack success | Baseline attack success |\n")
+                .append("| --- | --- | --- | --- |\n");
+        for (Group g : groups) {
+            s.append("| ").append(g.name()).append(" | ").append(g.cases()).append(" | ")
+                    .append(g.candidateSuccesses()).append('/').append(g.cases()).append(' ')
+                    .append(interval(Stats.wilson(g.candidateSuccesses(), g.cases()), false)).append(" | ")
+                    .append(g.baselineSuccesses()).append('/').append(g.cases()).append(" |\n");
+        }
+        s.append('\n');
+    }
+
+    /** "= " and three decimals, or "< 0.001". */
+    static String pValue(double p) {
+        return p < 0.001 ? "< 0.001" : String.format(Locale.ROOT, "= %.3f", p);
     }
 
     private static void row(StringBuilder s, String name, Scored x) {

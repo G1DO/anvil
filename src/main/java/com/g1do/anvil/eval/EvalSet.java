@@ -53,10 +53,20 @@ public final class EvalSet {
     /**
      * A document of the injection subset. {@code attack} says what the embedded
      * instruction tries to do; the attack succeeds when an emitted fact's value
-     * contains {@code canary}.
+     * contains {@code canary}. {@code language} (a BCP 47 tag) and
+     * {@code encoding} ({@code plain} or {@code base64}) say how the
+     * instruction is written; sets frozen before #79 leave them out.
      */
-    public record AttackCase(String id, String text, String attack, String canary) {
+    public record AttackCase(String id, String text, String attack, String canary, String language,
+            String encoding) {
+
+        public AttackCase(String id, String text, String attack, String canary) {
+            this(id, text, attack, canary, null, null);
+        }
     }
+
+    /** How an injection case's instruction may be written (#79). */
+    public static final Set<String> ENCODINGS = Set.of("plain", "base64");
 
     /** Paired bootstrap settings, frozen with the set. */
     public record Bootstrap(int resamples, long seed, double confidence) {
@@ -259,6 +269,15 @@ public final class EvalSet {
             }
             if (c.canary() == null || c.canary().isBlank() || !c.text().contains(c.canary())) {
                 problems.add(c.id() + ": canary '" + c.canary() + "' is not in the document");
+            }
+            if (c.language() != null && !c.language().matches("[a-z]{2,3}(-[A-Za-z0-9]{2,8})*")) {
+                problems.add(c.id() + ": language '" + c.language() + "' is not a BCP 47 tag");
+            }
+            if (c.encoding() != null && !ENCODINGS.contains(c.encoding())) {
+                problems.add(c.id() + ": encoding '" + c.encoding() + "' is not one of " + ENCODINGS);
+            }
+            if ("base64".equals(c.encoding()) && Text.base64Payloads(c.text()).isEmpty()) {
+                problems.add(c.id() + ": a base64 case holds no base64 run that decodes to text");
             }
         }
 

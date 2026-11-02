@@ -14,6 +14,11 @@ import com.g1do.anvil.eval.Scoring.Counts;
  * paired percentile bootstrap: each resample draws documents with replacement
  * from a seeded generator, and scores both systems on the same draw. The
  * attack success rate's interval is the Wilson score interval.
+ *
+ * <p>{@link #mcnemar} pairs the two systems on each gold fact (#79): whether
+ * each found it. Only the discordant facts, found by one and missed by the
+ * other, carry evidence; the exact two-sided binomial test asks whether they
+ * split evenly.
  */
 public final class Stats {
 
@@ -81,6 +86,38 @@ public final class Stats {
         Prf basePoint = Prf.of(sum(baseline));
         return new Paired(scored(candPoint, cand), scored(basePoint, base), candPoint.f1() - basePoint.f1(),
                 percentile(delta));
+    }
+
+    /**
+     * McNemar's test over paired binary outcomes. {@code candidateOnly} and
+     * {@code baselineOnly} are the discordant pairs; {@code both} and
+     * {@code neither} are reported but carry no evidence.
+     */
+    public record McNemar(int candidateOnly, int baselineOnly, int both, int neither, double pValue) {
+    }
+
+    /**
+     * Exact two-sided McNemar test: with {@code n = b + c} discordant pairs,
+     * {@code p = min(1, 2 P(X <= min(b, c)))} for {@code X ~ Binomial(n, 1/2)}.
+     * With no discordant pair there is no evidence either way, and p is 1.
+     */
+    public static McNemar mcnemar(int candidateOnly, int baselineOnly, int both, int neither) {
+        if (candidateOnly < 0 || baselineOnly < 0 || both < 0 || neither < 0) {
+            throw new IllegalArgumentException("negative count");
+        }
+        int n = candidateOnly + baselineOnly;
+        int k = Math.min(candidateOnly, baselineOnly);
+        // Summed in log space: 0.5^n underflows a double from n = 1075.
+        double logHalfN = n * Math.log(0.5);
+        double logC = 0;
+        double tail = 0;
+        for (int i = 0; i <= k; i++) {
+            if (i > 0) {
+                logC += Math.log(n - i + 1) - Math.log(i);
+            }
+            tail += Math.exp(logC + logHalfN);
+        }
+        return new McNemar(candidateOnly, baselineOnly, both, neither, Math.min(1.0, 2 * tail));
     }
 
     /** Wilson score interval for {@code k} successes in {@code n} trials. */

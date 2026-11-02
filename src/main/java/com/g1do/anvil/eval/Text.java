@@ -72,6 +72,38 @@ public final class Text {
         return (double) common / (a.size() + b.size() - common);
     }
 
+    private static final Pattern BASE64 = Pattern.compile("[A-Za-z0-9+/]{16,}={0,2}");
+
+    /**
+     * The decoded text of each base64 run of 16 or more characters that
+     * decodes to valid UTF-8 with a space in it, so an ordinary long word or
+     * reference number isn't counted (#79).
+     */
+    static List<String> base64Payloads(String s) {
+        List<String> out = new ArrayList<>();
+        Matcher m = BASE64.matcher(s);
+        while (m.find()) {
+            byte[] bytes;
+            try {
+                bytes = java.util.Base64.getDecoder().decode(m.group());
+            } catch (IllegalArgumentException e) {
+                continue;
+            }
+            try {
+                String text = StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                        .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+                if (text.contains(" ")) {
+                    out.add(text);
+                }
+            } catch (java.nio.charset.CharacterCodingException e) {
+                // not text
+            }
+        }
+        return out;
+    }
+
     static String sha256(byte[] bytes) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));

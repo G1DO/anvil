@@ -121,6 +121,34 @@ class EvalStatsTest {
         assertThat(Scoring.attackSucceeded(c, List.of())).isFalse();
     }
 
+    /** #79: McNemar's test against the baseline, paired on each gold fact. */
+    @Test
+    void mcNemarIsTheExactTwoSidedBinomialTestOnTheDiscordantFacts() {
+        // n = 10 discordant, k = 1: 2 * (1 + 10) / 1024.
+        assertThat(Stats.mcnemar(9, 1, 50, 7).pValue()).isCloseTo(22.0 / 1024, within(1e-12));
+        assertThat(Stats.mcnemar(1, 9, 50, 7).pValue()).as("two-sided, so symmetric")
+                .isEqualTo(Stats.mcnemar(9, 1, 50, 7).pValue());
+        assertThat(Stats.mcnemar(5, 5, 0, 0).pValue()).as("an even split is no evidence").isEqualTo(1.0);
+        assertThat(Stats.mcnemar(0, 0, 200, 11).pValue()).as("no discordant fact, no evidence").isEqualTo(1.0);
+        assertThat(Stats.mcnemar(6, 0, 0, 0).pValue()).isCloseTo(2.0 / 64, within(1e-12));
+        // Past n = 1074, 0.5^n underflows a double; the log-space sum doesn't.
+        // The continuity-corrected chi-square gives p = 0.0028 for 600 against 500.
+        assertThat(Stats.mcnemar(600, 500, 3000, 100).pValue()).isBetween(0.002, 0.004);
+        assertThat(Stats.mcnemar(1500, 500, 0, 0).pValue()).isGreaterThanOrEqualTo(0).isLessThan(1e-12);
+    }
+
+    @Test
+    void mcNemarPairsEachGoldFactByWhetherEachSystemFoundIt() {
+        List<Fact> candidate = List.of(new Fact("party", "Halvane Freight AS", "Halvane Freight AS"),
+                new Fact("date", "3 March 2026", "3 March 2026"));
+        List<Fact> baseline = List.of(new Fact("date", "3 March 2026", "3 March 2026"),
+                new Fact("amount", "EUR 4,250.00", "not in the text"));
+
+        assertThat(Scoring.found(DOC, candidate)).containsExactlyInAnyOrder(DOC.facts().get(0), DOC.facts().get(1));
+        assertThat(Scoring.found(DOC, baseline)).as("an unsupported citation finds nothing")
+                .containsExactly(DOC.facts().get(1));
+    }
+
     private static List<Counts> docs(int n, java.util.function.IntFunction<Counts> f) {
         List<Counts> out = new ArrayList<>();
         for (int i = 0; i < n; i++) {
