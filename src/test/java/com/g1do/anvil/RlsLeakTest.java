@@ -72,7 +72,8 @@ class RlsLeakTest {
     // Every tenant-scoped table: V1/V2 (7), cap_grants (V3), audit_events (V4), job_checkpoints (V5).
     private static final List<String> TENANT_TABLES = List.of(
             "documents", "document_versions", "jobs", "attempts", "artifacts", "outbox", "processed_events",
-            "cap_grants", "audit_events", "job_checkpoints");
+            "cap_grants", "audit_events", "job_checkpoints", "extractions", "extracted_facts",
+            "extraction_dead_letters");
 
     // Interleaved rounds per query path. Each round runs tenant A then tenant B on the
     // shared pool, so connections are reused and repeated statements reach generic plans.
@@ -124,7 +125,7 @@ class RlsLeakTest {
     }
 
     private void truncate() {
-        jdbc.execute("TRUNCATE TABLE job_checkpoints, audit_events, cap_grants, processed_events, outbox, attempts, jobs, document_versions, documents, artifacts");
+        jdbc.execute("TRUNCATE TABLE extraction_dead_letters, extracted_facts, extractions, job_checkpoints, audit_events, cap_grants, processed_events, outbox, attempts, jobs, document_versions, documents, artifacts");
     }
 
     private HikariDataSource newAppPool() {
@@ -193,6 +194,15 @@ class RlsLeakTest {
         jdbc.update(
                 "INSERT INTO job_checkpoints (tenant_id, job_id, seq, sha) VALUES (?, ?, 0, ?)",
                 tenant, job, head);
+        // Extraction rows (#37): one extraction with one indexed fact and one dead letter.
+        UUID extraction = jdbc.queryForObject(
+                "INSERT INTO extractions (tenant_id, document_id, version_id, model, prompt_sha256, status, truncated) "
+                        + "VALUES (?, ?, ?, 'seed-model', ?, 'ACCEPTED', false) RETURNING id",
+                UUID.class, tenant, doc, ver, "0".repeat(64));
+        jdbc.update("INSERT INTO extracted_facts (tenant_id, extraction_id, ordinal, field, value, citation) "
+                + "VALUES (?, ?, 0, 'party', ?, ?)", tenant, extraction, "Org-" + seed, "Org-" + seed + " signed");
+        jdbc.update("INSERT INTO extraction_dead_letters (tenant_id, extraction_id, reason, detail) "
+                + "VALUES (?, ?, 'CITATION_NOT_IN_SOURCE', 'seed')", tenant, extraction);
         return new Seed(tenant, idempotencyKey, title, doc, ver, job, attempt, outboxId, sha);
     }
 
