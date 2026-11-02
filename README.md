@@ -105,7 +105,7 @@ curl -s localhost:8080/readyz     # readiness (checks the database)
 
 Compose reads `POSTGRES_PASSWORD` from your environment or an untracked `.env`; the names are in `.env.example`. With nothing set it uses a local-only default.
 
-Extraction calls the model configured under `anvil.extraction` in `application.yaml` (DeepSeek's chat completions API, `deepseek-flash`) with the key in `ANVIL_MODEL_API_KEY`. Without a key the app still starts, and extraction answers `503` without calling anything.
+Extraction calls the model configured under `anvil.extraction` in `application.yaml` (DeepSeek's chat completions API, `deepseek-flash`) with the key in `ANVIL_MODEL_API_KEY`. `ANVIL_MODEL` and `ANVIL_MODEL_BASE_URL` override the model and URL for the app and `task eval:extract` alike. Without a key the app still starts, and extraction answers `503` without calling anything.
 
 To run one test class: `./mvnw -B -ntp -Dtest=JobServiceTest test`.
 
@@ -115,7 +115,7 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | --- | --- |
 | `POST /api/documents` | Submit a document |
 | `GET /api/documents?query=&limit=&cursor=` | Title-prefix search |
-| `POST /api/documents/{id}/extract` | Extract cited facts from a document, once per version |
+| `POST /api/documents/{id}/extract` | Extract cited facts from a document, once per version, prompt and model |
 | `GET /api/documents/{id}/facts` | The document's indexed facts |
 | `GET /audit/events?job_id=` | A job's audit chain |
 | `GET /audit/replay?job_id=` | Replay a job |
