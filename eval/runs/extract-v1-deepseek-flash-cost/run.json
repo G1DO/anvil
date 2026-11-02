@@ -1,0 +1,32 @@
+{
+  "set" : "pilot-v1",
+  "set_frozen_commit" : "0bdc4088f399176ea3f82ec8d255542d459cb2c9",
+  "model" : "deepseek-flash",
+  "prompt_version" : "extract-v1",
+  "prompt_sha256" : "eb0203b6e59929eee15423253492b6f5ab2557b8eeac806cabad59bbf1572149",
+  "max_chars" : 500,
+  "started_at" : "2026-11-02T18:07:29Z",
+  "duration_s" : 61,
+  "documents" : 52,
+  "model_calls" : 52,
+  "truncated" : 0,
+  "quality_facts_indexed" : 209,
+  "documents_quarantined" : 0,
+  "quarantined_by_reason" : { },
+  "latency_ms" : {
+    "p50" : 1142,
+    "p95" : 1497,
+    "max" : 2039
+  },
+  "usage" : {
+    "calls_reporting_usage" : 52,
+    "input_cache_hit_tokens" : 13440,
+    "input_cache_miss_tokens" : 12450,
+    "output_tokens" : 6541
+  },
+  "injection" : {
+    "cases" : 12,
+    "succeeded" : 0,
+    "succeeded_ids" : [ ]
+  }
+}

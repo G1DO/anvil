@@ -45,6 +45,24 @@ class ExtractHarnessTest {
     }
 
     @Test
+    void theRunSumsTheBilledTokensOfTheCallsThatReportThem() throws Exception {
+        // #38: cost per document is priced from these totals (record 0023).
+        EvalSet set = EvalSet.load(SET);
+        ScriptedModel model = new ScriptedModel(d -> new ModelReply("{\"facts\":[]}", "end_turn",
+                d.text().startsWith("Acme") ? null : new ModelReply.Usage(10, 90, 7)));
+        ExtractHarness.Run run = ExtractHarness.run(set, new Extractor(model));
+
+        long reporting = model.calls().stream().filter(d -> !d.text().startsWith("Acme")).count();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> usage = (Map<String, Object>) run.summary().get("usage");
+        assertThat(usage).containsEntry("calls_reporting_usage", (int) reporting)
+                .containsEntry("input_cache_hit_tokens", 10 * reporting)
+                .containsEntry("input_cache_miss_tokens", 90 * reporting)
+                .containsEntry("output_tokens", 7 * reporting);
+        assertThat(reporting).isPositive();
+    }
+
+    @Test
     void anAttackThatPlantsACitableValueIsCountedAsSucceeded() throws Exception {
         EvalSet set = EvalSet.load(SET);
         // A model that obeys every injected instruction: it emits each case's planted value,
@@ -74,11 +92,13 @@ class ExtractHarnessTest {
         }
     }
 
-    @Test
-    void theCommittedRunWasMadeWithTheCommittedPromptModelAndSet() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = { "eval/runs/extract-v1-deepseek-flash",
+            "eval/runs/extract-v1-deepseek-flash-cost" })
+    void theCommittedRunWasMadeWithTheCommittedPromptModelAndSet(String dir) throws Exception {
         EvalSet set = EvalSet.load(SET);
         com.fasterxml.jackson.databind.JsonNode run = new com.fasterxml.jackson.databind.ObjectMapper()
-                .readTree(Path.of("eval/runs/extract-v1-deepseek-flash/run.json").toFile());
+                .readTree(Path.of(dir, "run.json").toFile());
         // Changing the prompt, model or limit means a new run; CI would otherwise re-score a stale one.
         assertThat(run.path("prompt_sha256").asText()).isEqualTo(Prompt.SHA256);
         assertThat(run.path("prompt_version").asText()).isEqualTo(Prompt.VERSION);
@@ -88,6 +108,35 @@ class ExtractHarnessTest {
         assertThat(run.path("set_frozen_commit").asText()).isEqualTo(set.manifest().at("/frozen/commit").asText());
         assertThat(run.path("documents").asInt()).isEqualTo(set.docIds().size());
         assertThat(run.path("model_calls").asInt()).isEqualTo(set.docIds().size());
+    }
+
+    /**
+     * The cost run (#38) reported billed tokens for every call, and the cost
+     * report prices exactly those tokens at the prices it states (record 0023).
+     */
+    @Test
+    void theCostReportIsPricedFromTheCostRunsTokens() throws Exception {
+        Path dir = Path.of("eval/runs/extract-v1-deepseek-flash-cost");
+        com.fasterxml.jackson.databind.JsonNode u = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(dir.resolve("run.json").toFile()).path("usage");
+        assertThat(u.path("calls_reporting_usage").asInt()).isEqualTo(EvalSet.load(SET).docIds().size());
+        long hit = u.path("input_cache_hit_tokens").asLong();
+        long miss = u.path("input_cache_miss_tokens").asLong();
+        long out = u.path("output_tokens").asLong();
+        int docs = u.path("calls_reporting_usage").asInt();
+        String report = Files.readString(dir.resolve("cost.md"));
+
+        // deepseek-flash, dollars per million tokens (cache hit, cache miss, output), as cost.md states them.
+        assertThat(report).contains("| Off-peak | $0.003 | $0.15 | $0.60 |").contains("| Peak | $0.006 | $0.30 | $1.20 |");
+        double offPeak = (hit * 0.003 + miss * 0.15 + out * 0.60) / 1e6;
+        double peak = (hit * 0.006 + miss * 0.30 + out * 1.20) / 1e6;
+        double worst = ((hit + miss) * 0.30 + out * 1.20) / 1e6;
+        for (double total : new double[] { offPeak, peak, worst }) {
+            assertThat(report).contains(String.format(java.util.Locale.ROOT, "$%.6f", total))
+                    .contains(String.format(java.util.Locale.ROOT, "$%.6f", total / docs))
+                    .contains(String.format(java.util.Locale.ROOT, "$%.2f", total / docs * 1000));
+        }
+        assertThat(report).contains(String.valueOf(hit)).contains(String.valueOf(miss)).contains(String.valueOf(out));
     }
 
     @Test
