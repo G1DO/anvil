@@ -11,6 +11,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -37,16 +38,20 @@ import com.g1do.anvil.extract.Extractor.Quarantined;
  * run can't be used to tune the prompt (record 0021).
  *
  * <p>Usage: {@code ExtractHarness <set dir> <out dir>}. The model settings come
- * from {@code ANVIL_MODEL_API_KEY}, {@code ANVIL_MODEL_BASE_URL},
- * {@code ANVIL_MODEL} and {@code ANVIL_MODEL_AUTH}. Exits 0 when every document
+ * from {@code ANVIL_MODEL_API_KEY}, {@code ANVIL_MODEL_PROVIDER} ({@code GEMINI}
+ * by default, or {@code ANTHROPIC}), {@code ANVIL_MODEL_BASE_URL},
+ * {@code ANVIL_MODEL}, and for Anthropic {@code ANVIL_MODEL_AUTH} and
+ * {@code ANVIL_MODEL_SESSION_HEADER}. Exits 0 when every document
  * was processed, 2 on bad input or when the model can't be asked; nothing is
  * written then.
  */
 public final class ExtractHarness {
 
-    static final String DEFAULT_BASE_URL = "https://opencode.ai/inference/go/anthropic";
-    static final String DEFAULT_MODEL = "claude-haiku-5-5";
-    static final String DEFAULT_SESSION_HEADER = "x-opencode-session";
+    static final String DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
+    static final String DEFAULT_MODEL = "gemini-3.8-flash";
+    static final String ANTHROPIC_BASE_URL = "https://opencode.ai/inference/go/anthropic";
+    static final String ANTHROPIC_MODEL = "claude-haiku-5-5";
+    static final String ANTHROPIC_SESSION_HEADER = "x-opencode-session";
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -162,14 +167,32 @@ public final class ExtractHarness {
             err.println("usage: ExtractHarness <set dir> <out dir>");
             return 2;
         }
-        AnthropicExtractionModel model = new AnthropicExtractionModel(new AnthropicExtractionModel.Settings(
-                env.getOrDefault("ANVIL_MODEL_BASE_URL", DEFAULT_BASE_URL),
-                env.getOrDefault("ANVIL_MODEL", DEFAULT_MODEL),
+        ExtractionModel model;
+        try {
+            model = model(env);
+        } catch (IllegalArgumentException e) {
+            err.println("extract: " + e.getMessage());
+            return 2;
+        }
+        return cli(args, new Extractor(model), out, err);
+    }
+
+    /**
+     * The model from the environment. A provider's own defaults apply when
+     * the base URL or model is unset. The harness waits out rate limits
+     * longer than the service does, since one run makes a call per document.
+     */
+    static ExtractionModel model(Map<String, String> env) {
+        ExtractionConfig.Provider provider = ExtractionConfig.Provider
+                .valueOf(env.getOrDefault("ANVIL_MODEL_PROVIDER", "GEMINI").trim().toUpperCase(Locale.ROOT));
+        boolean gemini = provider == ExtractionConfig.Provider.GEMINI;
+        return ExtractionConfig.model(provider,
+                env.getOrDefault("ANVIL_MODEL_BASE_URL", gemini ? DEFAULT_BASE_URL : ANTHROPIC_BASE_URL),
+                env.getOrDefault("ANVIL_MODEL", gemini ? DEFAULT_MODEL : ANTHROPIC_MODEL),
                 env.getOrDefault("ANVIL_MODEL_API_KEY", ""),
                 AnthropicExtractionModel.Auth.valueOf(env.getOrDefault("ANVIL_MODEL_AUTH", "BEARER")),
-                env.getOrDefault("ANVIL_MODEL_SESSION_HEADER", DEFAULT_SESSION_HEADER),
-                Duration.ofSeconds(60), 4096));
-        return cli(args, new Extractor(model), out, err);
+                env.getOrDefault("ANVIL_MODEL_SESSION_HEADER", gemini ? "" : ANTHROPIC_SESSION_HEADER),
+                Duration.ofSeconds(60), 8192, 6);
     }
 
     static int cli(String[] args, Extractor extractor, PrintStream out, PrintStream err) {

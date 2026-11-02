@@ -99,14 +99,14 @@ tasks:
       - java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.eval.EvalGate eval/sets/pilot-v1 "{{.CANDIDATE}}" target/eval/report.md
 
   eval:extract:
-    desc: "Harness run: the extraction path over eval/sets/pilot-v1 with the configured model (ANVIL_MODEL_API_KEY from the environment or an untracked .env). Writes predictions.jsonl and run.json to EVAL_RUN"
-    vars:
-      RUN: '{{.EVAL_RUN | default "eval/runs/extract-v1-claude-haiku-5-5"}}'
+    desc: "Harness run: the extraction path over eval/sets/pilot-v1 with the configured model (ANVIL_MODEL_API_KEY from the environment or an untracked .env). Writes predictions.jsonl and run.json to EVAL_RUN, by default eval/runs/extract-v1-<model>"
     cmds:
       - ./mvnw -q -B -ntp compile dependency:build-classpath -Dmdep.outputFile=target/eval.classpath -Dmdep.includeScope=runtime
       - |
         set -a; [ -f .env ] && . ./.env; set +a
-        java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.extract.ExtractHarness eval/sets/pilot-v1 "{{.RUN}}"
+        run='{{.EVAL_RUN | default ""}}'
+        run="${run:-eval/runs/extract-v1-${ANVIL_MODEL:-gemini-3.8-flash}}"
+        java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.extract.ExtractHarness eval/sets/pilot-v1 "$run"
 
   check:sast:
     desc: "Static analysis via Semgrep registry p/default --error, minus rules that only flagged parameterized SQL and the jail's validated argv"

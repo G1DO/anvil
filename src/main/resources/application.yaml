@@ -4,12 +4,13 @@ spring:
 
 # AI extraction (#37, record 0022). The credential comes only from the
 # environment; with none set, extraction answers 503 and calls no model.
+# For an Anthropic-compatible API instead, set provider ANTHROPIC, its
+# base-url and model, auth (X_API_KEY or BEARER) and any session-header.
 anvil:
   extraction:
-    base-url: https://opencode.ai/inference/go/anthropic
-    model: claude-haiku-5-5
+    provider: GEMINI
+    base-url: https://generativelanguage.googleapis.com
+    model: gemini-3.8-flash
     api-key: ${ANVIL_MODEL_API_KEY:}
-    auth: BEARER
-    session-header: x-opencode-session
     timeout: 30s
-    max-tokens: 4096
+    max-tokens: 8192

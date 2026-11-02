@@ -84,17 +84,20 @@ class ExtractorTest {
     }
 
     @Test
-    void extractorIsTheOnlyCallerOfTheModelAndTheOnlyClientIsTheAdapter() throws IOException {
+    void extractorIsTheOnlyCallerOfTheModelAndTheOnlyClientsAreTheAdapters() throws IOException {
         List<Path> callers = filesContaining(".complete(");
         assertThat(callers).extracting(p -> p.getFileName().toString()).containsExactly("Extractor.java");
 
         List<Path> implementers = filesContaining("implements ExtractionModel");
         assertThat(implementers).extracting(p -> p.getFileName().toString())
-                .containsExactly("AnthropicExtractionModel.java");
+                .containsExactlyInAnyOrder("AnthropicExtractionModel.java", "GeminiExtractionModel.java");
 
         List<Path> clients = filesContaining("AnthropicOkHttpClient");
         assertThat(clients).extracting(p -> p.getFileName().toString())
                 .containsExactly("AnthropicExtractionModel.java");
+        List<Path> httpClients = filesContaining("java.net.http.HttpClient");
+        assertThat(httpClients).extracting(p -> p.getFileName().toString())
+                .containsExactly("GeminiExtractionModel.java");
 
         // The service and the harness both go through Extractor.extract.
         assertThat(Files.readString(MAIN.resolve("com/g1do/anvil/extract/ExtractionService.java")))
@@ -258,7 +261,7 @@ class ExtractorTest {
     void theAdapterNeedsHttpsAndACredentialBeforeAnyCall() {
         assertThatThrownBy(() -> settings("http://opencode.ai/inference/go/anthropic", "k"))
                 .isInstanceOf(IllegalArgumentException.class);
-        AnthropicExtractionModel noKey = settings(ExtractHarness.DEFAULT_BASE_URL, "");
+        AnthropicExtractionModel noKey = settings(ExtractHarness.ANTHROPIC_BASE_URL, "");
         assertThatThrownBy(() -> noKey.complete(BoundedText.of("Doc.")))
                 .isInstanceOf(ModelUnavailableException.class)
                 .hasMessageContaining("no model credential");
@@ -272,9 +275,11 @@ class ExtractorTest {
     @Test
     void theHarnessDefaultsMatchTheServiceConfiguration() throws IOException {
         String yaml = Files.readString(Path.of("src/main/resources/application.yaml"), StandardCharsets.UTF_8);
-        assertThat(yaml).contains("base-url: " + ExtractHarness.DEFAULT_BASE_URL)
+        assertThat(yaml).contains("provider: GEMINI")
+                .contains("base-url: " + ExtractHarness.DEFAULT_BASE_URL)
                 .contains("model: " + ExtractHarness.DEFAULT_MODEL)
-                .contains("session-header: " + ExtractHarness.DEFAULT_SESSION_HEADER)
                 .contains("api-key: ${ANVIL_MODEL_API_KEY:}");
+        assertThat(Files.readString(Path.of("Taskfile.yml"), StandardCharsets.UTF_8))
+                .contains("extract-v1-${ANVIL_MODEL:-" + ExtractHarness.DEFAULT_MODEL + "}");
     }
 }
