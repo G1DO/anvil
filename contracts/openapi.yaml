@@ -58,12 +58,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
   /api/documents/{id}/extract:
     post:
-      summary: Extract cited facts from the caller's document once (record 0022)
+      summary: Extract cited facts from the caller's document once (records 0022, 0023)
       description: >
         Truncates the latest version's text to 500 characters, asks the model once,
         and indexes only facts whose citation is an exact substring of that text.
         Poison input and failing facts go to a dead-letter queue that no route serves.
-        A repeat request returns the stored result without a model call.
+        A repeat request returns the stored result without a model call. An earlier
+        result of the same tenant for the same text, prompt and model is reused with
+        no model call. With the kill-switch off, the tenant's call budget spent, or the
+        version's model result revoked, the rules answer with no model call and the
+        result is marked as fallback.
       parameters:
         - $ref: '#/components/parameters/XTenantId'
         - $ref: '#/components/parameters/DocumentId'
@@ -86,13 +90,13 @@ paths:
                 $ref: '#/components/schemas/Error'
   /api/documents/{id}/facts:
     get:
-      summary: The indexed facts of the caller's document (record 0022)
+      summary: The indexed facts of the caller's document (records 0022, 0023)
       parameters:
         - $ref: '#/components/parameters/XTenantId'
         - $ref: '#/components/parameters/DocumentId'
       responses:
         '200':
-          description: Only facts that passed the citation check; never dead letters
+          description: Only facts that passed the citation check; never dead letters or revoked results
           content:
             application/json:
               schema:
@@ -265,7 +269,7 @@ components:
         match: { type: boolean }
     Extraction:
       type: object
-      required: [extraction_id, document_id, version_id, status, facts, quarantined, truncated]
+      required: [extraction_id, document_id, version_id, status, facts, quarantined, truncated, source, fallback]
       properties:
         extraction_id: { type: string, format: uuid }
         document_id: { type: string, format: uuid }
@@ -274,6 +278,13 @@ components:
         facts: { type: integer, description: facts indexed }
         quarantined: { type: integer, description: inputs or facts sent to the dead-letter queue }
         truncated: { type: boolean, description: the text was cut to 500 characters }
+        source: { type: string, enum: [MODEL, CACHE, RULES], description: 'the model (or a screen before it), a cached model result, or the rules fallback' }
+        fallback: { type: boolean, description: the rules fallback made this result; no model was called }
+        fallback_reason:
+          type: string
+          nullable: true
+          enum: [KILL_SWITCH, BUDGET_EXHAUSTED, REVOKED]
+          description: why the rules answered; null unless fallback
     Fact:
       type: object
       required: [field, value, citation]
@@ -283,11 +294,13 @@ components:
         citation: { type: string, description: an exact substring of the document's first 500 characters }
     Facts:
       type: object
-      required: [document_id, version_id, status, facts]
+      required: [document_id, version_id, status, fallback, facts]
       properties:
         document_id: { type: string, format: uuid }
         version_id: { type: string, format: uuid }
         status: { type: string, enum: [NOT_EXTRACTED, ACCEPTED, QUARANTINED] }
+        source: { type: string, nullable: true, enum: [MODEL, CACHE, RULES], description: null when not extracted }
+        fallback: { type: boolean, description: the facts come from the rules fallback }
         facts:
           type: array
           items:

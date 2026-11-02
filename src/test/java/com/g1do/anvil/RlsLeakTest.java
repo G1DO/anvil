@@ -70,11 +70,11 @@ class RlsLeakTest {
     private static final String TENANT_B = "t_rls_b";
 
     // Every tenant-scoped table: V1/V2 (7), cap_grants (V3), audit_events (V4), job_checkpoints (V5),
-    // and the extraction tables (V8).
+    // the extraction tables (V8), and extraction's revocations and budgets (V9).
     private static final List<String> TENANT_TABLES = List.of(
             "documents", "document_versions", "jobs", "attempts", "artifacts", "outbox", "processed_events",
             "cap_grants", "audit_events", "job_checkpoints", "extractions", "extracted_facts",
-            "extraction_dead_letters");
+            "extraction_dead_letters", "extraction_revocations", "extraction_budgets");
 
     // Interleaved rounds per query path. Each round runs tenant A then tenant B on the
     // shared pool, so connections are reused and repeated statements reach generic plans.
@@ -122,11 +122,12 @@ class RlsLeakTest {
             appPool = null;
         }
         truncate();
+        jdbc.execute("DELETE FROM extraction_budgets WHERE tenant_id IN ('" + TENANT_A + "', '" + TENANT_B + "')");
         jdbc.execute("DELETE FROM tenants WHERE id IN ('" + TENANT_A + "', '" + TENANT_B + "')");
     }
 
     private void truncate() {
-        jdbc.execute("TRUNCATE TABLE extraction_dead_letters, extracted_facts, extractions, job_checkpoints, audit_events, cap_grants, processed_events, outbox, attempts, jobs, document_versions, documents, artifacts");
+        jdbc.execute("TRUNCATE TABLE extraction_revocations, extraction_dead_letters, extracted_facts, extractions, job_checkpoints, audit_events, cap_grants, processed_events, outbox, attempts, jobs, document_versions, documents, artifacts");
     }
 
     private HikariDataSource newAppPool() {
@@ -204,6 +205,11 @@ class RlsLeakTest {
                 + "VALUES (?, ?, 0, 'party', ?, ?)", tenant, extraction, "Org-" + seed, "Org-" + seed + " signed");
         jdbc.update("INSERT INTO extraction_dead_letters (tenant_id, extraction_id, reason, detail) "
                 + "VALUES (?, ?, 'CITATION_NOT_IN_SOURCE', 'seed')", tenant, extraction);
+        // V9 (#38): a revocation of that extraction and a call budget.
+        jdbc.update("INSERT INTO extraction_revocations (tenant_id, extraction_id, reason) VALUES (?, ?, 'seed')",
+                tenant, extraction);
+        jdbc.update("INSERT INTO extraction_budgets (tenant_id, calls_remaining) VALUES (?, 5) "
+                + "ON CONFLICT (tenant_id) DO UPDATE SET calls_remaining = 5, calls_used = 0", tenant);
         return new Seed(tenant, idempotencyKey, title, doc, ver, job, attempt, outboxId, sha);
     }
 
@@ -251,6 +257,42 @@ class RlsLeakTest {
                 "SELECT prosecdef FROM pg_proc WHERE proname = 'check_job_state_transition'",
                 Boolean.class).toString();
         assertThat(funcSec).as("guard trigger stays INVOKER").isEqualTo("false");
+    }
+
+    @Test
+    void theRuntimeRoleCanOnlySpendItsOwnExtractionBudget() {
+        // V9 (#38): the app spends one call at a time; it can't top up, refund, or touch another tenant's budget.
+        appTx.execute(status -> {
+            TenantGuard.setTenant(appJdbc, TENANT_A);
+            assertThat(appJdbc.update("UPDATE extraction_budgets SET calls_remaining = calls_remaining - 1, "
+                    + "calls_used = calls_used + 1 WHERE tenant_id = ?", TENANT_A)).isEqualTo(1);
+            assertThat(appJdbc.update("UPDATE extraction_budgets SET calls_remaining = calls_remaining - 1 "
+                    + "WHERE tenant_id = ?", TENANT_B)).as("other tenant's budget is invisible").isZero();
+            return null;
+        });
+        for (String raise : List.of("calls_remaining = calls_remaining + 1", "calls_used = calls_used - 1")) {
+            assertThatThrownBy(() -> appTx.execute(status -> {
+                TenantGuard.setTenant(appJdbc, TENANT_A);
+                return appJdbc.update("UPDATE extraction_budgets SET " + raise + " WHERE tenant_id = ?", TENANT_A);
+            })).as(raise).hasStackTraceContaining("may only spend");
+        }
+        assertThatThrownBy(() -> appTx.execute(status -> {
+            TenantGuard.setTenant(appJdbc, TENANT_A);
+            return appJdbc.update("INSERT INTO extraction_budgets (tenant_id, calls_remaining) VALUES ('t_single', 9)");
+        })).as("no INSERT grant").hasStackTraceContaining("permission denied");
+        assertThatThrownBy(() -> appTx.execute(status -> {
+            TenantGuard.setTenant(appJdbc, TENANT_A);
+            return appJdbc.update("UPDATE extraction_switch SET model_calls_enabled = TRUE");
+        })).as("the switch is read-only to the app").hasStackTraceContaining("permission denied");
+        assertThat(jdbc.queryForObject("SELECT calls_remaining FROM extraction_budgets WHERE tenant_id = ?",
+                Long.class, TENANT_A)).isEqualTo(4);
+        assertThat(jdbc.queryForObject("SELECT calls_remaining FROM extraction_budgets WHERE tenant_id = ?",
+                Long.class, TENANT_B)).isEqualTo(5);
+        // The switch holds no tenant data, so like tenants it has no RLS and no tenant column.
+        assertThat(jdbc.queryForObject("SELECT relrowsecurity FROM pg_class WHERE relname = 'extraction_switch'",
+                Boolean.class)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM information_schema.columns "
+                + "WHERE table_name = 'extraction_switch' AND column_name = 'tenant_id'", Integer.class)).isZero();
     }
 
     @Test

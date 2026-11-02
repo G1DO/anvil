@@ -147,9 +147,11 @@ class EvalGateTest {
         assertThat(Path.of("eval/runs/extract-v1-deepseek-flash/predictions.jsonl")).isRegularFile();
     }
 
-    @Test
-    void theCommittedReportIsAFreshRescoreOfTheCommittedRun(@TempDir Path tmp) throws IOException {
-        Path run = Path.of("eval/runs/extract-v1-deepseek-flash");
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = { "eval/runs/extract-v1-deepseek-flash",
+            "eval/runs/extract-v1-deepseek-flash-cost" })
+    void theCommittedReportIsAFreshRescoreOfTheCommittedRun(String dir, @TempDir Path tmp) throws IOException {
+        Path run = Path.of(dir);
         Path report = tmp.resolve("report.md");
         assertThat(EvalGate.cli(new String[] { SET.toString(), run.resolve("predictions.jsonl").toString(),
                 report.toString() }, sink(), sink())).isZero();

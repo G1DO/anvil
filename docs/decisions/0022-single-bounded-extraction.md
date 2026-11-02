@@ -1,6 +1,6 @@
 # 0022 — Single bounded extraction with exact citations and a dead-letter queue
 
-Status: proposed 2026-11-02 (#37). Builds on the frozen eval gate (record 0021). Cost, caching, a budget and the keep, restrict or remove decision are #38.
+Status: proposed 2026-11-02 (#37). Builds on the frozen eval gate (record 0021). Record 0023 (#38) adds the tenant cache, the call budget, the kill-switch and the rules fallback, and decides to restrict extraction.
 
 ## Context
 
@@ -42,7 +42,7 @@ Tenants want facts pulled out of their documents. A model can invent or paraphra
   - `GET /api/documents/{id}/facts` serves the indexed facts from the current prompt and model only; a version extracted only under another prompt or model reads as `NOT_EXTRACTED`.
 
   A forged, malformed, missing or other tenant's ID gets `404 {"error":"not_found"}`, the same bytes for each, before any model call.
-- **No cross-tenant reuse.** A result is keyed by tenant, so identical content in two tenants is extracted twice. There is no content-addressed cache or dedup across tenants. #38's cache must key by tenant too.
+- **No cross-tenant reuse.** A result is keyed by tenant, so identical content in two tenants is extracted twice. There is no content-addressed cache or dedup across tenants. Record 0023's cache keys by tenant too.
 - **The prompt** (`Prompt`, version `extract-v1`) was written from the four field definitions and the threat model, without opening the eval set's documents. Its last lines give the JSON shape, which JSON mode needs; they were added before any run returned results. It wasn't changed after the harness run, and the run was made once. Changing it means a new version, and the frozen set can't be used to choose between versions (record 0021). A new prompt or model extracts each version afresh, because results are keyed by both.
 - **The harness.** `task eval:extract` runs `Extractor.extract` over every document of `eval/sets/pilot-v1` as `text/plain` and writes `predictions.jsonl` (accepted facts only, exactly what would be indexed) and `run.json` (model, prompt hash, quarantine counts by reason, latency, and which injection cases succeeded) to `eval/runs/<run>/`. It refuses, before any model call, to write into a directory that already holds a run. `task eval EVAL_CANDIDATE=...` scores a run. `run.json` has no per-document quality scores.
 
@@ -80,7 +80,7 @@ After the run, review tightened checks that run before or after the model: the w
   - `RlsLeakTest` now covers the three new tables.
 - **The citation check can't catch a planted value that is also a plausible fact.** If a document writes a value and asks for it to be extracted, the value is in the text and its citation is exact. The prompt tells the model not to follow such requests, but that's a mitigation, not a guarantee. The run above had none succeed.
 - **Tenant text goes to a third party.** DeepSeek's API documentation doesn't say how long inputs are kept or whether they are used for training, and its context cache is on by default and cleared within hours to days. Its terms and privacy policy must be checked before tenant traffic is sent. The harness sends only the eval set's fictional documents. ANVIL isn't live.
-- **No budget, cache or kill-switch yet** (#38). Each new version, prompt or model costs one call per version, and processes don't share a claim.
+- **Budget, cache and kill-switch:** record 0023 (#38) adds them. Processes still don't share a claim; the budget bounds what that costs.
 - **The request waits on the model:** up to 60 seconds per attempt, with 2 retries, and requests that share a call wait for it too.
 - **A quarantined version stays quarantined under its prompt and model,** even when the cause was a one-off malformed reply. A new version, prompt or model extracts afresh. A provider outage isn't stored, so it never quarantines.
 - **"Without revealing whether they exist" is proven for the status and body.** Both cases run the same tenant-scoped query and return before any model call, but no test measures timing.

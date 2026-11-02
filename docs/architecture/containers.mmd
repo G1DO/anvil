@@ -2,7 +2,7 @@ flowchart TB
     subgraph untrusted["Untrusted: outside the system"]
         tenantClient["Tenant client<br/>X-Tenant-Id + Idempotency-Key"]
     end
-    operator["Operator<br/>compose up, health probes, logs"]
+    operator["Operator<br/>compose up, health probes, logs<br/>extraction budgets, kill-switch, revocations"]
     subgraph anvil["ANVIL: one Spring Boot deployable"]
         api["API service<br/>auth, validate, CBOR, submit, reads, audit, replay, URLs, health, extraction"]
         workers["Workers<br/>claim, heartbeat, commit, relay, reconcile"]
@@ -20,6 +20,7 @@ flowchart TB
     broker["JailEgress broker<br/>in the parent: allowlist, connect-time DNS check"]
     tenantClient -->|"TRUST BOUNDARY: X-Tenant-Id checked, input validated"| api
     operator -->|probes, logs| api
+    operator -->|"SQL: extraction budgets, kill-switch, revocations"| postgres
     api -->|"JDBC, SET LOCAL app.tenant + RLS"| postgres
     workers -->|"claim, heartbeat, commit, relay, reconcile under RLS"| postgres
     api -->|put and get, torn tails removed| casStore

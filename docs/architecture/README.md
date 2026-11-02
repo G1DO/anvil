@@ -32,6 +32,17 @@ The SQL in `src/main/resources/db/migration/` is the schema. These are the rules
 - **Batch sizes:** claim (`LIMIT 20`) and relay (`LIMIT 100`) are contracts of their canonical queries, backed by partial indexes: `jobs_claim_order_idx` on queued jobs in claim order, `outbox_poll_idx` on unsent rows, and `artifacts_gc_idx` on unreferenced content. `jobs_claim_idx` (V1) no longer backs the claim.
 - **Fair claim:** `tenants.max_running` is each tenant's quota of `RUNNING` jobs, default 1000. Claims for one tenant serialize on a transaction-scoped advisory lock before counting. A claim takes only jobs with `next_run_at <= now()`, in the order `(penalty, next_run_at, created_at, id)`, where the penalty is the tenant's `RUNNING` count. Rows that existed before V7 share the migration's `next_run_at` and keep their arrival order (record 0020).
 - **Extraction (V8):** `extractions` has one row per `(tenant_id, version_id, prompt_sha256, model)`, so a version is extracted once per tenant, prompt and model, and a repeat returns the stored result. The key holds the tenant, so identical content in two tenants never shares a result. `extracted_facts` is the index; the application inserts only facts whose citation passed the exact substring check, and `GET /api/documents/{id}/facts` serves facts only from it. `extraction_dead_letters` keeps quarantined input and facts with a reason; no route serves its rows, and `POST …/extract` reports only a count. All three have RLS `FORCE`, cascade from `documents`, and are append-only for the runtime role (record 0022).
+- **Extraction cost controls (V9):** `extractions.source` says where a result came from:
+  - `MODEL`: the extractor, or a screen before it.
+  - `CACHE`: copied from an earlier accepted model result of the same tenant with the same `content_sha256`, prompt and model. `cache_of` names that result.
+  - `RULES`: the fallback, marked with `fallback_reason` and stored under the rules' own model and hash.
+
+  The cache is those rows, so there is no cross-tenant hit. The other V9 tables:
+  - `extraction_revocations`: revoked results, never served or reused.
+  - `extraction_budgets`: each tenant's model calls. No row means none. The runtime role may only spend (trigger).
+  - `extraction_switch`: one row, the kill-switch. It holds no tenant data and has no RLS.
+
+  Operators write all three; the runtime role only reads revocations and the switch (record 0023).
 - **Capability grants:** they expire after one hour (`V3`).
 - **Dead jobs:** keep their last owner, token and lease. They're never offered again: the reconciler moves a job with `attempt >= max_attempts` to `DEAD`, and a claim takes only `QUEUED` rows with `attempt < max_attempts`.
 

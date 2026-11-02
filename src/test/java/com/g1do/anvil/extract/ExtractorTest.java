@@ -108,11 +108,15 @@ class ExtractorTest {
         assertThat(clients).extracting(p -> p.getFileName().toString())
                 .containsExactly("DeepSeekExtractionModel.java");
 
-        // The service and the harness both go through Extractor.extract.
+        // The harness goes through Extractor.extract; the service (#38) through Extractor.prepare,
+        // then ask, rules or reuse. Either way only Extractor bounds the text.
         assertThat(Files.readString(MAIN.resolve("com/g1do/anvil/extract/ExtractionService.java")))
-                .contains("extractor.extract(");
+                .contains("extractor.prepare(").contains("extractor.ask(").contains("extractor.rules(")
+                .contains("extractor.reuse(");
         assertThat(Files.readString(MAIN.resolve("com/g1do/anvil/extract/ExtractHarness.java")))
                 .contains("extractor.extract(");
+        assertThat(filesContaining("BoundedText.of(")).extracting(p -> p.getFileName().toString())
+                .containsExactly("Extractor.java");
     }
 
     private static List<Path> filesContaining(String needle) throws IOException {

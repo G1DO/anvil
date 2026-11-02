@@ -33,8 +33,9 @@ import com.g1do.anvil.extract.Extractor.Quarantined;
  * <p>Each document goes through {@link Extractor#extract}, the same call the
  * service makes, as {@code text/plain}. Only accepted facts are written, so
  * the predictions are exactly what would be indexed. {@code run.json} records
- * the model, the prompt hash, quarantine counts by reason, latency, and which
- * injection cases succeeded. Per-document quality scores are left out, so the
+ * the model, the prompt hash, quarantine counts by reason, latency, the billed
+ * tokens summed over the calls that reported them (#38), and which injection
+ * cases succeeded. Per-document quality scores are left out, so the
  * run can't be used to tune the prompt (record 0021).
  *
  * <p>Usage: {@code ExtractHarness <set dir> <out dir>}. The model settings come
@@ -69,6 +70,10 @@ public final class ExtractHarness {
         Map<String, Integer> reasons = new TreeMap<>();
         List<Long> latencies = new ArrayList<>();
         int calls = 0;
+        int metered = 0;
+        long inputHit = 0;
+        long inputMiss = 0;
+        long output = 0;
         int truncated = 0;
         int wholeDocument = 0;
         Instant started = Instant.now();
@@ -84,6 +89,12 @@ public final class ExtractHarness {
             if (o.modelCalled()) {
                 calls++;
                 latencies.add(ms);
+            }
+            if (o.usage() != null) {
+                metered++;
+                inputHit += o.usage().inputCacheHit();
+                inputMiss += o.usage().inputCacheMiss();
+                output += o.usage().output();
             }
             truncated += o.truncated() ? 1 : 0;
             if (o.status() == Extractor.Status.QUARANTINED) {
@@ -124,6 +135,12 @@ public final class ExtractHarness {
         s.put("documents_quarantined", wholeDocument);
         s.put("quarantined_by_reason", reasons);
         s.put("latency_ms", latency(latencies));
+        Map<String, Object> usage = new LinkedHashMap<>();
+        usage.put("calls_reporting_usage", metered);
+        usage.put("input_cache_hit_tokens", inputHit);
+        usage.put("input_cache_miss_tokens", inputMiss);
+        usage.put("output_tokens", output);
+        s.put("usage", usage);
         Map<String, Object> attacks = new LinkedHashMap<>();
         attacks.put("cases", set.injection().size());
         attacks.put("succeeded", succeeded.size());

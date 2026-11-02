@@ -125,6 +125,30 @@ class DeepSeekExtractionModelTest {
     }
 
     @Test
+    void theBilledTokensAreReadFromTheReplyAndNeverMadeUp() throws Exception {
+        // #38: the harness prices a run from these fields (record 0023).
+        String body = JSON.writeValueAsString(Map.of("choices", List.of(Map.of("index", 0,
+                "message", Map.of("role", "assistant", "content", "{\"facts\":[]}"), "finish_reason", "stop")),
+                "usage", Map.of("prompt_tokens", 700, "completion_tokens", 120, "total_tokens", 820,
+                        "prompt_cache_hit_tokens", 640, "prompt_cache_miss_tokens", 60)));
+        assertThat(DeepSeekExtractionModel.reply(body).usage())
+                .isEqualTo(new ModelReply.Usage(640, 60, 120));
+
+        // No usage, a missing field, a non-integer or a negative count: no usage rather than a guess.
+        assertThat(DeepSeekExtractionModel.reply(choice("{}", "stop")).usage()).isNull();
+        for (Map<String, Object> bad : List.<Map<String, Object>>of(
+                Map.of("prompt_cache_hit_tokens", 1, "prompt_cache_miss_tokens", 2),
+                Map.of("prompt_cache_hit_tokens", 1, "prompt_cache_miss_tokens", 2, "completion_tokens", "3"),
+                Map.of("prompt_cache_hit_tokens", 1.5, "prompt_cache_miss_tokens", 2, "completion_tokens", 3),
+                Map.of("prompt_cache_hit_tokens", -1, "prompt_cache_miss_tokens", 2, "completion_tokens", 3))) {
+            String b = JSON.writeValueAsString(Map.of("choices", List.of(Map.of("index", 0,
+                    "message", Map.of("role", "assistant", "content", "{}"), "finish_reason", "stop")),
+                    "usage", bad));
+            assertThat(DeepSeekExtractionModel.reply(b).usage()).as(bad.toString()).isNull();
+        }
+    }
+
+    @Test
     void aProviderOutageThatAnswers200IsUnavailableNotPoison() throws Exception {
         for (String body : List.of(choice("", "insufficient_system_resource"), choice("", "aborted"),
                 "{\"choices\":[]}", "\n\n")) {

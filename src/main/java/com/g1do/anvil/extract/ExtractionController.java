@@ -20,9 +20,12 @@ import com.g1do.anvil.tenant.TenantContext;
  *
  * <ul>
  * <li>{@code POST /api/documents/{id}/extract} extracts the document's latest
- * version once and reports the stored result.</li>
+ * version once and reports the stored result, with where it came from
+ * ({@code MODEL}, {@code CACHE} or {@code RULES}) and, for the rules fallback
+ * (#38, record 0023), {@code fallback: true} and the reason.</li>
  * <li>{@code GET /api/documents/{id}/facts} serves only facts whose citation
- * passed the exact substring check. Dead letters are never served.</li>
+ * passed the exact substring check, marked as fallback when the rules made
+ * them. Dead letters and revoked results are never served.</li>
  * </ul>
  *
  * <p>The tenant comes only from {@code X-Tenant-Id}, checked by
@@ -43,13 +46,20 @@ public class ExtractionController {
     }
 
     public record ExtractionDto(UUID extraction_id, UUID document_id, UUID version_id, String status, int facts,
-            int quarantined, boolean truncated) {
+            int quarantined, boolean truncated, String source, boolean fallback, String fallback_reason) {
+
+        static ExtractionDto of(ExtractionService.Result x) {
+            return new ExtractionDto(x.extractionId(), x.documentId(), x.versionId(), x.status(), x.facts(),
+                    x.quarantined(), x.truncated(), x.source().name(), x.fallback(),
+                    x.fallbackReason() == null ? null : x.fallbackReason().name());
+        }
     }
 
     public record FactDto(String field, String value, String citation) {
     }
 
-    public record FactsDto(UUID document_id, UUID version_id, String status, List<FactDto> facts) {
+    public record FactsDto(UUID document_id, UUID version_id, String status, String source, boolean fallback,
+            List<FactDto> facts) {
     }
 
     @PostMapping("/api/documents/{id}/extract")
@@ -64,8 +74,8 @@ public class ExtractionController {
         } catch (ModelUnavailableException e) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(UNAVAILABLE);
         }
-        return r.<ResponseEntity<?>>map(x -> ResponseEntity.ok(new ExtractionDto(x.extractionId(), x.documentId(),
-                x.versionId(), x.status(), x.facts(), x.quarantined(), x.truncated()))).orElseGet(ExtractionController::notFound);
+        return r.<ResponseEntity<?>>map(x -> ResponseEntity.ok(ExtractionDto.of(x)))
+                .orElseGet(ExtractionController::notFound);
     }
 
     @GetMapping("/api/documents/{id}/facts")
@@ -75,7 +85,7 @@ public class ExtractionController {
             return notFound();
         }
         return service.facts(tenant(), docId.get()).<ResponseEntity<?>>map(f -> ResponseEntity.ok(new FactsDto(
-                f.documentId(), f.versionId(), f.status(),
+                f.documentId(), f.versionId(), f.status(), f.source() == null ? null : f.source().name(), f.fallback(),
                 f.facts().stream().map(x -> new FactDto(x.field(), x.value(), x.citation())).toList())))
                 .orElseGet(ExtractionController::notFound);
     }

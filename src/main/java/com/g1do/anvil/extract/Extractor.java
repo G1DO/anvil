@@ -4,10 +4,14 @@ import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -15,6 +19,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.g1do.anvil.eval.CitationCheck;
 import com.g1do.anvil.eval.Fact;
+import com.g1do.anvil.eval.RulesBaseline;
 import com.g1do.anvil.eval.Text;
 
 /**
@@ -22,10 +27,16 @@ import com.g1do.anvil.eval.Text;
  * once, and keep only facts whose citation is an exact substring of what the
  * model was shown.
  *
- * <p>The service and the eval harness both call {@link #extract}, and it is
- * the only caller of {@link ExtractionModel#complete}. Inputs that can't be
+ * <p>The service and the eval harness both go through here, and it is the
+ * only caller of {@link ExtractionModel#complete}. Inputs that can't be
  * extracted safely, and model output that fails a check, are quarantined with
  * a {@link Reason}; quarantined facts are never indexed.
+ *
+ * <p>{@link #extract} prepares a document and asks the model. The service
+ * (#38, record 0023) prepares first, then reuses a cached result
+ * ({@link #reuse}), asks the model ({@link #ask}), or falls back to the rules
+ * ({@link #rules}); every path keeps only facts that pass the same checks
+ * against the same bounded text.
  */
 public final class Extractor {
 
@@ -80,11 +91,29 @@ public final class Extractor {
      * @param quarantined what failed, with reasons
      */
     public record Outcome(Status status, boolean truncated, boolean modelCalled, List<Fact> accepted,
-            List<Quarantined> quarantined) {
+            List<Quarantined> quarantined, ModelReply.Usage usage) {
 
         public Outcome {
             accepted = List.copyOf(accepted);
             quarantined = List.copyOf(quarantined);
+        }
+
+        public Outcome(Status status, boolean truncated, boolean modelCalled, List<Fact> accepted,
+                List<Quarantined> quarantined) {
+            this(status, truncated, modelCalled, accepted, quarantined, null);
+        }
+    }
+
+    /**
+     * A document made ready for extraction, before anything decides its facts
+     * (#38). {@code screened} is set when the document was quarantined without
+     * a model call; otherwise {@code bounded} is the text a model or the rules
+     * would see and {@code contentSha256} its SHA-256, the cache key's content.
+     */
+    public record Prepared(BoundedText bounded, String contentSha256, Outcome screened) {
+
+        public boolean ready() {
+            return screened == null;
         }
     }
 
@@ -102,42 +131,121 @@ public final class Extractor {
     }
 
     /**
-     * Extracts facts from one document. Throws {@link ModelUnavailableException}
-     * when the model can't be asked; nothing is decided in that case.
+     * Extracts facts from one document with the model. Throws
+     * {@link ModelUnavailableException} when the model can't be asked; nothing
+     * is decided in that case.
      */
     public Outcome extract(String text, String mimeType) {
+        Prepared p = prepare(text, mimeType);
+        return p.ready() ? ask(p) : p.screened();
+    }
+
+    /**
+     * Extracts from raw document bytes, which must be UTF-8. Bytes that aren't
+     * are quarantined as {@link Reason#NOT_TEXT} without a model call.
+     */
+    public Outcome extract(byte[] utf8, String mimeType) {
+        Prepared p = prepare(utf8, mimeType);
+        return p.ready() ? ask(p) : p.screened();
+    }
+
+    /**
+     * Bounds and screens a document. Everything decided here is decided
+     * without a model call: the media type, empty text, and hidden or control
+     * characters.
+     */
+    public Prepared prepare(String text, String mimeType) {
         if (!isText(mimeType)) {
-            return poisoned(false, false, Reason.UNSUPPORTED_MEDIA_TYPE, "media type " + safe(mimeType));
+            return screened(poisoned(false, false, Reason.UNSUPPORTED_MEDIA_TYPE, "media type " + safe(mimeType)));
         }
         // Leading whitespace is dropped before the cut, so padding can't push the text out of the window.
         BoundedText bounded = BoundedText.of(text == null ? "" : text.stripLeading());
         if (bounded.text().isBlank()) {
-            return poisoned(bounded.truncated(), false, Reason.EMPTY_TEXT, "no text");
+            return screened(poisoned(bounded.truncated(), false, Reason.EMPTY_TEXT, "no text"));
         }
         int bad = firstHiddenChar(bounded.text());
         if (bad >= 0) {
             int cp = bounded.text().codePointAt(bad);
-            return poisoned(bounded.truncated(), false, Reason.NOT_TEXT, String.format(Locale.ROOT,
+            return screened(poisoned(bounded.truncated(), false, Reason.NOT_TEXT, String.format(Locale.ROOT,
                     "%s character U+%04X at %d", Character.getType(cp) == Character.CONTROL ? "control" : "hidden",
-                    cp, bad));
+                    cp, bad)));
         }
+        return new Prepared(bounded, sha256(bounded.text()), null);
+    }
 
+    /** As {@link #prepare(String, String)}, from bytes that must be UTF-8. */
+    public Prepared prepare(byte[] utf8, String mimeType) {
+        String text;
+        try {
+            text = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(utf8 == null ? new byte[0] : utf8))
+                    .toString();
+        } catch (CharacterCodingException e) {
+            if (!isText(mimeType)) {
+                return screened(poisoned(false, false, Reason.UNSUPPORTED_MEDIA_TYPE, "media type " + safe(mimeType)));
+            }
+            return screened(poisoned(false, false, Reason.NOT_TEXT, "not UTF-8"));
+        }
+        return prepare(text, mimeType);
+    }
+
+    /** Asks the model once about a prepared document and keeps only facts that pass every check. */
+    public Outcome ask(Prepared p) {
+        requireReady(p);
+        BoundedText bounded = p.bounded();
         ModelReply reply = model.complete(bounded);
+        ModelReply.Usage usage = reply.usage();
         if ("refusal".equals(reply.stopReason())) {
-            return poisoned(bounded.truncated(), true, Reason.MODEL_REFUSED, clip(reply.text()));
+            return poisoned(bounded.truncated(), true, Reason.MODEL_REFUSED, clip(reply.text()), usage);
         }
         if (!"end_turn".equals(reply.stopReason())) {
             return poisoned(bounded.truncated(), true, Reason.MALFORMED_OUTPUT,
-                    "stop reason " + reply.stopReason() + ": " + clip(reply.text()));
+                    "stop reason " + reply.stopReason() + ": " + clip(reply.text()), usage);
         }
         List<Fact> facts;
         try {
             facts = parse(reply.text());
         } catch (IllegalArgumentException e) {
             return poisoned(bounded.truncated(), true, Reason.MALFORMED_OUTPUT,
-                    e.getMessage() + ": " + clip(reply.text()));
+                    e.getMessage() + ": " + clip(reply.text()), usage);
         }
+        return checked(bounded, facts, true, usage);
+    }
 
+    /**
+     * The fallback (#38, record 0023): the frozen {@link RulesBaseline} over
+     * the same bounded text, with no model call. Its facts go through the same
+     * checks as the model's, so a fallback fact is indexed only with an exact
+     * citation too.
+     */
+    public Outcome rules(Prepared p) {
+        requireReady(p);
+        return checked(p.bounded(), RulesBaseline.extract(p.bounded().text()), false, null);
+    }
+
+    /**
+     * A cached result reused for a prepared document with the same content,
+     * with no model call. Every cached fact is checked again against this
+     * document's text; if any fails, or there are more than {@link #MAX_FACTS},
+     * the entry is poisoned and empty is returned, so it is never served.
+     */
+    public Optional<Outcome> reuse(Prepared p, List<Fact> cached) {
+        requireReady(p);
+        if (cached.size() > MAX_FACTS) {
+            return Optional.empty();
+        }
+        for (Fact f : cached) {
+            if (check(p.bounded().text(), f) != null) {
+                return Optional.empty();
+            }
+        }
+        return Optional.of(new Outcome(Status.ACCEPTED, p.bounded().truncated(), false, cached, List.of()));
+    }
+
+    private static Outcome checked(BoundedText bounded, List<Fact> facts, boolean modelCalled,
+            ModelReply.Usage usage) {
         List<Fact> accepted = new ArrayList<>();
         List<Quarantined> quarantined = new ArrayList<>();
         Set<String> seen = new HashSet<>();
@@ -149,28 +257,27 @@ public final class Extractor {
                 accepted.add(f);
             }
         }
-        return new Outcome(Status.ACCEPTED, bounded.truncated(), true, accepted, quarantined);
+        return new Outcome(Status.ACCEPTED, bounded.truncated(), modelCalled, accepted, quarantined, usage);
     }
 
-    /**
-     * Extracts from raw document bytes, which must be UTF-8. Bytes that aren't
-     * are quarantined as {@link Reason#NOT_TEXT} without a model call.
-     */
-    public Outcome extract(byte[] utf8, String mimeType) {
-        String text;
-        try {
-            text = StandardCharsets.UTF_8.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(utf8 == null ? new byte[0] : utf8))
-                    .toString();
-        } catch (CharacterCodingException e) {
-            if (!isText(mimeType)) {
-                return poisoned(false, false, Reason.UNSUPPORTED_MEDIA_TYPE, "media type " + safe(mimeType));
-            }
-            return poisoned(false, false, Reason.NOT_TEXT, "not UTF-8");
+    private static void requireReady(Prepared p) {
+        if (!p.ready()) {
+            throw new IllegalArgumentException("document was screened out: " + p.screened().status());
         }
-        return extract(text, mimeType);
+    }
+
+    private static Prepared screened(Outcome o) {
+        return new Prepared(null, null, o);
+    }
+
+    /** SHA-256 of the text's UTF-8 bytes, in lower-case hex. */
+    static String sha256(String text) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /** The first check {@code f} fails against the text the model was shown, or null. */
@@ -278,8 +385,13 @@ public final class Extractor {
     }
 
     private static Outcome poisoned(boolean truncated, boolean modelCalled, Reason r, String detail) {
+        return poisoned(truncated, modelCalled, r, detail, null);
+    }
+
+    private static Outcome poisoned(boolean truncated, boolean modelCalled, Reason r, String detail,
+            ModelReply.Usage usage) {
         return new Outcome(Status.QUARANTINED, truncated, modelCalled, List.of(),
-                List.of(new Quarantined(r, null, detail)));
+                List.of(new Quarantined(r, null, detail)), usage);
     }
 
     static String clip(String s) {
