@@ -43,6 +43,7 @@ The SQL in `src/main/resources/db/migration/` is the schema. These are the rules
   - `extraction_switch`: one row, the kill-switch. It holds no tenant data and has no RLS.
 
   Operators write all three; the runtime role only reads revocations and the switch (record 0023).
+- **Fact full-text index (V10):** `extracted_facts_value_fts_idx`, a GIN index on `to_tsvector('simple', value)` with `fastupdate` on. It was measured against a budget before it was added, and its kill-switch is an operator dropping it; no code reads it yet (record 0025).
 - **Capability grants:** they expire after one hour (`V3`).
 - **Dead jobs:** keep their last owner, token and lease. They're never offered again: the reconciler moves a job with `attempt >= max_attempts` to `DEAD`, and a claim takes only `QUEUED` rows with `attempt < max_attempts`.
 

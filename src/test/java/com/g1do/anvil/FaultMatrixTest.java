@@ -72,7 +72,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Lease expiry moves the lease on the database clock instead of waiting the
  * real 10 seconds; {@code JobServiceTest#zombieFenceRealSuspend} covers the
  * wall-clock wait. GIN and autovacuum are induced on this test database only and
- * reset afterwards; the schema has no GIN index.
+ * reset afterwards. The schema's own GIN index (V10, record 0025) is on
+ * {@code extracted_facts}; this case adds one on {@code documents} with a small
+ * pending list, so a flush happens during the run.
  *
  * <p>Random choices (which claims stall, title words) come from
  * {@code FAULT_SEED}. A failure writes the seed and trace to
