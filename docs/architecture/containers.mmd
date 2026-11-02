@@ -16,7 +16,7 @@ flowchart TB
     casStore["CAS store<br/>per-tenant content, hash-verified reads"]
     execWorkspaces["Exec workspaces<br/>per-tenant writable directories"]
     network["Network<br/>egress denied by default"]
-    llm["Model provider<br/>Anthropic-compatible Messages API"]
+    llm["Model provider<br/>DeepSeek chat completions API"]
     broker["JailEgress broker<br/>in the parent: allowlist, connect-time DNS check"]
     tenantClient -->|"TRUST BOUNDARY: X-Tenant-Id checked, input validated"| api
     operator -->|probes, logs| api

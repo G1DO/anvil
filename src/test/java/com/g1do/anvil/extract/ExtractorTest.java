@@ -5,7 +5,6 @@ import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
@@ -84,20 +83,17 @@ class ExtractorTest {
     }
 
     @Test
-    void extractorIsTheOnlyCallerOfTheModelAndTheOnlyClientsAreTheAdapters() throws IOException {
+    void extractorIsTheOnlyCallerOfTheModelAndTheOnlyClientIsTheAdapter() throws IOException {
         List<Path> callers = filesContaining(".complete(");
         assertThat(callers).extracting(p -> p.getFileName().toString()).containsExactly("Extractor.java");
 
         List<Path> implementers = filesContaining("implements ExtractionModel");
         assertThat(implementers).extracting(p -> p.getFileName().toString())
-                .containsExactlyInAnyOrder("AnthropicExtractionModel.java", "GeminiExtractionModel.java");
+                .containsExactly("DeepSeekExtractionModel.java");
 
-        List<Path> clients = filesContaining("AnthropicOkHttpClient");
+        List<Path> clients = filesContaining("java.net.http.HttpClient");
         assertThat(clients).extracting(p -> p.getFileName().toString())
-                .containsExactly("AnthropicExtractionModel.java");
-        List<Path> httpClients = filesContaining("java.net.http.HttpClient");
-        assertThat(httpClients).extracting(p -> p.getFileName().toString())
-                .containsExactly("GeminiExtractionModel.java");
+                .containsExactly("DeepSeekExtractionModel.java");
 
         // The service and the harness both go through Extractor.extract.
         assertThat(Files.readString(MAIN.resolve("com/g1do/anvil/extract/ExtractionService.java")))
@@ -258,25 +254,9 @@ class ExtractorTest {
     }
 
     @Test
-    void theAdapterNeedsHttpsAndACredentialBeforeAnyCall() {
-        assertThatThrownBy(() -> settings("http://opencode.ai/inference/go/anthropic", "k"))
-                .isInstanceOf(IllegalArgumentException.class);
-        AnthropicExtractionModel noKey = settings(ExtractHarness.ANTHROPIC_BASE_URL, "");
-        assertThatThrownBy(() -> noKey.complete(BoundedText.of("Doc.")))
-                .isInstanceOf(ModelUnavailableException.class)
-                .hasMessageContaining("no model credential");
-    }
-
-    private static AnthropicExtractionModel settings(String url, String key) {
-        return new AnthropicExtractionModel(new AnthropicExtractionModel.Settings(url, "claude-haiku-5-5", key,
-                AnthropicExtractionModel.Auth.BEARER, "", Duration.ofSeconds(5), 1024));
-    }
-
-    @Test
     void theHarnessDefaultsMatchTheServiceConfiguration() throws IOException {
         String yaml = Files.readString(Path.of("src/main/resources/application.yaml"), StandardCharsets.UTF_8);
-        assertThat(yaml).contains("provider: GEMINI")
-                .contains("base-url: " + ExtractHarness.DEFAULT_BASE_URL)
+        assertThat(yaml).contains("base-url: " + ExtractHarness.DEFAULT_BASE_URL)
                 .contains("model: " + ExtractHarness.DEFAULT_MODEL)
                 .contains("api-key: ${ANVIL_MODEL_API_KEY:}");
         assertThat(Files.readString(Path.of("Taskfile.yml"), StandardCharsets.UTF_8))

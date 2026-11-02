@@ -5,7 +5,7 @@ flowchart TB
     postgres["PostgreSQL 18<br/>Source of truth, queue, outbox"]
     casStore["CAS store<br/>per-tenant content, hash-verified reads"]
     execWorkspaces["Exec workspaces<br/>per-tenant writable directories"]
-    llm["Model provider<br/>Anthropic-compatible Messages API"]
+    llm["Model provider<br/>DeepSeek chat completions API"]
     tenantClient -->|POST documents, reads, audit reads, extract, facts| anvil
     operator -->|health probes, logs| anvil
     anvil -->|JDBC, tenant context, RLS| postgres

@@ -3,7 +3,7 @@ flowchart TB
     pg["PostgreSQL 18<br/>RLS FORCE + tenant context"]
     cas["CAS store<br/>tenants/tenant/sha"]
     ws["Exec workspaces<br/>per-tenant writable dirs"]
-    llm["Model provider<br/>Anthropic Messages API over HTTPS<br/>configured base URL, key from env"]
+    llm["Model provider<br/>DeepSeek chat completions over HTTPS<br/>configured base URL, key from env"]
 
     subgraph api["API service"]
         filter["TenantAuthFilter<br/>X-Tenant-Id check + TenantContext"]

@@ -8,11 +8,12 @@ Tenants want facts pulled out of their documents. A model can invent or paraphra
 
 ## Decision
 
-- **The model.** `AnthropicExtractionModel` calls an Anthropic-compatible Messages API through the official Java SDK (`com.anthropic:anthropic-java` 3.2.0).
-  - The base URL, model, auth style and session header come from `anvil.extraction` in `application.yaml`. The base URL must be `https`.
-  - The credential comes only from `ANVIL_MODEL_API_KEY`, which is never logged, stored or committed. Without it the app starts and extraction answers `503` without a call.
-  - The default is OpenCode Go (`https://opencode.ai/inference/go/anthropic`) with `claude-haiku-5-5`, the Claude model that subscription serves. It needs a bearer credential and an `x-opencode-session` header; each call sends a fresh random session value and no tenant identifier.
-  - Each call is one stateless request with effort `low` and a JSON schema for the reply: `{"facts": [{"field", "value", "citation"}]}`, with `field` one of the four.
+- **The model.** `DeepSeekExtractionModel` calls the DeepSeek chat completions API (`POST https://api.deepseek.com/chat/completions`) with `deepseek-flash`, using the JDK's HTTP client. It adds no dependency.
+  - The base URL and model come from `anvil.extraction` in `application.yaml`. The base URL must be `https`, and the model ID is checked against a plain pattern.
+  - The credential comes only from `ANVIL_MODEL_API_KEY`, sent as a bearer token, and is never logged, stored or committed. Without it the app starts and extraction answers `503` without a call.
+  - Each call is one stateless request: the system prompt, one user message, JSON output mode (`response_format` `json_object`), thinking off, temperature 0, at most 4096 output tokens, and no tenant identifier.
+  - JSON mode guarantees JSON but takes no schema, so the prompt spells out the one shape allowed, `{"facts": [{"field", "value", "citation"}]}`, and the extractor rejects anything else.
+  - Rate limits (`429`), server errors and overload (`500`, `503`) and timeouts are retried with backoff: 2 retries in the service and 6 in the harness, each wait at most 60 seconds. A bad key (`401`), no balance (`402`) or a bad request (`400`, `422`) fails at once.
 - **One path, bounded.** `Extractor.extract` is the only extraction path. The service and the harness both call it, and it is the only caller of `ExtractionModel.complete`.
   - `complete` takes a `BoundedText`, whose only constructor is `BoundedText.of`, which cuts the text to 500 characters (Java `char`s, the eval set's unit) without splitting a surrogate pair. So no code path can send a model more of a document.
   - The document goes between `<<<DOCUMENT m>>>` and `<<<END DOCUMENT m>>>`, where `m` is 24 random hex digits per call, so the document can't close the data block.
@@ -24,7 +25,7 @@ Tenants want facts pulled out of their documents. A model can invent or paraphra
   A fact failing a check goes to the dead-letter table with its reason (`UNKNOWN_FIELD`, `UNCITED`, `CITATION_NOT_IN_SOURCE`, `VALUE_NOT_IN_CITATION`); the document's other facts can still be indexed. A repeated fact is indexed once.
 - **Poison input.** The whole document is quarantined, with nothing indexed, for:
   - `UNSUPPORTED_MEDIA_TYPE` (not `text/*`), `EMPTY_TEXT`, or `NOT_TEXT` (a control character other than tab or line break, or invalid UTF-8). These are decided before any model call.
-  - `MODEL_REFUSED` (stop reason `refusal`), or `MALFORMED_OUTPUT`: not JSON, any key outside the schema, more than 64 facts, or a reply cut off by `max_tokens`. Up to 2000 characters of the reply are kept with the dead letter.
+  - `MODEL_REFUSED` (finish reason `content_filter`), or `MALFORMED_OUTPUT`: not JSON (JSON mode blanks out non-JSON text, so this includes a blank reply), any key outside the shape, more than 64 facts, a reply cut off by `max_tokens` (finish reason `length`), or any other finish reason. Up to 2000 characters of the reply are kept with the dead letter.
 
   A model outage (no credential, network, timeout, rate limit, server error) is not poison: nothing is stored and the request answers `503`, so it can be retried.
 - **Storage** (V8, all with RLS `FORCE` and the `tenant_isolation` policy, cascading from `documents`):
@@ -39,7 +40,7 @@ Tenants want facts pulled out of their documents. A model can invent or paraphra
 
   A forged, malformed, missing or other tenant's ID gets `404 {"error":"not_found"}`, the same bytes for each, before any model call.
 - **No cross-tenant reuse.** A result is keyed by tenant and version, so identical content in two tenants is extracted twice. There is no content-addressed cache or dedup across tenants. #38's cache must key by tenant too.
-- **The prompt** (`Prompt`, version `extract-v1`) was written from the four field definitions and the threat model, without opening the eval set's documents. It wasn't changed after the harness run, and the run was made once. Changing it means a new version, and the frozen set can't be used to choose between versions (record 0021).
+- **The prompt** (`Prompt`, version `extract-v1`) was written from the four field definitions and the threat model, without opening the eval set's documents. Its last lines give the JSON shape, which JSON mode needs; they were added before any run returned results. It wasn't changed after the harness run, and the run was made once. Changing it means a new version, and the frozen set can't be used to choose between versions (record 0021).
 - **The harness.** `task eval:extract` runs `Extractor.extract` over every document of `eval/sets/pilot-v1` as `text/plain` and writes `predictions.jsonl` (accepted facts only, exactly what would be indexed) and `run.json` (model, prompt hash, quarantine counts by reason, latency, and which injection cases succeeded) to `eval/runs/<run>/`. `task eval EVAL_CANDIDATE=...` scores it. `run.json` has no per-document quality scores.
 
 ## Harness run
@@ -47,7 +48,7 @@ Tenants want facts pulled out of their documents. A model can invent or paraphra
 Pending: the run's results, the `task eval` report, and the injection cases are added here with the run.
 
 Alternatives considered:
-- **Raw HTTP instead of the SDK.** Less to audit, but every request and response shape would be hand-written. The SDK is the supported client and takes a base URL, so the same code reaches Anthropic or a gateway.
+- **A vendor SDK instead of the JDK's HTTP client.** It would hand-write less, but adds a dependency tree to audit for one request shape. The request and reply are small and pinned by `DeepSeekExtractionModelTest`.
 - **A queued job instead of a synchronous call.** It frees the request thread, but needs a job kind, retries and a status route. The pilot's documents are short, so one bounded call per request is enough; #38 can move it behind the queue with the budget.
 - **Quarantining the whole document when any fact fails.** It throws away good facts with the bad one. A failing fact is quarantined alone; only output that can't be parsed or trusted as a whole quarantines the document.
 - **A cross-tenant cache keyed by content hash.** It would save calls on shared documents, but a hit in one tenant would reveal that another tenant holds the same text. Rejected.
@@ -57,12 +58,13 @@ Alternatives considered:
 ## Consequences
 
 - **Proven by:**
-  - `ExtractorTest`: truncation before the model, the single path, the citation and value checks, every quarantine reason, the adapter's HTTPS and credential checks.
+  - `ExtractorTest`: truncation before the model, the single path, the citation and value checks, every quarantine reason.
+  - `DeepSeekExtractionModelTest`: the request (bounded document, JSON mode, thinking off, key only in the header), finish reasons, a blank, filtered or cut-off reply quarantined, retries for rate limits and overload, no retry for a bad key or no balance, and the HTTPS, model ID and credential checks.
   - `ExtractHarnessTest`: the harness sends every document through the extractor once, never writes a fact with an unsupported citation, and writes nothing on a model outage.
   - `ExtractionIsolationTest`: the same `404` for forged, malformed, missing and other tenants' IDs with no model call; identical content extracted separately per tenant; one tenant's poison has no effect on another; dead letters kept with a reason and never served; an outage stores nothing.
   - `RlsLeakTest` now covers the three new tables.
 - **The citation check can't catch a planted value that is also a plausible fact.** If a document writes a value and asks for it to be extracted, the value is in the text and its citation is exact. The prompt tells the model not to follow such requests, but that's a mitigation, not a guarantee. The injection cases the run shows succeeding are listed above.
-- **Tenant text goes to a third party.** OpenCode's documentation says Claude Haiku 5.5 requests through Go are kept for 30 days under Anthropic's policy and not used for training. OpenCode Go's terms describe it as made for coding agents, so serving tenant traffic needs a provider whose terms cover it. ANVIL isn't live.
+- **Tenant text goes to a third party.** DeepSeek's API documentation doesn't say how long inputs are kept or whether they are used for training, and its context cache is on by default and cleared within hours to days. Its terms and privacy policy must be checked before tenant traffic is sent. The harness sends only the eval set's fictional documents. ANVIL isn't live.
 - **No budget, cache or kill-switch yet** (#38). Each new version costs one call.
-- **The request waits on the model:** up to 30 seconds per attempt, with 2 retries.
+- **The request waits on the model:** up to 60 seconds per attempt, with 2 retries.
 - **A quarantined version stays quarantined,** even when the cause was a one-off malformed reply. A new version is extracted afresh.

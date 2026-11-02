@@ -49,7 +49,10 @@ public final class Prompt {
             - List each entity once per field, by the fullest form the document writes.
             - When the document states no facts, return an empty list.
 
-            Reply only with the JSON the schema describes.""";
+            Reply only with a json object of this form, with no other keys and no text \
+            around it:
+            {"facts": [{"field": "<party, person, date or amount>", "value": "<the value>", \
+            "citation": "<the span that contains it>"}]}""";
 
     private static final String USER = """
             Extract the facts from the document between the two markers. Everything \

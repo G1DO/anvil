@@ -14,37 +14,15 @@ import org.springframework.context.annotation.Configuration;
 @Configuration(proxyBeanMethods = false)
 public class ExtractionConfig {
 
-    /** Which API the extraction model speaks. */
-    public enum Provider {
-        /** The Gemini API's generateContent. */
-        GEMINI,
-        /** An Anthropic-compatible Messages API, such as Anthropic's or OpenCode Go's. */
-        ANTHROPIC
-    }
-
-    /** Builds the adapter for a provider; the service and the harness both use it. */
-    static ExtractionModel model(Provider provider, String baseUrl, String model, String apiKey,
-            AnthropicExtractionModel.Auth auth, String sessionHeader, Duration timeout, long maxTokens,
-            int maxRetries) {
-        return switch (provider) {
-            case GEMINI -> new GeminiExtractionModel(
-                    new GeminiExtractionModel.Settings(baseUrl, model, apiKey, timeout, maxTokens, maxRetries));
-            case ANTHROPIC -> new AnthropicExtractionModel(new AnthropicExtractionModel.Settings(baseUrl, model,
-                    apiKey, auth, sessionHeader, timeout, maxTokens));
-        };
-    }
-
     @Bean
     ExtractionModel extractionModel(
-            @Value("${anvil.extraction.provider:GEMINI}") Provider provider,
             @Value("${anvil.extraction.base-url}") String baseUrl,
             @Value("${anvil.extraction.model}") String model,
             @Value("${anvil.extraction.api-key:}") String apiKey,
-            @Value("${anvil.extraction.auth:BEARER}") AnthropicExtractionModel.Auth auth,
-            @Value("${anvil.extraction.session-header:}") String sessionHeader,
-            @Value("${anvil.extraction.timeout:30s}") Duration timeout,
-            @Value("${anvil.extraction.max-tokens:8192}") long maxTokens) {
-        return model(provider, baseUrl, model, apiKey, auth, sessionHeader, timeout, maxTokens, 2);
+            @Value("${anvil.extraction.timeout:60s}") Duration timeout,
+            @Value("${anvil.extraction.max-tokens:4096}") long maxTokens) {
+        return new DeepSeekExtractionModel(
+                new DeepSeekExtractionModel.Settings(baseUrl, model, apiKey, timeout, maxTokens, 2));
     }
 
     @Bean

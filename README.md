@@ -105,7 +105,7 @@ curl -s localhost:8080/readyz     # readiness (checks the database)
 
 Compose reads `POSTGRES_PASSWORD` from your environment or an untracked `.env`; the names are in `.env.example`. With nothing set it uses a local-only default.
 
-Extraction calls the model configured under `anvil.extraction` in `application.yaml` (an Anthropic-compatible Messages API) with the key in `ANVIL_MODEL_API_KEY`. Without a key the app still starts, and extraction answers `503` without calling anything.
+Extraction calls the model configured under `anvil.extraction` in `application.yaml` (DeepSeek's chat completions API, `deepseek-flash`) with the key in `ANVIL_MODEL_API_KEY`. Without a key the app still starts, and extraction answers `503` without calling anything.
 
 To run one test class: `./mvnw -B -ntp -Dtest=JobServiceTest test`.
 

@@ -105,7 +105,7 @@ tasks:
       - |
         set -a; [ -f .env ] && . ./.env; set +a
         run='{{.EVAL_RUN | default ""}}'
-        run="${run:-eval/runs/extract-v1-${ANVIL_MODEL:-gemini-3.8-flash}}"
+        run="${run:-eval/runs/extract-v1-${ANVIL_MODEL:-deepseek-flash}}"
         java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.extract.ExtractHarness eval/sets/pilot-v1 "$run"
 
   check:sast:
