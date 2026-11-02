@@ -4,9 +4,9 @@ Mermaid diagrams, one file each. `task check:diagrams` renders them all in the g
 
 | Diagram | Shows |
 | --- | --- |
-| [context.mmd](context.mmd) | ANVIL, its users (tenant client, operator), and what it talks to: PostgreSQL, the content store, exec workspaces |
-| [containers.mmd](containers.mmd) | The running parts (API service, workers, exec jail, Postgres, content store) and the trust boundaries between them |
-| [components.mmd](components.mmd) | The building blocks inside the API service, the workers, and the exec jail |
+| [context.mmd](context.mmd) | ANVIL, its users (tenant client, operator), and what it talks to: PostgreSQL, the content store, exec workspaces, the model provider |
+| [containers.mmd](containers.mmd) | The running parts (API service, workers, exec jail, Postgres, content store), the model provider, and the trust boundaries between them |
+| [components.mmd](components.mmd) | The building blocks inside the API service (including the extraction path), the workers, and the exec jail |
 | [flow-submit-claim-commit.mmd](flow-submit-claim-commit.mmd) | Submit → claim → commit, including a duplicate submit, an invalid capability, and a zombie worker with a stale fencing token |
 | [flow-reconcile-outbox.mmd](flow-reconcile-outbox.mmd) | Reconciler and outbox relay, including a failed publish and a redelivery that applies once |
 | [state-job.mmd](state-job.mmd) | Job lifecycle: `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `DEAD` |
@@ -31,6 +31,7 @@ The SQL in `src/main/resources/db/migration/` is the schema. These are the rules
 - **Clocks:** `clock_timestamp()` is the only clock for leases, capabilities and presigned URLs. Claim due times compare `next_run_at` with `now()`, the claim transaction's start on the database clock, so the index can bound the scan. `created_at` and `next_run_at` default to `now()`; `created_at` is never hashed.
 - **Batch sizes:** claim (`LIMIT 20`) and relay (`LIMIT 100`) are contracts of their canonical queries, backed by partial indexes: `jobs_claim_order_idx` on queued jobs in claim order, `outbox_poll_idx` on unsent rows, and `artifacts_gc_idx` on unreferenced content. `jobs_claim_idx` (V1) no longer backs the claim.
 - **Fair claim:** `tenants.max_running` is each tenant's quota of `RUNNING` jobs, default 1000. Claims for one tenant serialize on a transaction-scoped advisory lock before counting. A claim takes only jobs with `next_run_at <= now()`, in the order `(penalty, next_run_at, created_at, id)`, where the penalty is the tenant's `RUNNING` count. Rows that existed before V7 share the migration's `next_run_at` and keep their arrival order (record 0020).
+- **Extraction (V8):** `extractions` has one row per `(tenant_id, version_id)`, so a version is extracted once per tenant and a repeat returns the stored result. The key holds the tenant, so identical content in two tenants never shares a result. `extracted_facts` is the index; the application inserts only facts whose citation passed the exact substring check, and only `GET /api/documents/{id}/facts` reads it. `extraction_dead_letters` keeps quarantined input and facts with a reason; no route reads it. All three have RLS `FORCE` and cascade from `documents` (record 0022).
 - **Capability grants:** they expire after one hour (`V3`).
 - **Dead jobs:** keep their last owner, token and lease. They're never offered again: the reconciler moves a job with `attempt >= max_attempts` to `DEAD`, and a claim takes only `QUEUED` rows with `attempt < max_attempts`.
 

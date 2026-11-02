@@ -3,6 +3,7 @@ flowchart TB
     pg["PostgreSQL 18<br/>RLS FORCE + tenant context"]
     cas["CAS store<br/>tenants/tenant/sha"]
     ws["Exec workspaces<br/>per-tenant writable dirs"]
+    llm["Model provider<br/>Anthropic Messages API over HTTPS<br/>configured base URL, key from env"]
 
     subgraph api["API service"]
         filter["TenantAuthFilter<br/>X-Tenant-Id check + TenantContext"]
@@ -14,6 +15,9 @@ flowchart TB
         auditRead["AuditReadService<br/>caller-tenant chain ORDER BY seq"]
         replay["ReplayService + ReplayController<br/>input_sha + output_sha + match"]
         casPre["CasPresignedService<br/>HMAC URLs TTL 60s"]
+        extractCtrl["ExtractionController<br/>POST documents id extract, GET documents id facts<br/>same 404 for forged, missing, other tenant"]
+        extractSvc["ExtractionService<br/>tenant-scoped read, model call outside txn<br/>one result per tenant + version"]
+        extractor["Extractor, the one path<br/>BoundedText 500 chars, one model call<br/>CitationCheck exact substring, quarantine"]
         observe["ObserveController<br/>saturation JSON + metrics text"]
         health["HealthController<br/>healthz readyz + correlation"]
     end
@@ -46,6 +50,9 @@ flowchart TB
     filter --> searchCtrl --> readSvc
     filter --> auditCtrl --> auditRead
     filter --> replay
+    filter --> extractCtrl --> extractSvc --> extractor
+    extractor -->|"TRUST BOUNDARY: 500 chars out, reply checked before use"| llm
+    extractSvc -->|"facts + dead letters, JDBC SET LOCAL + RLS"| pg
     submitSvc -->|JDBC SET LOCAL + RLS| pg
     readSvc -->|JDBC SET LOCAL + RLS| pg
     auditRead -->|JDBC SET LOCAL + RLS| pg
