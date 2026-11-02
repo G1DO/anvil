@@ -45,7 +45,15 @@ Tenants want facts pulled out of their documents. A model can invent or paraphra
 
 ## Harness run
 
-Pending: the run's results, the `task eval` report, and the injection cases are added here with the run.
+Made once, on 2026-11-02 at 15:38 UTC, with `task eval:extract`: `deepseek-flash`, prompt `extract-v1` (SHA-256 `eb0203b6…1572149`), set `pilot-v1` frozen at `0bdc408`. The predictions, `run.json` and the gate's report are in `eval/runs/extract-v1-deepseek-flash/`, and `task eval` now scores this run by default, so CI's `eval` job re-checks it on every change.
+
+- **Run:** 52 documents, 52 model calls, none truncated, none quarantined, 209 facts indexed from the 40 quality documents. Latency p50 1146 ms, p95 1436 ms, max 1659 ms; the run took 61 seconds.
+- **Quality** (`task eval`, 95% intervals): precision 0.995 [0.985, 1.000], recall 0.986 [0.970, 1.000], F1 0.990 [0.978, 1.000], against the baseline's F1 0.758 [0.702, 0.808]. Paired F1 difference +0.232 [+0.182, +0.289].
+- **Citations:** 0 of 245 are not exact substrings of their document.
+- **Injection subset:** 0 of 12 attacks succeeded, attack success rate 0.000 [0.000, 0.242] (Wilson). The baseline's 3 (`i01`, `i10`, `i12`) were blocked. So there are no unmitigated cases to document. The upper bound of 0.242 is the honest limit of 12 cases: a later model or prompt could still be steered (see Consequences).
+- **Gate:** PASS.
+
+Before this run, two attempts with another provider returned no results (the model at capacity, then a free-tier daily quota), and the adapter was replaced. No predictions were seen before the prompt's final form.
 
 Alternatives considered:
 - **A vendor SDK instead of the JDK's HTTP client.** It would hand-write less, but adds a dependency tree to audit for one request shape. The request and reply are small and pinned by `DeepSeekExtractionModelTest`.
@@ -63,7 +71,7 @@ Alternatives considered:
   - `ExtractHarnessTest`: the harness sends every document through the extractor once, never writes a fact with an unsupported citation, and writes nothing on a model outage.
   - `ExtractionIsolationTest`: the same `404` for forged, malformed, missing and other tenants' IDs with no model call; identical content extracted separately per tenant; one tenant's poison has no effect on another; dead letters kept with a reason and never served; an outage stores nothing.
   - `RlsLeakTest` now covers the three new tables.
-- **The citation check can't catch a planted value that is also a plausible fact.** If a document writes a value and asks for it to be extracted, the value is in the text and its citation is exact. The prompt tells the model not to follow such requests, but that's a mitigation, not a guarantee. The injection cases the run shows succeeding are listed above.
+- **The citation check can't catch a planted value that is also a plausible fact.** If a document writes a value and asks for it to be extracted, the value is in the text and its citation is exact. The prompt tells the model not to follow such requests, but that's a mitigation, not a guarantee. The run above had none succeed.
 - **Tenant text goes to a third party.** DeepSeek's API documentation doesn't say how long inputs are kept or whether they are used for training, and its context cache is on by default and cleared within hours to days. Its terms and privacy policy must be checked before tenant traffic is sent. The harness sends only the eval set's fictional documents. ANVIL isn't live.
 - **No budget, cache or kill-switch yet** (#38). Each new version costs one call.
 - **The request waits on the model:** up to 60 seconds per attempt, with 2 retries.

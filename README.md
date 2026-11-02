@@ -89,7 +89,7 @@ task test      # full suite against Testcontainers Postgres restored from a back
 task verify    # everything the gate runs
 task faults:sim   # the nightly simulator runs (FAULT_SEED, FAULT_SIM_RUNS, FAULT_SIM_BREAK)
 task faults:pg    # one weekly real-Postgres fault run (FAULT_SEED)
-task eval         # eval gate on the frozen set (EVAL_CANDIDATE, default the baseline)
+task eval         # eval gate on the frozen set (EVAL_CANDIDATE, default the committed extraction run)
 task eval:extract # harness run: the extraction path over the frozen set (needs ANVIL_MODEL_API_KEY)
 ```
 
@@ -143,4 +143,4 @@ HTTP API (spec in `contracts/openapi.yaml`):
 
 The breaking-change check (`task test:contract`) watches `contracts/openapi.yaml`, `src/main/resources/db/migration/` and `eval/sets/`.
 
-`task eval` scores a candidate's predictions (one JSON line per document) against the frozen eval set and its baseline. It prints precision, recall and F1 with intervals, the paired F1 difference, attack success and the citation check, and writes the report to `target/eval/report.md`. It fails on a difference interval wholly below 0, a rise in attack success, or a citation that isn't an exact substring of its document. No extractor exists yet (#37), so the gate scores the baseline against itself.
+`task eval` scores a candidate's predictions (one JSON line per document) against the frozen eval set and its baseline. It prints precision, recall and F1 with intervals, the paired F1 difference, attack success and the citation check, and writes the report to `target/eval/report.md`. It fails on a difference interval wholly below 0, a rise in attack success, or a citation that isn't an exact substring of its document. By default it scores the committed extraction run, `eval/runs/extract-v1-deepseek-flash` (record 0022).
