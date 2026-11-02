@@ -1,0 +1,153 @@
+{
+  "scenario" : "flood",
+  "offered" : "a 10x flood: 1,400 extraction requests per second for 60 seconds, then 14 per second for 60 seconds to show recovery",
+  "k6" : "grafana/k6:1.4.2@sha256:3656673de3f30424e8ebcfa46acd9558d83b6a43612d0f668ffeac953950c6c7",
+  "postgres" : "postgres:18.6, default settings",
+  "model" : "LatencyStubModel: median 1142 ms, p95 1497 ms, at most 3000 ms (the cost run's model-call latency); no network",
+  "host" : "12 CPUs, app, Postgres and k6 on one host",
+  "started_at" : "2026-11-02T22:33:22Z",
+  "finished_at" : "2026-11-02T22:36:06Z",
+  "k6_exit" : 0,
+  "model_calls" : 9005,
+  "tables" : {
+    "audit_events" : {
+      "inserted" : 9005,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 49152,
+      "bytes_after" : 6062080,
+      "live_after" : 9005,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 2,
+      "wasted_percent_after_settle" : 3.52
+    },
+    "document_versions" : {
+      "inserted" : 9005,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 40960,
+      "bytes_after" : 6291456,
+      "live_after" : 9005,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 2,
+      "wasted_percent_after_settle" : 2.78
+    },
+    "documents" : {
+      "inserted" : 9005,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 32768,
+      "bytes_after" : 2449408,
+      "live_after" : 9005,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 2,
+      "wasted_percent_after_settle" : 6.93
+    },
+    "extracted_facts" : {
+      "inserted" : 25701,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 40960,
+      "bytes_after" : 7618560,
+      "live_after" : 25714,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 2,
+      "wasted_percent_after_settle" : 2.86
+    },
+    "extraction_budgets" : {
+      "inserted" : 0,
+      "updated" : 9005,
+      "hot_updated" : 9005,
+      "bytes_before" : 65536,
+      "bytes_after" : 65536,
+      "live_after" : 20,
+      "dead_at_end" : 21,
+      "dead_after_settle" : 13,
+      "autovacuums" : 3,
+      "wasted_percent_after_settle" : 77.88
+    },
+    "extractions" : {
+      "inserted" : 9005,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 40960,
+      "bytes_after" : 7225344,
+      "live_after" : 9012,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 1,
+      "wasted_percent_after_settle" : 4.44
+    },
+    "jobs" : {
+      "inserted" : 9005,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 65536,
+      "bytes_after" : 5177344,
+      "live_after" : 9005,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 2,
+      "wasted_percent_after_settle" : 3.83
+    },
+    "outbox" : {
+      "inserted" : 9005,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 24576,
+      "bytes_after" : 5414912,
+      "live_after" : 9005,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 2,
+      "wasted_percent_after_settle" : 4.49
+    }
+  },
+  "load" : {
+    "main" : {
+      "iterations" : 8165,
+      "errors" : 0,
+      "extract_ms" : {
+        "p50" : 15018,
+        "p95" : 18735,
+        "p99" : 19677,
+        "max" : 21087
+      }
+    },
+    "recovery" : {
+      "iterations" : 840,
+      "errors" : 0,
+      "extract_ms" : {
+        "p50" : 1176,
+        "p95" : 1545,
+        "p99" : 1706,
+        "max" : 2083
+      }
+    },
+    "iterations" : 9005,
+    "errors" : 0,
+    "dropped" : 75835,
+    "error_rate" : 0.8939,
+    "timeouts" : 0,
+    "server_errors" : 0,
+    "client_errors" : 0,
+    "fallbacks" : 0,
+    "extract_ms" : {
+      "p50" : 14267,
+      "p95" : 18617,
+      "p99" : 19635,
+      "max" : 21087
+    },
+    "submit_ms" : {
+      "p50" : 12915,
+      "p95" : 17189,
+      "p99" : 17882,
+      "max" : 19287
+    },
+    "iterations_per_s" : 55.8269
+  }
+}

@@ -64,11 +64,13 @@ public final class LoadRig {
 
         static Scenario of(String name) {
             return switch (name) {
+                // Every virtual user is created before the run, so a dropped request means all 1,500 were
+                // waiting on the server, not that k6 was still creating one.
                 case "steady" -> new Scenario(name, "140 extraction requests per second for 5 minutes",
-                        env("RATE", "140", "DURATION", "5m", "PRE_VUS", "300", "MAX_VUS", "1500"));
+                        env("RATE", "140", "DURATION", "5m", "PRE_VUS", "1500", "MAX_VUS", "1500"));
                 case "flood" -> new Scenario(name, "a 10x flood: 1,400 extraction requests per second for 60 seconds, "
                         + "then 14 per second for 60 seconds to show recovery",
-                        env("RATE", "1400", "DURATION", "60s", "PRE_VUS", "1500", "MAX_VUS", "3000",
+                        env("RATE", "1400", "DURATION", "60s", "PRE_VUS", "3000", "MAX_VUS", "3000",
                                 "RECOVERY_RATE", "14", "RECOVERY_DURATION", "60s", "RECOVERY_START", "100s"));
                 case "soak" -> new Scenario(name, "10,000 documents, the soak target for a day, spread evenly over "
                         + "60 minutes (2.8 per second)",

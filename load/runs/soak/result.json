@@ -1,0 +1,148 @@
+{
+  "scenario" : "soak",
+  "offered" : "10,000 documents, the soak target for a day, spread evenly over 60 minutes (2.8 per second)",
+  "k6" : "grafana/k6:1.4.2@sha256:3656673de3f30424e8ebcfa46acd9558d83b6a43612d0f668ffeac953950c6c7",
+  "postgres" : "postgres:18.6, default settings",
+  "model" : "LatencyStubModel: median 1142 ms, p95 1497 ms, at most 3000 ms (the cost run's model-call latency); no network",
+  "host" : "12 CPUs, app, Postgres and k6 on one host",
+  "gin_budget" : {
+    "measured_at" : "2026-11-02T21:09:01Z",
+    "chosen" : "gin_fastupdate_on",
+    "verdict" : "load/runs/gin-budget/gin-budget.json"
+  },
+  "started_at" : "2026-11-02T21:23:18Z",
+  "finished_at" : "2026-11-02T22:23:20Z",
+  "k6_exit" : 0,
+  "model_calls" : 10001,
+  "tables" : {
+    "audit_events" : {
+      "inserted" : 10001,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 49152,
+      "bytes_after" : 6750208,
+      "live_after" : 10004,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 4,
+      "wasted_percent_after_settle" : 3.94
+    },
+    "document_versions" : {
+      "inserted" : 10001,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 40960,
+      "bytes_after" : 6905856,
+      "live_after" : 10003,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 4,
+      "wasted_percent_after_settle" : 3.71
+    },
+    "documents" : {
+      "inserted" : 10001,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 32768,
+      "bytes_after" : 2719744,
+      "live_after" : 10003,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 4,
+      "wasted_percent_after_settle" : 7.64
+    },
+    "extracted_facts" : {
+      "inserted" : 28538,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 40960,
+      "bytes_after" : 6873088,
+      "live_after" : 28539,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 8,
+      "wasted_percent_after_settle" : 1.71
+    },
+    "extraction_budgets" : {
+      "inserted" : 0,
+      "updated" : 10001,
+      "hot_updated" : 10001,
+      "bytes_before" : 65536,
+      "bytes_after" : 65536,
+      "live_after" : 20,
+      "dead_at_end" : 14,
+      "dead_after_settle" : 11,
+      "autovacuums" : 60,
+      "wasted_percent_after_settle" : 77.88000000000001
+    },
+    "extractions" : {
+      "inserted" : 10001,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 40960,
+      "bytes_after" : 8003584,
+      "live_after" : 10004,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 4,
+      "wasted_percent_after_settle" : 4.67
+    },
+    "jobs" : {
+      "inserted" : 10001,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 65536,
+      "bytes_after" : 5750784,
+      "live_after" : 10003,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 4,
+      "wasted_percent_after_settle" : 4.0
+    },
+    "outbox" : {
+      "inserted" : 10001,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 24576,
+      "bytes_after" : 6012928,
+      "live_after" : 10004,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 4,
+      "wasted_percent_after_settle" : 4.82
+    }
+  },
+  "load" : {
+    "main" : {
+      "iterations" : 10001,
+      "errors" : 0,
+      "extract_ms" : {
+        "p50" : 1167,
+        "p95" : 1527,
+        "p99" : 1708,
+        "max" : 2135
+      }
+    },
+    "iterations" : 10001,
+    "errors" : 0,
+    "dropped" : 0,
+    "error_rate" : 0.0,
+    "timeouts" : 0,
+    "server_errors" : 0,
+    "client_errors" : 0,
+    "fallbacks" : 0,
+    "extract_ms" : {
+      "p50" : 1167,
+      "p95" : 1527,
+      "p99" : 1708,
+      "max" : 2135
+    },
+    "submit_ms" : {
+      "p50" : 15,
+      "p95" : 21,
+      "p99" : 29,
+      "max" : 765
+    },
+    "iterations_per_s" : 2.7771
+  }
+}
