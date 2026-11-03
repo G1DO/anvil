@@ -78,8 +78,8 @@ class FaultScheduleTest {
         String issue = task("faults:issue");
         assertThat(issue).as("the issue body is the reports, which carry seed and trace")
                 .contains("cat {{.REPORTS}}/*.md")
-                .contains("gh issue create")
-                .contains("--body-file");
+                // scripts/file-issue.sh opens the issue (or comments on an open one): FileIssueScriptTest.
+                .contains("scripts/file-issue.sh \"$title\" \"$body\"");
         assertThat(issue).as("the title names the seeds").contains("Seed: `").contains("seed $seeds");
         assertThat(issue).as("a run with no report still opens an issue")
                 .contains("No fault case wrote a seed or trace");

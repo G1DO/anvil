@@ -155,15 +155,10 @@ public final class ExtractHarness {
             return out;
         }
         List<Long> sorted = ms.stream().sorted().toList();
-        out.put("p50", nearestRank(sorted, 0.50));
-        out.put("p95", nearestRank(sorted, 0.95));
+        out.put("p50", com.g1do.anvil.eval.Stats.nearestRank(sorted, 0.50));
+        out.put("p95", com.g1do.anvil.eval.Stats.nearestRank(sorted, 0.95));
         out.put("max", sorted.get(sorted.size() - 1));
         return out;
-    }
-
-    private static long nearestRank(List<Long> sorted, double p) {
-        int rank = (int) Math.ceil(p * sorted.size());
-        return sorted.get(Math.max(0, rank - 1));
     }
 
     static void write(Run run, Path out) throws IOException {
