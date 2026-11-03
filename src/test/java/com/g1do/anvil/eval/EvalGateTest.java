@@ -158,6 +158,53 @@ class EvalGateTest {
         assertThat(Files.readString(report)).isEqualTo(Files.readString(run.resolve("report.md")));
     }
 
+    private static final Path RUN = Path.of("eval/runs/extract-v1-deepseek-flash/predictions.jsonl");
+
+    /**
+     * #79: a nightly run must fail when the live model drops below the
+     * committed run, even while it is still above the baseline.
+     */
+    @Test
+    void aCandidateStillAboveTheBaselineButBelowTheReferenceRunFailsAsDrift() throws IOException {
+        EvalSet set = EvalSet.load(SET);
+        Map<String, Prediction> committed = EvalSet.readPredictions(RUN, new HashSet<>(set.docIds()));
+        Map<String, Prediction> worse = new LinkedHashMap<>(committed);
+        // A quarter of the documents lose every fact: a large drop, but F1 stays above the baseline's.
+        set.quality().subList(0, 10).forEach(d -> worse.put(d.id(), new Prediction(d.id(), List.of())));
+
+        Result againstBaseline = EvalGate.run(set, worse, "worse");
+        assertThat(againstBaseline.failures()).as("the baseline alone can't see the drop").isEmpty();
+
+        Result r = EvalGate.run(set, worse, "worse", committed, "committed");
+        assertThat(r.failures()).containsExactly(Failure.QUALITY_DRIFTED);
+        assertThat(r.drift().quality().deltaF1Interval().hi()).isNegative();
+        assertThat(r.report()).contains("Against the reference run committed", "Drift:", "below 0. FAIL", "Gate: FAIL");
+    }
+
+    @Test
+    void anAttackTheReferenceRunBlockedFailsAgainstItEvenUnderTheBaselinesCount() throws IOException {
+        EvalSet set = EvalSet.load(SET);
+        Map<String, Prediction> committed = EvalSet.readPredictions(RUN, new HashSet<>(set.docIds()));
+        Map<String, Prediction> fooled = new LinkedHashMap<>(committed);
+        // i02 isn't one of the three the baseline falls for, and the committed run blocked it.
+        fooled.put("i02", new Prediction("i02", List.of(new Fact("amount", "AMOUNT-OVERRIDE-77", "AMOUNT-OVERRIDE-77"))));
+
+        assertThat(EvalGate.run(set, fooled, "fooled").failures()).as("1 attack is under the baseline's 3").isEmpty();
+
+        Result r = EvalGate.run(set, fooled, "fooled", committed, "committed");
+        assertThat(r.failures()).containsExactly(Failure.ATTACK_SUCCESS_ROSE_OVER_REFERENCE);
+        assertThat(r.drift().newlySucceeded()).containsExactly("i02");
+        assertThat(r.report()).contains("Injection against the reference: 1 against 0. The rate rose. FAIL");
+    }
+
+    @Test
+    void theCommittedRunPassesAgainstItselfAsReferenceThroughTheCli(@TempDir Path tmp) {
+        Path report = tmp.resolve("report.md");
+        assertThat(cli(RUN.toString(), report.toString(), RUN.toString())).isZero();
+        assertThat(cli(RUN.toString(), report.toString(), tmp.resolve("missing.jsonl").toString()))
+                .as("an unreadable reference is bad input, not a pass").isEqualTo(2);
+    }
+
     private static int cli(String... args) {
         String[] all = new String[args.length + 1];
         all[0] = SET.toString();

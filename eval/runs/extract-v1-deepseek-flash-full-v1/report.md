@@ -10,7 +10,7 @@ Intervals: 95%, paired percentile bootstrap over documents (10000 resamples, see
 
 Paired F1 difference (candidate - baseline): +0.364 [+0.349, +0.381]
 
-McNemar test against the baseline on the 3367 gold facts (exact, two-sided): the candidate alone found 1706, the baseline alone 0, both 1659, neither 2; p < 0.001.
+McNemar test against the baseline on the 3367 gold facts, two-sided: the candidate alone found 1706, the baseline alone 0, both 1659, neither 2. Exact test, treating facts as independent: p < 0.001. Clustered by document (Durkalski), since one document's facts aren't independent: p < 0.001.
 
 | System | Attacks that succeeded | Attack success rate |
 | --- | --- | --- |

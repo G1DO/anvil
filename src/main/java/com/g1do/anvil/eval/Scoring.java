@@ -35,7 +35,12 @@ public final class Scoring {
     }
 
     public static Counts score(QualityDoc doc, List<Fact> facts) {
-        int tp = found(doc, facts).size();
+        return counts(doc, facts, found(doc, facts));
+    }
+
+    /** The counts for {@code facts}, given the gold facts {@link #found} says they matched. */
+    public static Counts counts(QualityDoc doc, List<Fact> facts, Set<GoldFact> found) {
+        int tp = found.size();
         long gold = doc.facts().stream().map(g -> key(g.field(), g.value())).distinct().count();
         return new Counts(tp, facts.size() - tp, (int) gold - tp);
     }

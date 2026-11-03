@@ -17,8 +17,11 @@ import com.g1do.anvil.eval.Scoring.Counts;
  *
  * <p>{@link #mcnemar} pairs the two systems on each gold fact (#79): whether
  * each found it. Only the discordant facts, found by one and missed by the
- * other, carry evidence; the exact two-sided binomial test asks whether they
- * split evenly.
+ * other, carry evidence. The exact two-sided binomial test asks whether they
+ * split evenly, treating every fact as independent. Facts of one document
+ * aren't independent (one template can make a system miss all its amounts),
+ * so the clustered test of Durkalski et al. (2003) is reported too: it sums
+ * the discordance per document and estimates its variance across documents.
  */
 public final class Stats {
 
@@ -93,7 +96,8 @@ public final class Stats {
      * {@code baselineOnly} are the discordant pairs; {@code both} and
      * {@code neither} are reported but carry no evidence.
      */
-    public record McNemar(int candidateOnly, int baselineOnly, int both, int neither, double pValue) {
+    public record McNemar(int candidateOnly, int baselineOnly, int both, int neither, double pValue,
+            double clusteredPValue) {
     }
 
     /**
@@ -102,6 +106,76 @@ public final class Stats {
      * With no discordant pair there is no evidence either way, and p is 1.
      */
     public static McNemar mcnemar(int candidateOnly, int baselineOnly, int both, int neither) {
+        return new McNemar(candidateOnly, baselineOnly, both, neither, exactMcNemar(candidateOnly, baselineOnly,
+                both, neither), Double.NaN);
+    }
+
+    /**
+     * Both tests from per-document discordant counts: {@code candidateOnly[k]}
+     * and {@code baselineOnly[k]} are document k's facts found by only one
+     * system.
+     */
+    public static McNemar mcnemar(int[] candidateOnly, int[] baselineOnly, int both, int neither) {
+        if (candidateOnly.length != baselineOnly.length) {
+            throw new IllegalArgumentException("one count per document for each system");
+        }
+        int b = java.util.Arrays.stream(candidateOnly).sum();
+        int c = java.util.Arrays.stream(baselineOnly).sum();
+        return new McNemar(b, c, both, neither, exactMcNemar(b, c, both, neither),
+                clusteredMcNemar(candidateOnly, baselineOnly));
+    }
+
+    /**
+     * Durkalski et al. (2003), clustered matched pairs: with {@code d_k} the
+     * candidate-only minus baseline-only facts of document k,
+     * {@code X^2 = (sum d_k)^2 / sum d_k^2}, referred to chi-square with one
+     * degree of freedom. With no discordant document, p is 1.
+     */
+    static double clusteredMcNemar(int[] candidateOnly, int[] baselineOnly) {
+        long sum = 0;
+        long squares = 0;
+        for (int k = 0; k < candidateOnly.length; k++) {
+            if (candidateOnly[k] < 0 || baselineOnly[k] < 0) {
+                throw new IllegalArgumentException("negative count");
+            }
+            long d = candidateOnly[k] - baselineOnly[k];
+            sum += d;
+            squares += d * d;
+        }
+        if (squares == 0) {
+            return 1.0;
+        }
+        double x2 = (double) sum * sum / squares;
+        return Math.min(1.0, erfc(Math.sqrt(x2 / 2)));
+    }
+
+    /**
+     * The complementary error function, with fractional error under 1.2e-7
+     * (the Chebyshev fit in Numerical Recipes, 2nd ed., section 6.2). The
+     * chi-square upper tail with one degree of freedom at x is erfc(sqrt(x / 2)).
+     */
+    static double erfc(double x) {
+        double z = Math.abs(x);
+        double t = 1 / (1 + 0.5 * z);
+        double r = t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418
+                + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223
+                        + t * 0.17087277)))))))));
+        return x >= 0 ? r : 2 - r;
+    }
+
+    /**
+     * The nearest-rank percentile of an ascending list: the value at rank
+     * {@code ceil(p n)}. Shared by every latency report.
+     */
+    public static long nearestRank(List<Long> sorted, double p) {
+        if (sorted.isEmpty()) {
+            throw new IllegalArgumentException("no values");
+        }
+        int rank = (int) Math.ceil(p * sorted.size());
+        return sorted.get(Math.max(0, rank - 1));
+    }
+
+    private static double exactMcNemar(int candidateOnly, int baselineOnly, int both, int neither) {
         if (candidateOnly < 0 || baselineOnly < 0 || both < 0 || neither < 0) {
             throw new IllegalArgumentException("negative count");
         }
@@ -117,7 +191,7 @@ public final class Stats {
             }
             tail += Math.exp(logC + logHalfN);
         }
-        return new McNemar(candidateOnly, baselineOnly, both, neither, Math.min(1.0, 2 * tail));
+        return Math.min(1.0, 2 * tail);
     }
 
     /** Wilson score interval for {@code k} successes in {@code n} trials. */

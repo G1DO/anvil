@@ -56,7 +56,10 @@ class EvalNightlyTest {
         assertThat(task).as("no key fails the run instead of passing unscored")
                 .contains("if [ -z \"${ANVIL_MODEL_API_KEY:-}\" ]; then").contains("exit 1")
                 .contains("task: eval:extract").contains("EVAL_SET: eval/sets/full-v1")
-                .contains("task: eval:full").contains("EVAL_CANDIDATE: target/eval/nightly/predictions.jsonl");
+                .contains("task: eval:full").contains("EVAL_CANDIDATE: target/eval/nightly/predictions.jsonl")
+                .as("held to the committed live run, not only the baseline")
+                .contains("EVAL_REFERENCE: eval/runs/extract-v1-deepseek-flash-full-v1/predictions.jsonl");
+        assertThat(task("eval:full")).contains("{{if .REFERENCE}}\"{{.REFERENCE}}\"{{end}}");
         assertThat(task("eval:full")).contains("com.g1do.anvil.eval.EvalGate eval/sets/full-v1");
     }
 
@@ -70,7 +73,8 @@ class EvalNightlyTest {
         assertThat(list(report.get("steps"))).anySatisfy(s -> assertThat(map(s).get("run")).isEqualTo("task eval:issue"))
                 .noneSatisfy(s -> assertThat(String.valueOf(map(s).get("run"))).contains("mvnw"));
         assertThat(map(workflow().get("permissions"))).containsExactly(Map.entry("contents", "read"));
-        assertThat(task("eval:issue")).contains("gh issue create").contains("target/eval/nightly/report.md");
+        assertThat(task("eval:issue")).contains("scripts/file-issue.sh \"Nightly live eval failed\" \"$body\"")
+                .contains("target/eval/nightly/report.md");
     }
 
     @Test

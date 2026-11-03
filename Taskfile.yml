@@ -111,16 +111,17 @@ tasks:
         java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.extract.ExtractHarness "$set_dir" "$run"
 
   eval:full:
-    desc: "Eval gate on the full set (#79): score EVAL_CANDIDATE (default: the committed live run over it) against eval/sets/full-v1 with 10,000 resamples and McNemar; fails as task eval does. Report: EVAL_REPORT (default target/eval/full/report.md)"
+    desc: "Eval gate on the full set (#79): score EVAL_CANDIDATE (default: the committed live run over it) against eval/sets/full-v1 with 10,000 resamples and McNemar; fails as task eval does, and, given EVAL_REFERENCE, also when it drifts below that run. Report: EVAL_REPORT (default target/eval/full/report.md)"
     vars:
       CANDIDATE: '{{.EVAL_CANDIDATE | default "eval/runs/extract-v1-deepseek-flash-full-v1/predictions.jsonl"}}'
       REPORT: '{{.EVAL_REPORT | default "target/eval/full/report.md"}}'
+      REFERENCE: '{{.EVAL_REFERENCE | default ""}}'
     cmds:
       - ./mvnw -q -B -ntp compile dependency:build-classpath -Dmdep.outputFile=target/eval.classpath -Dmdep.includeScope=runtime
-      - java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.eval.EvalGate eval/sets/full-v1 "{{.CANDIDATE}}" "{{.REPORT}}"
+      - java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.eval.EvalGate eval/sets/full-v1 "{{.CANDIDATE}}" "{{.REPORT}}" {{if .REFERENCE}}"{{.REFERENCE}}"{{end}}
 
   eval:nightly:
-    desc: "Nightly live eval (#79): the extraction path over eval/sets/full-v1 with the live model, then the full-set gate on its predictions. Needs ANVIL_MODEL_API_KEY; fails without it. Writes run, predictions and report to target/eval/nightly/"
+    desc: "Nightly live eval (#79): the extraction path over eval/sets/full-v1 with the live model, then the full-set gate on its predictions, against the baseline and against the committed live run, so a drift below either fails. Needs ANVIL_MODEL_API_KEY; fails without it. Writes run, predictions and report to target/eval/nightly/"
     cmds:
       - |
         set -a; [ -f .env ] && . ./.env; set +a
@@ -132,10 +133,13 @@ tasks:
       - task: eval:extract
         vars: { EVAL_SET: eval/sets/full-v1, EVAL_RUN: target/eval/nightly }
       - task: eval:full
-        vars: { EVAL_CANDIDATE: target/eval/nightly/predictions.jsonl, EVAL_REPORT: target/eval/nightly/report.md }
+        vars:
+          EVAL_CANDIDATE: target/eval/nightly/predictions.jsonl
+          EVAL_REPORT: target/eval/nightly/report.md
+          EVAL_REFERENCE: eval/runs/extract-v1-deepseek-flash-full-v1/predictions.jsonl
 
   eval:issue:
-    desc: "Open an issue for a failed nightly live eval with its report and run summary from target/eval/nightly; needs GH_TOKEN with issues: write and RUN_URL"
+    desc: "File a failed nightly live eval with its report and run summary from target/eval/nightly: a new issue, or a comment on the one still open; needs GH_TOKEN with issues: write and RUN_URL"
     cmds:
       - |
         set -e
@@ -153,7 +157,7 @@ tasks:
             echo; echo '```json'; cat target/eval/nightly/run.json; echo '```'
           fi
         } > "$body"
-        gh issue create --repo "${GITHUB_REPOSITORY:-G1DO/anvil}" --title "Nightly live eval failed" --body-file "$body"
+        scripts/file-issue.sh "Nightly live eval failed" "$body"
 
   load:gin:
     desc: "Measure the full-text (GIN) index on fact values against record 0025's budget on containerized Postgres: one soak day of extractions with no index, fastupdate off and fastupdate on. Writes load/runs/gin-budget/ (gin-budget.json is the verdict the soak needs)"
@@ -287,7 +291,7 @@ tasks:
       - ./mvnw -B -ntp -Dtest='FaultProofTest,FaultMatrixTest' test
 
   faults:issue:
-    desc: "Open an issue with the seed and trace of each report in REPORTS (default target/fault-runs); needs GH_TOKEN with issues: write and RUN_URL"
+    desc: "Open an issue with the seed and trace of each report in REPORTS (default target/fault-runs), or comment on an open one with the same title; needs GH_TOKEN with issues: write and RUN_URL"
     vars:
       REPORTS: '{{.REPORTS | default "target/fault-runs"}}'
     cmds:
@@ -307,7 +311,7 @@ tasks:
         } > "$body"
         title="Fault run failed${seeds:+ (seed $seeds)}"
         echo "$title"
-        gh issue create --repo "${GITHUB_REPOSITORY:-G1DO/anvil}" --title "$title" --body-file "$body"
+        scripts/file-issue.sh "$title" "$body"
 
   diagrams:
     desc: "Generate docs/architecture/data-model.mmd (not committed) with mermerd from the compose database"

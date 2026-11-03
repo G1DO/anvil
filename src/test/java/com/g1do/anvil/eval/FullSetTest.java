@@ -124,6 +124,17 @@ class FullSetTest {
     }
 
     @Test
+    void theCommittedFullSetReportIsAFreshRescoreOfTheCommittedRun(@org.junit.jupiter.api.io.TempDir Path tmp)
+            throws IOException {
+        Path run = Path.of("eval/runs/extract-v1-deepseek-flash-full-v1");
+        Path report = tmp.resolve("report.md");
+        java.io.PrintStream sink = new java.io.PrintStream(java.io.OutputStream.nullOutputStream());
+        assertThat(EvalGate.cli(new String[] { SET.toString(), run.resolve("predictions.jsonl").toString(),
+                report.toString() }, sink, sink)).isZero();
+        assertThat(Files.readString(report)).isEqualTo(Files.readString(run.resolve("report.md")));
+    }
+
+    @Test
     void theFreezeCommitHoldsTheSameBytes() throws Exception {
         String commit = EvalSet.load(SET).manifest().at("/frozen/commit").asText();
         Process probe = new ProcessBuilder("git", "cat-file", "-e", commit + "^{commit}").start();
