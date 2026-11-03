@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'">
+  <title>ANVIL operator console</title>
+  <link rel="stylesheet" href="console.css">
+  <script src="console.js" defer></script>
+</head>
+<body>
+  <header>
+    <p class="eyebrow">ANVIL</p>
+    <h1>Operator console</h1>
+    <p class="lede">Inspect a job's state, audit chain and replay result. The console
+      reads only the tenant you enter, with the API's own scoping.</p>
+  </header>
+
+  <main>
+    <form id="inspect-form" novalidate>
+      <div class="field">
+        <label for="tenant">Tenant</label>
+        <input id="tenant" name="tenant" type="text" autocomplete="off" spellcheck="false"
+               placeholder="t_single" required>
+      </div>
+      <div class="field">
+        <label for="job-id">Job ID</label>
+        <input id="job-id" name="job_id" type="text" autocomplete="off" spellcheck="false"
+               placeholder="00000000-0000-0000-0000-000000000000" required>
+      </div>
+      <button id="inspect" type="submit">Inspect job</button>
+    </form>
+
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+
+    <section id="not-found" class="panel" hidden aria-labelledby="not-found-heading">
+      <h2 id="not-found-heading">Not found</h2>
+      <p>Job not found.</p>
+    </section>
+
+    <section id="result" hidden aria-labelledby="job-heading">
+      <h2 id="job-heading">Job</h2>
+      <dl class="facts">
+        <dt>State</dt>
+        <dd><span id="job-state" class="state"></span></dd>
+        <dt>Job ID</dt>
+        <dd id="job-id-value" class="mono"></dd>
+        <dt>Tenant</dt>
+        <dd id="tenant-value" class="mono"></dd>
+      </dl>
+
+      <h2>Replay</h2>
+      <dl class="facts">
+        <dt>Match</dt>
+        <dd><span id="replay-match" class="match"></span></dd>
+        <dt>Input SHA-256</dt>
+        <dd id="replay-input-sha" class="mono hash"></dd>
+        <dt>Output SHA-256</dt>
+        <dd id="replay-output-sha" class="mono hash"></dd>
+      </dl>
+
+      <h2>Audit chain</h2>
+      <p id="chain-note" class="note" hidden></p>
+      <div class="table-wrap">
+        <table id="audit-events">
+          <thead>
+            <tr>
+              <th scope="col">Seq</th>
+              <th scope="col">Type</th>
+              <th scope="col">Event hash</th>
+              <th scope="col">Prev hash</th>
+              <th scope="col">Payload</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <button id="load-more" type="button" hidden>Load more events</button>
+    </section>
+
+    <noscript>
+      <p class="panel">This console needs JavaScript. The same data is available over the
+        API with <code>GET /api/jobs/{id}</code>, <code>GET /audit/events</code> and
+        <code>GET /audit/replay</code>.</p>
+    </noscript>
+  </main>
+</body>
+</html>
