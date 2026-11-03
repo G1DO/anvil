@@ -1,0 +1,133 @@
+{
+  "measured_at" : "2026-11-03T00:23:10Z",
+  "postgres" : "postgres:18.6 (server 18.6 (Debian 18.6-1.pgdg13+2)), default settings, a fresh server per variant",
+  "extractions" : 10000,
+  "workload" : "10000 extractions over 20 tenants; facts from the accepted facts of 660 quality documents of eval/runs/extract-v1-deepseek-flash-full-v1/predictions.jsonl, reused in order",
+  "budget" : {
+    "max_p95_overhead_ms" : 2.0,
+    "max_store_ms" : 100.0,
+    "max_index_mib_per_10k" : 10.0,
+    "max_index_to_heap" : 1.0,
+    "max_wal_ratio" : 2.0
+  },
+  "variants" : {
+    "none" : {
+      "index" : "none",
+      "extractions" : 10000,
+      "facts" : 51328,
+      "store_ms" : {
+        "p50" : 8.52,
+        "p95" : 12.46,
+        "p99" : 15.39,
+        "max" : 87.02
+      },
+      "heap_bytes" : 6127616,
+      "index_bytes" : 0,
+      "wal_bytes" : 35426168
+    },
+    "gin_fastupdate_off" : {
+      "index" : "gin (fastupdate = off)",
+      "extractions" : 10000,
+      "facts" : 51328,
+      "store_ms" : {
+        "p50" : 8.78,
+        "p95" : 12.85,
+        "p99" : 16.27,
+        "max" : 139.48
+      },
+      "heap_bytes" : 6127616,
+      "index_bytes" : 540672,
+      "wal_bytes" : 88934888,
+      "max_pending_pages" : 0,
+      "pending_merge" : {
+        "pages" : 0,
+        "ms" : 0.82,
+        "full_list_pages" : 512,
+        "full_list_ms" : 0.0
+      },
+      "lookup_plan" : "Bitmap Heap Scan on extracted_facts  (cost=104.07..1552.92 rows=10 width=16)\nRecheck Cond: (tenant_id = current_setting('app.tenant'::text, true))\nFilter: (to_tsvector('simple'::regconfig, value) @@ '''halvane'''::tsquery)\n->  Bitmap Index Scan on extracted_facts_tenant_id_extraction_id_ordinal_key  (cost=0.00..104.07 rows=2620 width=0)\nIndex Cond: (tenant_id = current_setting('app.tenant'::text, true))",
+      "lookup_median_ms" : 9.65,
+      "checks" : {
+        "p95_overhead_ms" : {
+          "value" : 0.39,
+          "max" : 2.0,
+          "ok" : true
+        },
+        "max_store_ms" : {
+          "value" : 139.48,
+          "max" : 100.0,
+          "ok" : false
+        },
+        "index_mib_per_10k" : {
+          "value" : 0.52,
+          "max" : 10.0,
+          "ok" : true
+        },
+        "index_to_heap" : {
+          "value" : 0.09,
+          "max" : 1.0,
+          "ok" : true
+        },
+        "wal_ratio" : {
+          "value" : 2.51,
+          "max" : 2.0,
+          "ok" : false
+        }
+      },
+      "within_budget" : false
+    },
+    "gin_fastupdate_on" : {
+      "index" : "gin (fastupdate = on)",
+      "extractions" : 10000,
+      "facts" : 51328,
+      "store_ms" : {
+        "p50" : 8.87,
+        "p95" : 12.23,
+        "p99" : 15.44,
+        "max" : 141.65
+      },
+      "heap_bytes" : 6127616,
+      "index_bytes" : 2449408,
+      "wal_bytes" : 46410200,
+      "max_pending_pages" : 241,
+      "pending_merge" : {
+        "pages" : 24,
+        "ms" : 10.03,
+        "full_list_pages" : 512,
+        "full_list_ms" : 213.97
+      },
+      "lookup_plan" : "Bitmap Heap Scan on extracted_facts  (cost=107.99..1554.17 rows=9 width=16)\nRecheck Cond: (tenant_id = current_setting('app.tenant'::text, true))\nFilter: (to_tsvector('simple'::regconfig, value) @@ '''halvane'''::tsquery)\n->  Bitmap Index Scan on extracted_facts_tenant_id_extraction_id_ordinal_key  (cost=0.00..107.99 rows=2610 width=0)\nIndex Cond: (tenant_id = current_setting('app.tenant'::text, true))",
+      "lookup_median_ms" : 10.39,
+      "checks" : {
+        "p95_overhead_ms" : {
+          "value" : -0.23,
+          "max" : 2.0,
+          "ok" : true
+        },
+        "max_store_ms" : {
+          "value" : 213.97,
+          "max" : 100.0,
+          "ok" : false
+        },
+        "index_mib_per_10k" : {
+          "value" : 2.34,
+          "max" : 10.0,
+          "ok" : true
+        },
+        "index_to_heap" : {
+          "value" : 0.4,
+          "max" : 1.0,
+          "ok" : true
+        },
+        "wal_ratio" : {
+          "value" : 1.31,
+          "max" : 2.0,
+          "ok" : true
+        }
+      },
+      "within_budget" : false
+    }
+  },
+  "chosen" : "none",
+  "within_budget" : false
+}
