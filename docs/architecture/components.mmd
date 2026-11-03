@@ -13,7 +13,7 @@ flowchart TB
         readSvc["ReadService<br/>direct-ID + title-prefix + recheck"]
         auditCtrl["AuditEventsController<br/>GET audit events job limit cursor"]
         auditRead["AuditReadService<br/>caller-tenant chain ORDER BY seq"]
-        replay["ReplayService + ReplayController<br/>load in the tenant, then evaluate<br/>input_sha + output_sha + match"]
+        replay["ReplayService + ReplayController<br/>load in the tenant, then evaluate<br/>latest checkpoint + suffix, fallback full<br/>input_sha + output_sha + match"]
         casPre["CasPresignedService<br/>HMAC URLs TTL 60s"]
         extractCtrl["ExtractionController<br/>POST documents id extract, GET documents id facts<br/>same 404 for forged, missing, other tenant"]
         extractSvc["ExtractionService<br/>screens, then kill-switch, tenant cache, budget, model<br/>one result per tenant + version + prompt + model<br/>revoked never served"]
@@ -43,7 +43,7 @@ flowchart TB
         timeline["TimelineGuard + confirmTimeline<br/>refuse on unknown or rewound timeline"]
         relay["OutboxRelay<br/>poll unsent LIMIT 100 + mark sent"]
         consumer["IdempotentConsumer<br/>processed_events dedup"]
-        chain["AuditChain append<br/>same txn as effect<br/>checkpoint every 100"]
+        chain["AuditChain append<br/>same txn as effect<br/>checkpoint every 100 + prefix summary"]
         store["ContentStore<br/>tmp fsync rename + refcount GC"]
         signals["SaturationSignals + BurnAlerts<br/>queue age, claim p99, pool wait p99"]
     end

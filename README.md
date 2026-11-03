@@ -33,6 +33,7 @@ Each guarantee links to the tests that prove it. All tests run against real Post
 3. **Any job can be replayed bit-for-bit from its audit chain, and tampering is detected.**
    - Every effect is recorded in an append-only, hash-linked chain in the same transaction: [`AuditChainTest`](src/test/java/com/g1do/anvil/AuditChainTest.java).
    - `GET /audit/replay` returns `{input_sha, output_sha, match: true}` for an intact chain. A corrupted, dropped or re-linked event gives a mismatch. Checkpoint replay gives the same result: [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java).
+   - **A long chain replays from its latest checkpoint within a bound.** Replay reads the checkpoint and the events after it, not the prefix, and a declared 100,000-event chain replays at p99 8 ms against a 500 ms bound on containerized Postgres. A consistent prefix rewrite is caught at the checkpoint boundary; a privileged partial edit is caught by `replayFull` or the offline verifier. Why: [record 0027](docs/decisions/0027-replay-from-latest-checkpoint.md); [measurement](load/runs/replay-latency/report.md).
    - **Without the running API.** Why: [record 0026](docs/decisions/0026-replay-cli-and-offline-verifier.md).
      - `anvil replay` reads the database directly and prints the API's result for the same job, byte for byte.
      - `anvil verify` checks an exported chain with no database connection. It gives the API's result for an intact export, and on a tampered one it reports the first bad sequence number. Editing the export's job state or input root can't turn the verdict, because both are checked against the chain. A file can't prove which tenant it belongs to, or that nothing after the terminal commit was cut, and a chain rewritten whole still verifies. Compare `head` with a value kept elsewhere (record 0026).
@@ -86,6 +87,7 @@ Success is measured by the guarantees above. Each measure names the test that sh
 - A capability revoked mid-run blocks the commit (0 rows, `403 NEEDS_APPROVAL`): [`CapRevokeMidRunTest`](src/test/java/com/g1do/anvil/CapRevokeMidRunTest.java).
 - Untrusted native code in the jail can't reach another tenant's workspace, the shared `/tmp` or the network, on the host and in a container, and every SSRF matrix case is denied: [`ExecJailTest`](src/test/java/com/g1do/anvil/ExecJailTest.java), [`JailContainerEscapeTest`](src/test/java/com/g1do/anvil/JailContainerEscapeTest.java).
 - A job replays bit-for-bit from its audit chain, and a corrupted, dropped or re-linked event is detected: [`AuditChainTest`](src/test/java/com/g1do/anvil/AuditChainTest.java), [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java).
+- A declared 100,000-event chain replays from its latest checkpoint at p99 8 ms, under the 500 ms bound, with the same `output_sha` as a full replay: [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java), [measurement](load/runs/replay-latency/report.md).
 - The CLI prints the API's replay result for the same job, and an exported chain verifies with no database, reporting the first bad sequence number when tampered, with the API's tenant scoping: [`ReplayCliTest`](src/test/java/com/g1do/anvil/ReplayCliTest.java).
 - A seeded fencing break is caught in under 500 simulator runs: [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
 - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java).
@@ -177,6 +179,7 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | Extraction harness runs and the cost report | `eval/runs/` (records 0022, 0023, 0024) |
 | Load script, GIN budget and load reports | `load/extract.js`, `load/runs/` (record 0025) |
 | Replay CLI, export format and offline verifier | `src/main/java/com/g1do/anvil/cli/AnvilCli.java`; `replay/ChainExport.java` (`anvil-chain/1`) and `replay/OfflineVerifier.java` (record 0026) |
+| Replay from the latest checkpoint and its latency report | `src/main/java/com/g1do/anvil/replay/ReplayService.java`; `load/runs/replay-latency/` (record 0027) |
 | Filing a failed scheduled run | `scripts/file-issue.sh` (one issue per title while it's open) |
 | Fencing model (TLA+ spec) | [`docs/faults/fencing.tla`](docs/faults/fencing.tla) |
 | Gate | `.github/workflows/gate.yml`, which runs the same `task` commands as `Taskfile.yml` |

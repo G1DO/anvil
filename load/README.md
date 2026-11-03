@@ -1,5 +1,7 @@
 # Load runs for AI extraction
 
+This directory also holds the replay latency measurement for issue #76 in [`runs/replay-latency/`](runs/replay-latency/report.md). It is produced by `ReplayTest` over a 100,000-event chain on containerized Postgres, not by the extraction load rig.
+
 Issue #79 asks for load results at 140 requests per second, a 10x flood and a soak of 10,000 documents a day. Each must report p95 latency, error rate and table-bloat growth. It also sets a condition: no soak numbers until the full-text index's cost is measured and a budget recorded, and none at all if the budget can't be met. Record 0025's measurement put the index over budget, so this page has steady and flood results and no soak numbers.
 
 ## How a run works

@@ -1,0 +1,2 @@
+{"chain_length": 100000, "samples": 100, "p50_ms": 4, "p95_ms": 5, "p99_ms": 8,
+ "max_ms": 10, "bound_ms": 500, "postgres": "postgres:18.6"}
