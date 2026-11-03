@@ -1,6 +1,6 @@
 # 0023 — Restrict AI extraction behind a tenant cache, a call budget and a kill-switch
 
-Status: proposed 2026-11-02 (#38). Builds on the frozen eval gate (record 0021) and single bounded extraction (record 0022).
+Status: proposed 2026-11-02 (#38). Builds on the frozen eval gate (record 0021) and single bounded extraction (record 0022). Record 0024 (#79) brings the larger injection set this decision said to revisit on; it doesn't change the decision.
 
 ## Context
 

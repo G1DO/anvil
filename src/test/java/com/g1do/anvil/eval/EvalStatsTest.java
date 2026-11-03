@@ -121,6 +121,72 @@ class EvalStatsTest {
         assertThat(Scoring.attackSucceeded(c, List.of())).isFalse();
     }
 
+    /** #79: McNemar's test against the baseline, paired on each gold fact. */
+    @Test
+    void mcNemarIsTheExactTwoSidedBinomialTestOnTheDiscordantFacts() {
+        // n = 10 discordant, k = 1: 2 * (1 + 10) / 1024.
+        assertThat(Stats.mcnemar(9, 1, 50, 7).pValue()).isCloseTo(22.0 / 1024, within(1e-12));
+        assertThat(Stats.mcnemar(1, 9, 50, 7).pValue()).as("two-sided, so symmetric")
+                .isEqualTo(Stats.mcnemar(9, 1, 50, 7).pValue());
+        assertThat(Stats.mcnemar(5, 5, 0, 0).pValue()).as("an even split is no evidence").isEqualTo(1.0);
+        assertThat(Stats.mcnemar(0, 0, 200, 11).pValue()).as("no discordant fact, no evidence").isEqualTo(1.0);
+        assertThat(Stats.mcnemar(6, 0, 0, 0).pValue()).isCloseTo(2.0 / 64, within(1e-12));
+        // Past n = 1074, 0.5^n underflows a double; the log-space sum doesn't.
+        // The continuity-corrected chi-square gives p = 0.0028 for 600 against 500.
+        assertThat(Stats.mcnemar(600, 500, 3000, 100).pValue()).isBetween(0.002, 0.004);
+        assertThat(Stats.mcnemar(1500, 500, 0, 0).pValue()).isGreaterThanOrEqualTo(0).isLessThan(1e-12);
+    }
+
+    @Test
+    void erfcMatchesKnownValues() {
+        assertThat(Stats.erfc(0)).isCloseTo(1.0, within(1e-7));
+        assertThat(Stats.erfc(0.5)).isCloseTo(0.4795001222, within(1e-7));
+        assertThat(Stats.erfc(1)).isCloseTo(0.1572992071, within(1e-7));
+        assertThat(Stats.erfc(2)).isCloseTo(0.0046777350, within(1e-8));
+        assertThat(Stats.erfc(-1)).isCloseTo(1.8427007929, within(1e-7));
+    }
+
+    /**
+     * #79: facts of one document aren't independent, so the clustered test
+     * (Durkalski et al. 2003) sums the discordance per document.
+     */
+    @Test
+    void theClusteredMcNemarCountsADocumentsCorrelatedFactsOnce() {
+        // Nine discordant facts in three documents: the exact test calls it p = 2/512, the clustered one far less sure.
+        Stats.McNemar m = Stats.mcnemar(new int[] { 3, 3, 3, 0 }, new int[] { 0, 0, 0, 0 }, 10, 2);
+        assertThat(m.candidateOnly()).isEqualTo(9);
+        assertThat(m.pValue()).isCloseTo(2.0 / 512, within(1e-12));
+        // X^2 = 9^2 / 27 = 3, and P(chi-square(1) > 3) = 0.0833.
+        assertThat(m.clusteredPValue()).isCloseTo(0.0832645, within(1e-6));
+
+        // The same nine facts spread over nine documents: X^2 = 81 / 9 = 9, p = 0.0027.
+        int[] nine = { 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+        assertThat(Stats.mcnemar(nine, new int[9], 0, 0).clusteredPValue()).isCloseTo(0.0026998, within(1e-6));
+        assertThat(Stats.mcnemar(new int[] { 2, 0 }, new int[] { 0, 2 }, 0, 0).clusteredPValue())
+                .as("an even split").isEqualTo(1.0);
+        assertThat(Stats.mcnemar(new int[3], new int[3], 5, 0).clusteredPValue()).as("nothing discordant").isEqualTo(1.0);
+    }
+
+    @Test
+    void theNearestRankPercentileIsTheValueAtRankCeilPN() {
+        List<Long> sorted = List.of(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L);
+        assertThat(Stats.nearestRank(sorted, 0.50)).isEqualTo(5);
+        assertThat(Stats.nearestRank(sorted, 0.95)).isEqualTo(10);
+        assertThat(Stats.nearestRank(List.of(7L), 0.95)).isEqualTo(7);
+    }
+
+    @Test
+    void mcNemarPairsEachGoldFactByWhetherEachSystemFoundIt() {
+        List<Fact> candidate = List.of(new Fact("party", "Halvane Freight AS", "Halvane Freight AS"),
+                new Fact("date", "3 March 2026", "3 March 2026"));
+        List<Fact> baseline = List.of(new Fact("date", "3 March 2026", "3 March 2026"),
+                new Fact("amount", "EUR 4,250.00", "not in the text"));
+
+        assertThat(Scoring.found(DOC, candidate)).containsExactlyInAnyOrder(DOC.facts().get(0), DOC.facts().get(1));
+        assertThat(Scoring.found(DOC, baseline)).as("an unsupported citation finds nothing")
+                .containsExactly(DOC.facts().get(1));
+    }
+
     private static List<Counts> docs(int n, java.util.function.IntFunction<Counts> f) {
         List<Counts> out = new ArrayList<>();
         for (int i = 0; i < n; i++) {
