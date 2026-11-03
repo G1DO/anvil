@@ -13,7 +13,7 @@ Teams that run work on behalf of many tenants hit three problems:
 ANVIL is for:
 
 - **Tenant clients** that submit documents and jobs over HTTP (`X-Tenant-Id`, `Idempotency-Key`), read their documents, and read or replay their jobs' audit chains.
-- **Operators** who run the service and watch its health and saturation signals.
+- **Operators** who run the service, watch its health and saturation signals, and replay or verify a job's chain from the command line.
 
 ## Guarantees
 
@@ -33,6 +33,11 @@ Each guarantee links to the tests that prove it. All tests run against real Post
 3. **Any job can be replayed bit-for-bit from its audit chain, and tampering is detected.**
    - Every effect is recorded in an append-only, hash-linked chain in the same transaction: [`AuditChainTest`](src/test/java/com/g1do/anvil/AuditChainTest.java).
    - `GET /audit/replay` returns `{input_sha, output_sha, match: true}` for an intact chain. A corrupted, dropped or re-linked event gives a mismatch. Checkpoint replay gives the same result: [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java).
+   - **Without the running API.** Why: [record 0026](docs/decisions/0026-replay-cli-and-offline-verifier.md).
+     - `anvil replay` reads the database directly and prints the API's result for the same job, byte for byte.
+     - `anvil verify` checks an exported chain with no database connection. It gives the API's result for an intact export, and on a tampered one it reports the first bad sequence number. Editing the export's job state or input can't turn the verdict.
+     - Both scope by tenant as the API does: another tenant's job is `not found`, like a missing one. The CLI reads as the runtime role under row-level security, read-only.
+     - Proven by [`ReplayCliTest`](src/test/java/com/g1do/anvil/ReplayCliTest.java).
 4. **Fencing holds under real faults.**
    - A deterministic simulator catches each seeded fencing break in under 500 runs: [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
    - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java). It mirrors [`docs/faults/fencing.tla`](docs/faults/fencing.tla).
@@ -81,6 +86,7 @@ Success is measured by the guarantees above. Each measure names the test that sh
 - A capability revoked mid-run blocks the commit (0 rows, `403 NEEDS_APPROVAL`): [`CapRevokeMidRunTest`](src/test/java/com/g1do/anvil/CapRevokeMidRunTest.java).
 - Untrusted native code in the jail can't reach another tenant's workspace, the shared `/tmp` or the network, on the host and in a container, and every SSRF matrix case is denied: [`ExecJailTest`](src/test/java/com/g1do/anvil/ExecJailTest.java), [`JailContainerEscapeTest`](src/test/java/com/g1do/anvil/JailContainerEscapeTest.java).
 - A job replays bit-for-bit from its audit chain, and a corrupted, dropped or re-linked event is detected: [`AuditChainTest`](src/test/java/com/g1do/anvil/AuditChainTest.java), [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java).
+- The CLI prints the API's replay result for the same job, and an exported chain verifies with no database, reporting the first bad sequence number when tampered, with the API's tenant scoping: [`ReplayCliTest`](src/test/java/com/g1do/anvil/ReplayCliTest.java).
 - A seeded fencing break is caught in under 500 simulator runs: [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
 - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java).
 - Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
@@ -111,11 +117,20 @@ task eval:full    # eval gate on the full set (EVAL_CANDIDATE, default the commi
 task eval:nightly # what the nightly workflow runs: the full set against the live model, then its gate
 task load:gin     # measure the full-text index against record 0025's budget
 task load:steady  # 140 extraction requests per second for 5 minutes (also load:flood; load:soak needs a within-budget GIN verdict)
+task audit:replay -- --tenant T --job J               # replay a job from the database, without the API
+task audit:export -- --tenant T --job J --out F.json  # write the job's chain to a file (never overwrites)
+task audit:verify -- --tenant T --job J F.json        # verify that file with no database
 ```
 
 The load runs start the app with a stub model that has the live model's recorded latency, containerized Postgres and k6 on this host. They need Docker and write to `load/runs/`. A committed run is never overwritten. The soak refuses to run until `task load:gin` says the budget is met, which it doesn't today (record 0025). `LOAD_OUT=<dir>` and arguments after `--`, such as `PRE_VUS=300`, write a run elsewhere with changed k6 settings.
 
 A failed fault run writes its seed, trace and rerun command to `target/fault-runs/`.
+
+The replay CLI (`AnvilCli`, record 0026) starts no Spring context, so it runs nothing but the command.
+- `replay` and `export` connect with `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`, the variables the service reads. The session is read-only, and a login that bypasses row-level security is switched to `anvil_app` first.
+- `replay` prints `{input_sha, output_sha, match}`. `verify` adds `first_bad_seq`, `problem` and `head`, the last event's hash. Compare `head` with one you kept, because a chain rewritten whole with every hash recomputed still verifies.
+- Exit statuses: 0 match, 1 no match, 2 usage or malformed input, 3 not found, 4 unknown tenant, 5 database error. A replay without a match exits 1, so `task` reports it as failed.
+- In the deployed image: `docker compose exec app java -cp app.jar -Dloader.main=com.g1do.anvil.cli.AnvilCli org.springframework.boot.loader.launch.PropertiesLauncher replay --tenant T --job J`.
 
 To run the stack the way it's deployed:
 
@@ -160,6 +175,7 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | Frozen eval sets and gate fixtures | `eval/sets/pilot-v1/` (record 0021), `eval/sets/full-v1/` (record 0024; built by `src/test/java/com/g1do/anvil/eval/FullSetGenerator.java`), never edited; `eval/fixtures/` |
 | Extraction harness runs and the cost report | `eval/runs/` (records 0022, 0023, 0024) |
 | Load script, GIN budget and load reports | `load/extract.js`, `load/runs/` (record 0025) |
+| Replay CLI, export format and offline verifier | `src/main/java/com/g1do/anvil/cli/AnvilCli.java`; `replay/ChainExport.java` (`anvil-chain/1`) and `replay/OfflineVerifier.java` (record 0026) |
 | Filing a failed scheduled run | `scripts/file-issue.sh` (one issue per title while it's open) |
 | Fencing model (TLA+ spec) | [`docs/faults/fencing.tla`](docs/faults/fencing.tla) |
 | Gate | `.github/workflows/gate.yml`, which runs the same `task` commands as `Taskfile.yml` |

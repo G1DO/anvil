@@ -1,14 +1,18 @@
 flowchart TB
     tenantClient["Tenant client<br/>X-Tenant-Id + Idempotency-Key"]
-    operator["Operator<br/>compose up, health probes, logs by correlationId<br/>extraction budgets, kill-switch, revocations"]
+    operator["Operator<br/>compose up, health probes, logs by correlationId<br/>extraction budgets, kill-switch, revocations<br/>replay, export and verify a job's chain from the CLI"]
     anvil["ANVIL<br/>Capability-secure, deterministically replayable execution fabric"]
     postgres["PostgreSQL 18<br/>Source of truth, queue, outbox"]
     casStore["CAS store<br/>per-tenant content, hash-verified reads"]
     execWorkspaces["Exec workspaces<br/>per-tenant writable directories"]
     llm["Model provider<br/>DeepSeek chat completions API"]
+    exports["Exported chains<br/>anvil-chain/1 files, kept by the operator"]
     tenantClient -->|POST documents, reads, audit reads, extract, facts| anvil
     operator -->|health probes, logs| anvil
     operator -->|SQL: extraction budgets, kill-switch, revocations| postgres
+    operator -->|"anvil replay, anvil export: no API needed"| anvil
+    anvil -->|"export: one job's chain"| exports
+    operator -->|"anvil verify: no database needed"| exports
     anvil -->|JDBC, tenant context, RLS| postgres
     anvil -->|put and get, torn tails removed| casStore
     anvil -->|resolveInWorkspace only| execWorkspaces

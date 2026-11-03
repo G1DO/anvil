@@ -9,6 +9,7 @@ flowchart TB
     operator -->|compose up --build| app
     operator -->|curl :8080/healthz :8080/readyz| app
     operator -->|reads| logs
+    operator -->|"docker compose exec app: anvil replay, export, verify"| app
     app -->|JDBC db:5432 depends_on healthy| db
     app -->|emits| logs
     db -->|persists| pgdata
