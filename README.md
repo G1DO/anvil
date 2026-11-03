@@ -60,10 +60,10 @@ Each guarantee links to the tests that prove it. All tests run against real Post
    - **Quality and injection resistance are measured at full scale, every night.** Why: [record 0024](docs/decisions/0024-full-scale-eval-and-nightly-live-run.md).
      - The full set has 660 documents with 3,367 gold facts and 72 injection cases in thirteen languages, 20 of them base64-encoded. It is generated from a seed and frozen, and the gate scores it with 10,000-resample intervals and McNemar's test against the baseline: [`FullSetTest`](src/test/java/com/g1do/anvil/eval/FullSetTest.java), [`EvalStatsTest`](src/test/java/com/g1do/anvil/eval/EvalStatsTest.java).
      - The live model scores F1 0.996 [0.995, 0.998] against the baseline's 0.632, and 0 of 72 attacks succeed, none in any language or in base64: [report](eval/runs/extract-v1-deepseek-flash-full-v1/report.md).
-     - The [`eval-nightly`](.github/workflows/eval-nightly.yml) workflow runs the full set against the live model every night and opens an issue when the gate fails: [`EvalNightlyTest`](src/test/java/com/g1do/anvil/eval/EvalNightlyTest.java). Its runs are on the [eval-nightly workflow page](https://github.com/G1DO/anvil/actions/workflows/eval-nightly.yml).
+     - The [`eval-nightly`](.github/workflows/eval-nightly.yml) workflow runs the full set against the live model every night. It fails, and files one issue, when the model falls below the baseline or drifts below the committed run: [`EvalNightlyTest`](src/test/java/com/g1do/anvil/eval/EvalNightlyTest.java), [`EvalGateTest`](src/test/java/com/g1do/anvil/eval/EvalGateTest.java). Its runs are on the [eval-nightly workflow page](https://github.com/G1DO/anvil/actions/workflows/eval-nightly.yml).
    - **Load and the full-text index are measured before they're claimed.** Why: [record 0025](docs/decisions/0025-gin-budget-before-soak.md).
-     - The GIN index on fact values was measured against a budget set beforehand, on containerized Postgres over one soak day, and added with the variant that met it. Dropping it is the kill-switch, and extraction keeps working without it: [`GinIndexTest`](src/test/java/com/g1do/anvil/GinIndexTest.java), [GIN report](load/runs/gin-budget/report.md).
-     - A soak of 10,000 documents completes every request with extract p95 1.5 s, against the model's own 1.5 s. Its tables grow about 41 MiB a day, and autovacuum keeps them under 8% wasted. One process tops out near 170 extractions a second, because each call holds a request thread. So 140 requests per second is at its edge (p95 2.7 s to 11.5 s, depending on how many clients wait), and a 10x flood is queued, not refused: [load summary](load/README.md), [`LoadRigTest`](src/test/java/com/g1do/anvil/load/LoadRigTest.java).
+     - A GIN index on fact values was measured over one soak day against a budget set beforehand, on a fresh Postgres server per variant. Neither variant met it, so the schema has none, and no soak numbers are claimed. Dropping such an index is its kill-switch, and extraction works without it: [`GinIndexTest`](src/test/java/com/g1do/anvil/GinIndexTest.java), [GIN report](load/runs/gin-budget/report.md).
+     - One process tops out near 170 extractions a second, because each model call holds a request thread. So 140 requests per second is at its edge: p95 2.2 s to 9.2 s, and 0.7% to 19% not started, depending on how many clients wait. A 10x flood is queued, not refused, and recovers at once. The tables grow about 4 MiB per 1,000 documents, and autovacuum keeps them under 8% wasted. No soak numbers are claimed, because the index is over budget: [load summary](load/README.md), [`LoadRigTest`](src/test/java/com/g1do/anvil/load/LoadRigTest.java).
 7. **Saturation is visible.** Queue age, claim latency and pool wait are exported without tenant data. The burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 
 Not yet guaranteed: a target for recovery time or data loss (the drill measures them; it doesn't promise them), or detecting a restore that keeps the database timeline, such as a storage snapshot rolled back in place. See [record 0016](docs/decisions/0016-restore-timeline-gate.md).
@@ -89,9 +89,9 @@ Success is measured by the guarantees above. Each measure names the test that sh
 - Extraction shows 0 cross-tenant reads, results or dedup hits, and never serves a dead letter: [`ExtractionIsolationTest`](src/test/java/com/g1do/anvil/ExtractionIsolationTest.java).
 - A cache hit, an exhausted budget and the kill-switch each make 0 model calls, and the budget is never overspent: [`ExtractionCostTest`](src/test/java/com/g1do/anvil/ExtractionCostTest.java).
 - The full set of 732 documents reports precision, recall and F1 with 10,000-resample intervals and McNemar against the baseline, and its 72 injection cases report attack success by encoding and language: [`FullSetTest`](src/test/java/com/g1do/anvil/eval/FullSetTest.java).
-- The full set runs nightly against the live model, and a failed run opens an issue: [`EvalNightlyTest`](src/test/java/com/g1do/anvil/eval/EvalNightlyTest.java).
-- The full-text index met its measured budget before any soak number, and dropping it leaves extraction working: [`GinIndexTest`](src/test/java/com/g1do/anvil/GinIndexTest.java).
-- Load at 140 rps, a 10x flood and a 10,000-document soak report p95, error rate and table growth: [`LoadRigTest`](src/test/java/com/g1do/anvil/load/LoadRigTest.java).
+- The full set runs nightly against the live model, fails when it drifts below the committed run, and files one issue: [`EvalNightlyTest`](src/test/java/com/g1do/anvil/eval/EvalNightlyTest.java), [`FileIssueScriptTest`](src/test/java/com/g1do/anvil/FileIssueScriptTest.java).
+- The full-text index was measured against its budget before any soak number, and over budget it stays out of the schema; dropping it leaves extraction working: [`GinIndexTest`](src/test/java/com/g1do/anvil/GinIndexTest.java).
+- Load at 140 rps and a 10x flood report p95, error rate and table growth, and the soak refuses to run while the full-text index is over budget: [`LoadRigTest`](src/test/java/com/g1do/anvil/load/LoadRigTest.java).
 - An unconfirmed or rewound database timeline refuses claims, heartbeats and commits: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java).
 - A backup, clean and point-in-time restore reports its measured recovery time and data loss, with no target claimed: [`PitrRestoreDrillTest`](src/test/java/com/g1do/anvil/PitrRestoreDrillTest.java).
 
@@ -110,10 +110,10 @@ task eval:extract # harness run: the extraction path over a frozen set (EVAL_SET
 task eval:full    # eval gate on the full set (EVAL_CANDIDATE, default the committed full-set run)
 task eval:nightly # what the nightly workflow runs: the full set against the live model, then its gate
 task load:gin     # measure the full-text index against record 0025's budget
-task load:steady  # 140 extraction requests per second for 5 minutes (also load:flood, load:soak)
+task load:steady  # 140 extraction requests per second for 5 minutes (also load:flood; load:soak needs a within-budget GIN verdict)
 ```
 
-The load runs start the app with a stub model that has the live model's recorded latency, containerized Postgres and k6 on this host. They need Docker and write to `load/runs/`. A committed run is never overwritten. The soak refuses to run until `task load:gin` says the budget is met.
+The load runs start the app with a stub model that has the live model's recorded latency, containerized Postgres and k6 on this host. They need Docker and write to `load/runs/`. A committed run is never overwritten. The soak refuses to run until `task load:gin` says the budget is met, which it doesn't today (record 0025). `LOAD_OUT=<dir>` and arguments after `--`, such as `PRE_VUS=300`, write a run elsewhere with changed k6 settings.
 
 A failed fault run writes its seed, trace and rerun command to `target/fault-runs/`.
 
@@ -160,6 +160,7 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | Frozen eval sets and gate fixtures | `eval/sets/pilot-v1/` (record 0021), `eval/sets/full-v1/` (record 0024; built by `src/test/java/com/g1do/anvil/eval/FullSetGenerator.java`), never edited; `eval/fixtures/` |
 | Extraction harness runs and the cost report | `eval/runs/` (records 0022, 0023, 0024) |
 | Load script, GIN budget and load reports | `load/extract.js`, `load/runs/` (record 0025) |
+| Filing a failed scheduled run | `scripts/file-issue.sh` (one issue per title while it's open) |
 | Fencing model (TLA+ spec) | [`docs/faults/fencing.tla`](docs/faults/fencing.tla) |
 | Gate | `.github/workflows/gate.yml`, which runs the same `task` commands as `Taskfile.yml` |
 | Scheduled fault runs | `.github/workflows/faults.yml` (`task faults:sim`, `task faults:pg`, `task faults:issue`) |

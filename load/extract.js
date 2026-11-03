@@ -62,13 +62,21 @@ const submitMs = new Trend('submit_ms', true);
 const extractMs = new Trend('extract_ms', true);
 const iterationErrors = new Rate('iteration_errors');
 const timeouts = new Counter('timeouts');
+const connectionErrors = new Counter('connection_errors');
+const scriptErrors = new Counter('script_errors');
 const serverErrors = new Counter('server_errors');
 const clientErrors = new Counter('client_errors');
 const fallbacks = new Counter('fallbacks');
 
+// k6 reports status 0 for any request that got no HTTP answer; error code 1050
+// is its request timeout, and the rest are refused, reset or failed connections.
+const REQUEST_TIMEOUT = 1050;
+
 function count(res) {
-  if (res.status === 0) {
+  if (res.status === 0 && res.error_code === REQUEST_TIMEOUT) {
     timeouts.add(1);
+  } else if (res.status === 0) {
+    connectionErrors.add(1);
   } else if (res.status >= 500) {
     serverErrors.add(1);
   } else if (res.status >= 400) {
@@ -77,6 +85,16 @@ function count(res) {
 }
 
 export default function () {
+  try {
+    iteration();
+  } catch (e) {
+    // An unreadable reply, such as a 202 without JSON, still counts as a failed request.
+    scriptErrors.add(1);
+    iterationErrors.add(true);
+  }
+}
+
+function iteration() {
   const i = exec.scenario.iterationInTest;
   const phase = exec.scenario.name;
   const tenant = 't_load_' + String(i % TENANTS).padStart(2, '0');

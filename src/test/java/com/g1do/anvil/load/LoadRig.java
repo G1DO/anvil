@@ -43,10 +43,17 @@ import com.g1do.anvil.extract.ExtractionModel;
  * autovacuum to visit, so the report shows what the run left behind.
  *
  * <p>The soak refuses to run, and so writes no soak numbers, unless record
- * 0025's GIN budget verdict says the budget is met and the schema carries
- * the index that verdict chose ({@link #requireGinBudget}).
+ * 0025's GIN budget verdict measured a full soak day and says the budget is
+ * met ({@link #requireGinBudget}). It then adds the index that verdict chose
+ * to its database, so the soak carries the index's cost though the schema
+ * doesn't have it yet. Steady and flood run on the schema as it is.
  *
- * <p>Usage: {@code LoadRig <steady|flood|soak> <out dir>}; run as
+ * <p>A run is never written from a failed k6 run, or from a summary an
+ * earlier attempt left behind.
+ *
+ * <p>Usage: {@code LoadRig <steady|flood|soak|smoke> <out dir> [NAME=value ...]},
+ * where each {@code NAME=value} overrides one of the scenario's k6 settings
+ * (such as {@code PRE_VUS=300}) and is recorded in the result. Run as
  * {@code task load:steady}, {@code task load:flood} or {@code task load:soak}.
  */
 public final class LoadRig {
@@ -60,7 +67,23 @@ public final class LoadRig {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /** A run's offered load. */
-    record Scenario(String name, String what, Map<String, String> k6) {
+    record Scenario(String name, String what, Map<String, String> k6, Map<String, String> overrides) {
+
+        Scenario(String name, String what, Map<String, String> k6) {
+            this(name, what, k6, Map.of());
+        }
+
+        /** This scenario with some k6 settings replaced; only settings it already has can be. */
+        Scenario with(Map<String, String> changes) {
+            Map<String, String> k = new LinkedHashMap<>(k6);
+            for (Map.Entry<String, String> e : changes.entrySet()) {
+                if (!k.containsKey(e.getKey())) {
+                    throw new IllegalArgumentException(name + " has no k6 setting " + e.getKey());
+                }
+                k.put(e.getKey(), e.getValue());
+            }
+            return new Scenario(name, what, k, Map.copyOf(changes));
+        }
 
         static Scenario of(String name) {
             return switch (name) {
@@ -105,17 +128,20 @@ public final class LoadRig {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 2) {
-            System.err.println("usage: LoadRig <steady|flood|soak> <out dir>");
+        if (args.length < 2) {
+            System.err.println("usage: LoadRig <steady|flood|soak|smoke> <out dir> [NAME=value ...]");
             System.exit(2);
         }
-        Scenario sc = Scenario.of(args[0]);
+        Scenario sc = Scenario.of(args[0]).with(overrides(List.of(args).subList(2, args.length)));
         Path out = Path.of(args[1]);
         JsonNode gin = sc.name().equals("soak") ? requireGinBudget(GIN_VERDICT) : null;
         Files.createDirectories(out);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("scenario", sc.name());
         result.put("offered", sc.what());
+        if (!sc.overrides().isEmpty()) {
+            result.put("overrides", sc.overrides());
+        }
         result.put("k6", K6);
         result.put("postgres", LoadDb.IMAGE + ", default settings");
         result.put("model", "LatencyStubModel: median " + (long) LatencyStubModel.MEDIAN_MS + " ms, p95 "
@@ -126,18 +152,29 @@ public final class LoadRig {
             String database = db.migrated("anvil");
             try (Connection c = db.connect(database)) {
                 if (gin != null) {
+                    try (Statement s = c.createStatement()) {
+                        s.execute(GinBudget.createIndex(GinBudget.VARIANTS.get(gin.path("chosen").asText())));
+                    }
                     requireIndex(c, gin);
-                    result.put("gin_budget", Map.of("measured_at", gin.path("measured_at").asText(), "chosen",
-                            gin.path("chosen").asText(), "verdict", GIN_VERDICT.toString()));
+                    Map<String, Object> g = new LinkedHashMap<>();
+                    g.put("measured_at", gin.path("measured_at").asText());
+                    g.put("chosen", gin.path("chosen").asText());
+                    g.put("verdict", GIN_VERDICT.toString());
+                    result.put("gin_budget", g);
                 }
                 seed(c);
                 ConfigurableApplicationContext app = startApp(db.url(database));
                 try {
                     Map<String, Map<String, Object>> before = tables(c);
                     result.put("started_at", Instant.now().truncatedTo(ChronoUnit.SECONDS).toString());
+                    Files.deleteIfExists(out.resolve("k6-summary.json"));
                     int exit = k6(sc, out);
                     result.put("finished_at", Instant.now().truncatedTo(ChronoUnit.SECONDS).toString());
                     result.put("k6_exit", exit);
+                    if (exit != 0 || !Files.exists(out.resolve("k6-summary.json"))) {
+                        throw new IllegalStateException("k6 exited " + exit + " or wrote no summary; no result is "
+                                + "written for this run");
+                    }
                     // Each backend publishes its statistics within about ten seconds of going idle.
                     Thread.sleep(12_000);
                     Map<String, Map<String, Object>> end = tables(c);
@@ -170,21 +207,45 @@ public final class LoadRig {
                     + "; run task load:gin first. No soak numbers are written.");
         }
         JsonNode v = JSON.readTree(verdict.toFile());
+        if (v.path("extractions").asInt() != GinBudget.EXTRACTIONS) {
+            throw new IllegalStateException("record 0025: the verdict at " + verdict + " measured "
+                    + v.path("extractions").asInt() + " extractions, not a soak day of " + GinBudget.EXTRACTIONS
+                    + ". No soak numbers are written.");
+        }
         if (!v.path("within_budget").asBoolean(false)) {
             throw new IllegalStateException("record 0025: the GIN index is over budget (" + verdict
                     + "); its residual is reported there, and no soak numbers are claimed.");
         }
+        if (!GinBudget.VARIANTS.containsKey(v.path("chosen").asText())) {
+            throw new IllegalStateException("record 0025: the verdict chose '" + v.path("chosen").asText()
+                    + "', which isn't a measured variant. No soak numbers are written.");
+        }
         return v;
+    }
+
+    static Map<String, String> overrides(List<String> args) {
+        Map<String, String> out = new LinkedHashMap<>();
+        for (String a : args) {
+            int eq = a.indexOf('=');
+            if (eq <= 0) {
+                throw new IllegalArgumentException("an override is NAME=value: " + a);
+            }
+            out.put(a.substring(0, eq), a.substring(eq + 1));
+        }
+        return out;
     }
 
     /** The soak measures the schema the budget approved: the chosen index must be in place. */
     static void requireIndex(Connection c, JsonNode gin) throws SQLException {
         String chosen = gin.path("chosen").asText();
-        String expected = chosen.equals("gin_fastupdate_off") ? "fastupdate=off"
-                : chosen.equals("gin_fastupdate_on") ? "fastupdate=on" : null;
+        String fastupdate = GinBudget.VARIANTS.get(chosen);
+        if (fastupdate == null) {
+            throw new IllegalStateException("record 0025 chose '" + chosen + "', which isn't a measured variant");
+        }
+        String expected = "fastupdate=" + fastupdate;
         try (ResultSet r = c.createStatement().executeQuery("SELECT coalesce(array_to_string(c.reloptions, ','), '') "
                 + "FROM pg_class c WHERE c.relname = '" + GinBudget.INDEX + "'")) {
-            if (expected != null && (!r.next() || !r.getString(1).contains(expected))) {
+            if (!r.next() || !r.getString(1).equals(expected)) {
                 throw new IllegalStateException("record 0025 chose " + chosen + ", but the schema doesn't carry "
                         + GinBudget.INDEX + " with " + expected + "; no soak numbers are written.");
             }
@@ -324,6 +385,8 @@ public final class LoadRig {
         out.put("dropped", dropped);
         out.put("error_rate", iterations + dropped == 0 ? 0.0 : round4((double) (errors + dropped) / (iterations + dropped)));
         out.put("timeouts", m.path("timeouts").path("values").path("count").asLong());
+        out.put("connection_errors", m.path("connection_errors").path("values").path("count").asLong());
+        out.put("script_errors", m.path("script_errors").path("values").path("count").asLong());
         out.put("server_errors", m.path("server_errors").path("values").path("count").asLong());
         out.put("client_errors", m.path("client_errors").path("values").path("count").asLong());
         out.put("fallbacks", m.path("fallbacks").path("values").path("count").asLong());
@@ -351,6 +414,9 @@ public final class LoadRig {
         Map<String, Object> load = (Map<String, Object>) r.get("load");
         s.append("# Load run: ").append(r.get("scenario")).append("\n\n");
         s.append("Offered: ").append(r.get("offered")).append(". Each request submits a document and extracts it.\n");
+        if (r.containsKey("overrides")) {
+            s.append("k6 settings changed for this run: ").append(r.get("overrides")).append(".\n");
+        }
         s.append("Run ").append(r.get("started_at")).append(" to ").append(r.get("finished_at")).append(", k6 ")
                 .append(r.get("k6")).append(".\n");
         s.append("Model: ").append(r.get("model")).append(". Postgres: ").append(r.get("postgres")).append(". Host: ")
@@ -358,7 +424,7 @@ public final class LoadRig {
         if (r.containsKey("gin_budget")) {
             Map<String, Object> g = (Map<String, Object>) r.get("gin_budget");
             s.append("GIN budget (record 0025): measured ").append(g.get("measured_at")).append(", within budget with ")
-                    .append(g.get("chosen")).append("; the index was in place for this run.\n");
+                    .append(g.get("chosen")).append("; the rig added that index for this run.\n");
         }
         s.append("\n| Requests | Completed | Errors | Dropped | Error rate | Extract p50 | p95 | p99 | max | Submit p95 |\n");
         s.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
@@ -383,14 +449,16 @@ public final class LoadRig {
             }
         }
         s.append("- Errors by kind: ").append(load.get("timeouts")).append(" timeouts (30 s), ")
+                .append(load.get("connection_errors")).append(" connection errors (refused or reset), ")
                 .append(load.get("server_errors")).append(" 5xx, ").append(load.get("client_errors"))
-                .append(" 4xx. Dropped: k6 had no free virtual user to start the request at its time.\n");
+                .append(" 4xx, ").append(load.get("script_errors")).append(" unreadable replies. Dropped: k6 had no "
+                        + "free virtual user to start the request at its time.\n");
         s.append("- Model calls: ").append(r.get("model_calls")).append(". Results marked as fallback: ")
                 .append(load.get("fallbacks")).append(".\n\n");
         s.append("Table growth (sizes include indexes and TOAST; dead tuples at the end of the run and after ")
                 .append(SETTLE.toSeconds()).append(" s idle; wasted space is pgstattuple's dead plus free percent "
                         + "after the idle period):\n\n");
-        s.append("| Table | Inserted | Updated (HOT) | Size before | Size after | Per 1,000 requests | Dead at end | "
+        s.append("| Table | Inserted | Updated (HOT) | Size before | Size after | Per 1,000 completed | Dead at end | "
                 + "Dead after idle | Autovacuums | Wasted |\n");
         s.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
         long done = Math.max(1, iterations - errors);

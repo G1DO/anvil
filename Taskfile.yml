@@ -160,7 +160,7 @@ tasks:
         scripts/file-issue.sh "Nightly live eval failed" "$body"
 
   load:gin:
-    desc: "Measure the full-text (GIN) index on fact values against record 0025's budget on containerized Postgres: one soak day of extractions with no index, fastupdate off and fastupdate on. Writes load/runs/gin-budget/ (gin-budget.json is the verdict the soak needs)"
+    desc: "Measure the full-text (GIN) index on fact values against record 0025's budget on containerized Postgres, a fresh server per variant: one soak day of extractions with no index, fastupdate off and fastupdate on, with the pending-list merge and vacuum counted. Writes load/runs/gin-budget/ (gin-budget.json is the verdict the soak needs) and never replaces one"
     cmds:
       - ./mvnw -q -B -ntp test-compile dependency:build-classpath -Dmdep.outputFile=target/test.classpath -Dmdep.includeScope=test
       - java -cp "target/test-classes:target/classes:$(cat target/test.classpath)" com.g1do.anvil.load.GinBudget load/runs/gin-budget
@@ -178,21 +178,24 @@ tasks:
         vars: { SCENARIO: flood }
 
   load:soak:
-    desc: "Load run: 10,000 documents (a day's soak target) over 60 minutes. Refuses to run unless load/runs/gin-budget/gin-budget.json says the GIN budget is met and the index is in the schema (record 0025). Writes load/runs/soak/"
+    desc: "Load run: 10,000 documents (a day's soak target) over 60 minutes. Refuses to run unless load/runs/gin-budget/gin-budget.json measured a full soak day and says the GIN budget is met (record 0025); then it adds the chosen index to the soak database. Writes load/runs/soak/"
     cmds:
       - task: load:run
         vars: { SCENARIO: soak }
 
   load:run:
     internal: true
+    vars:
+      DIR: '{{.LOAD_OUT | default (print "load/runs/" .SCENARIO)}}'
     cmds:
       - ./mvnw -q -B -ntp test-compile dependency:build-classpath -Dmdep.outputFile=target/test.classpath -Dmdep.includeScope=test
       - |
-        if [ -e load/runs/{{.SCENARIO}}/result.json ]; then
-          echo "load: load/runs/{{.SCENARIO}} already holds a run; a committed run is never overwritten, so move it first"
+        if [ -e {{.DIR}}/result.json ]; then
+          echo "load: {{.DIR}} already holds a run; a committed run is never overwritten, so move it first"
           exit 2
         fi
-      - java -cp "target/test-classes:target/classes:$(cat target/test.classpath)" com.g1do.anvil.load.LoadRig {{.SCENARIO}} load/runs/{{.SCENARIO}}
+      # LOAD_OUT sets another output directory, and arguments after -- override k6 settings (such as PRE_VUS=300).
+      - java -cp "target/test-classes:target/classes:$(cat target/test.classpath)" com.g1do.anvil.load.LoadRig {{.SCENARIO}} {{.DIR}} {{.CLI_ARGS}}
 
   check:sast:
     desc: "Static analysis via Semgrep registry p/default --error, minus rules that only flagged parameterized SQL and the jail's validated argv"

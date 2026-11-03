@@ -1,106 +1,109 @@
 {
   "scenario" : "steady",
   "offered" : "140 extraction requests per second for 5 minutes",
+  "overrides" : {
+    "PRE_VUS" : "300"
+  },
   "k6" : "grafana/k6:1.4.2@sha256:3656673de3f30424e8ebcfa46acd9558d83b6a43612d0f668ffeac953950c6c7",
   "postgres" : "postgres:18.6, default settings",
   "model" : "LatencyStubModel: median 1142 ms, p95 1497 ms, at most 3000 ms (the cost run's model-call latency); no network",
   "host" : "12 CPUs, app, Postgres and k6 on one host",
-  "started_at" : "2026-11-02T21:11:27Z",
-  "finished_at" : "2026-11-02T21:16:30Z",
+  "started_at" : "2026-11-03T00:51:24Z",
+  "finished_at" : "2026-11-03T00:56:26Z",
   "k6_exit" : 0,
-  "model_calls" : 41670,
+  "model_calls" : 41702,
   "tables" : {
     "audit_events" : {
-      "inserted" : 41670,
+      "inserted" : 41702,
       "updated" : 0,
       "hot_updated" : 0,
       "bytes_before" : 49152,
-      "bytes_after" : 27394048,
-      "live_after" : 41670,
+      "bytes_after" : 27328512,
+      "live_after" : 41702,
       "dead_at_end" : 0,
       "dead_after_settle" : 0,
       "autovacuums" : 5,
-      "wasted_percent_after_settle" : 2.15
+      "wasted_percent_after_settle" : 2.18
     },
     "document_versions" : {
-      "inserted" : 41670,
+      "inserted" : 41702,
       "updated" : 0,
       "hot_updated" : 0,
       "bytes_before" : 40960,
-      "bytes_after" : 28590080,
-      "live_after" : 41670,
+      "bytes_after" : 28311552,
+      "live_after" : 41702,
       "dead_at_end" : 0,
       "dead_after_settle" : 0,
       "autovacuums" : 5,
-      "wasted_percent_after_settle" : 2.19
+      "wasted_percent_after_settle" : 2.12
     },
     "documents" : {
-      "inserted" : 41670,
+      "inserted" : 41702,
       "updated" : 0,
       "hot_updated" : 0,
       "bytes_before" : 32768,
-      "bytes_after" : 11264000,
-      "live_after" : 41670,
+      "bytes_after" : 11296768,
+      "live_after" : 41702,
       "dead_at_end" : 0,
       "dead_after_settle" : 0,
       "autovacuums" : 5,
-      "wasted_percent_after_settle" : 2.01
+      "wasted_percent_after_settle" : 1.73
     },
     "extracted_facts" : {
-      "inserted" : 118941,
-      "updated" : 0,
-      "hot_updated" : 0,
-      "bytes_before" : 40960,
-      "bytes_after" : 29106176,
-      "live_after" : 118941,
-      "dead_at_end" : 0,
-      "dead_after_settle" : 0,
-      "autovacuums" : 5,
-      "wasted_percent_after_settle" : 1.26
-    },
-    "extraction_budgets" : {
-      "inserted" : 0,
-      "updated" : 41670,
-      "hot_updated" : 41650,
-      "bytes_before" : 65536,
-      "bytes_after" : 73728,
-      "live_after" : 20,
-      "dead_at_end" : 135,
-      "dead_after_settle" : 0,
-      "autovacuums" : 6,
-      "wasted_percent_after_settle" : 90.14
-    },
-    "extractions" : {
-      "inserted" : 41670,
-      "updated" : 0,
-      "hot_updated" : 0,
-      "bytes_before" : 40960,
-      "bytes_after" : 32751616,
-      "live_after" : 41670,
-      "dead_at_end" : 0,
-      "dead_after_settle" : 0,
-      "autovacuums" : 5,
-      "wasted_percent_after_settle" : 1.74
-    },
-    "jobs" : {
-      "inserted" : 41670,
-      "updated" : 0,
-      "hot_updated" : 0,
-      "bytes_before" : 65536,
-      "bytes_after" : 24559616,
-      "live_after" : 41670,
-      "dead_at_end" : 0,
-      "dead_after_settle" : 0,
-      "autovacuums" : 5,
-      "wasted_percent_after_settle" : 2.26
-    },
-    "outbox" : {
-      "inserted" : 41670,
+      "inserted" : 119032,
       "updated" : 0,
       "hot_updated" : 0,
       "bytes_before" : 24576,
-      "bytes_after" : 25067520,
-      "live_after" : 41670,
+      "bytes_after" : 26910720,
+      "live_after" : 119032,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 5,
+      "wasted_percent_after_settle" : 0.84
+    },
+    "extraction_budgets" : {
+      "inserted" : 0,
+      "updated" : 41702,
+      "hot_updated" : 41701,
+      "bytes_before" : 65536,
+      "bytes_after" : 73728,
+      "live_after" : 20,
+      "dead_at_end" : 66,
+      "dead_after_settle" : 0,
+      "autovacuums" : 6,
+      "wasted_percent_after_settle" : 88.26
+    },
+    "extractions" : {
+      "inserted" : 41702,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 40960,
+      "bytes_after" : 32808960,
+      "live_after" : 41702,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 5,
+      "wasted_percent_after_settle" : 1.52
+    },
+    "jobs" : {
+      "inserted" : 41702,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 65536,
+      "bytes_after" : 24395776,
+      "live_after" : 41702,
+      "dead_at_end" : 0,
+      "dead_after_settle" : 0,
+      "autovacuums" : 5,
+      "wasted_percent_after_settle" : 1.96
+    },
+    "outbox" : {
+      "inserted" : 41702,
+      "updated" : 0,
+      "hot_updated" : 0,
+      "bytes_before" : 24576,
+      "bytes_after" : 25198592,
+      "live_after" : 41702,
       "dead_at_end" : 0,
       "dead_after_settle" : 0,
       "autovacuums" : 5,
@@ -109,35 +112,37 @@
   },
   "load" : {
     "main" : {
-      "iterations" : 41670,
+      "iterations" : 41702,
       "errors" : 0,
       "extract_ms" : {
-        "p50" : 1282,
-        "p95" : 2665,
-        "p99" : 3044,
-        "max" : 3935
+        "p50" : 1233,
+        "p95" : 2216,
+        "p99" : 2946,
+        "max" : 4445
       }
     },
-    "iterations" : 41670,
+    "iterations" : 41702,
     "errors" : 0,
-    "dropped" : 331,
-    "error_rate" : 0.0079,
+    "dropped" : 299,
+    "error_rate" : 0.0071,
     "timeouts" : 0,
+    "connection_errors" : 0,
+    "script_errors" : 0,
     "server_errors" : 0,
     "client_errors" : 0,
     "fallbacks" : 0,
     "extract_ms" : {
-      "p50" : 1282,
-      "p95" : 2665,
-      "p99" : 3044,
-      "max" : 3935
+      "p50" : 1233,
+      "p95" : 2216,
+      "p99" : 2946,
+      "max" : 4445
     },
     "submit_ms" : {
       "p50" : 18,
-      "p95" : 1387,
-      "p99" : 1699,
-      "max" : 2219
+      "p95" : 964,
+      "p99" : 1595,
+      "max" : 2876
     },
-    "iterations_per_s" : 138.1889
+    "iterations_per_s" : 138.3723
   }
 }

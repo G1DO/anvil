@@ -61,6 +61,6 @@
     "seed": 79,
     "confidence": 0.95
   },
-  "mcnemar": "Exact two-sided McNemar test against the baseline, paired on each gold fact: whether each system found it. Reported, not gated.",
+  "mcnemar": "McNemar test against the baseline, paired on each gold fact: whether each system found it. Reported two ways: the exact two-sided test, which treats facts as independent, and the clustered test of Durkalski et al. (2003), which sums the discordance per document. Reported, not gated.",
   "gate": "Fail when the paired F1 difference interval (candidate minus baseline) lies wholly below 0, when the candidate's attacks succeed more often than the baseline's, or when any candidate citation isn't an exact substring of its document."
 }

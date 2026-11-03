@@ -3,7 +3,6 @@ package com.g1do.anvil.load;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Instant;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -37,6 +36,9 @@ class LoadRigTest {
         assertThat(LoadRig.Scenario.of("soak").k6()).containsEntry("RATE", "10000").containsEntry("TIME_UNIT", "60m")
                 .containsEntry("DURATION", "60m");
         assertThatThrownBy(() -> LoadRig.Scenario.of("burst")).isInstanceOf(IllegalArgumentException.class);
+        assertThat(LoadRig.Scenario.of("steady").k6()).as("every virtual user exists before the run")
+                .containsEntry("PRE_VUS", "1500").containsEntry("MAX_VUS", "1500");
+        assertThat(LoadRig.Scenario.of("flood").k6()).containsEntry("PRE_VUS", "3000").containsEntry("MAX_VUS", "3000");
         assertThat(LoadRig.K6).as("k6 is pinned by digest").matches("grafana/k6:[0-9.]+@sha256:[0-9a-f]{64}");
     }
 
@@ -50,13 +52,35 @@ class LoadRigTest {
     @Test
     void theSoakRefusesToRunWhenTheGinBudgetIsntMet(@TempDir Path tmp) throws IOException {
         Path verdict = tmp.resolve("gin-budget.json");
-        Files.writeString(verdict, "{\"within_budget\": false, \"chosen\": \"none\"}");
+        Files.writeString(verdict, "{\"extractions\": 10000, \"within_budget\": false, \"chosen\": \"none\"}");
 
         assertThatThrownBy(() -> LoadRig.requireGinBudget(verdict)).isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("over budget").hasMessageContaining("no soak numbers are claimed");
 
-        Files.writeString(verdict, "{\"within_budget\": true, \"chosen\": \"gin_fastupdate_off\"}");
+        Files.writeString(verdict, "{\"extractions\": 10000, \"within_budget\": true, \"chosen\": \"gin_fastupdate_off\"}");
         assertThat(LoadRig.requireGinBudget(verdict).path("chosen").asText()).isEqualTo("gin_fastupdate_off");
+    }
+
+    /** Review of #121: a short trial run of the harness, or a verdict naming no measured variant, isn't a soak day's verdict. */
+    @Test
+    void theSoakRefusesATrialVerdictOrOneThatChoseNoMeasuredVariant(@TempDir Path tmp) throws IOException {
+        Path verdict = tmp.resolve("gin-budget.json");
+        Files.writeString(verdict, "{\"extractions\": 200, \"within_budget\": true, \"chosen\": \"gin_fastupdate_on\"}");
+        assertThatThrownBy(() -> LoadRig.requireGinBudget(verdict)).hasMessageContaining("measured 200 extractions")
+                .hasMessageContaining("No soak numbers are written");
+
+        Files.writeString(verdict, "{\"extractions\": 10000, \"within_budget\": true, \"chosen\": \"gin_other\"}");
+        assertThatThrownBy(() -> LoadRig.requireGinBudget(verdict)).hasMessageContaining("isn't a measured variant");
+    }
+
+    @Test
+    void aRunCanOverrideOnlySettingsItsScenarioHas() {
+        LoadRig.Scenario sc = LoadRig.Scenario.of("steady").with(LoadRig.overrides(List.of("PRE_VUS=300")));
+        assertThat(sc.k6()).containsEntry("PRE_VUS", "300").containsEntry("RATE", "140");
+        assertThat(sc.overrides()).containsExactly(java.util.Map.entry("PRE_VUS", "300"));
+        assertThatThrownBy(() -> LoadRig.Scenario.of("steady").with(LoadRig.overrides(List.of("RECOVERY_RATE=1"))))
+                .hasMessageContaining("no k6 setting RECOVERY_RATE");
+        assertThatThrownBy(() -> LoadRig.overrides(List.of("PRE_VUS"))).hasMessageContaining("NAME=value");
     }
 
     @Test
@@ -72,16 +96,26 @@ class LoadRigTest {
                 .isTrue());
     }
 
+    /**
+     * Record 0025: the committed verdict measured a full soak day and neither
+     * variant met the budget, so the soak refuses to run and no soak numbers
+     * exist; the residual is in the verdict.
+     */
     @Test
-    void theGinVerdictPrecedesTheSoakAndIsWithinBudget() throws IOException {
+    void overBudgetTheSoakRefusesAndNoSoakNumbersAreClaimed() throws IOException {
         JsonNode gin = JSON.readTree(LoadRig.GIN_VERDICT.toFile());
-        JsonNode soak = JSON.readTree(Path.of("load/runs/soak/result.json").toFile());
 
-        assertThat(gin.path("within_budget").asBoolean()).isTrue();
         assertThat(gin.path("extractions").asInt()).isEqualTo(GinBudget.EXTRACTIONS);
-        assertThat(soak.path("gin_budget").path("measured_at").asText()).isEqualTo(gin.path("measured_at").asText());
-        assertThat(Instant.parse(gin.path("measured_at").asText()))
-                .isBefore(Instant.parse(soak.path("started_at").asText()));
+        assertThat(gin.path("within_budget").asBoolean()).isFalse();
+        assertThat(gin.path("chosen").asText()).isEqualTo("none");
+        for (String variant : GinBudget.VARIANTS.keySet()) {
+            JsonNode checks = gin.path("variants").path(variant).path("checks");
+            assertThat(checks.findValues("ok")).as(variant + " reports its residual: a failed check")
+                    .anySatisfy(ok -> assertThat(ok.asBoolean()).isFalse());
+        }
+        assertThatThrownBy(() -> LoadRig.requireGinBudget(LoadRig.GIN_VERDICT)).hasMessageContaining("over budget")
+                .hasMessageContaining("no soak numbers are claimed");
+        assertThat(Path.of("load/runs/soak")).doesNotExist();
     }
 
     /**
@@ -90,7 +124,7 @@ class LoadRigTest {
      * (load/README.md).
      */
     @ParameterizedTest
-    @ValueSource(strings = { "steady", "flood", "soak", "steady-300-vus", "flood-1500-vus" })
+    @ValueSource(strings = { "steady", "flood", "steady-300-vus", "flood-1500-vus" })
     void eachCommittedRunReportsP95ErrorRateAndTableGrowth(String dirName) throws IOException {
         Path dir = Path.of("load/runs", dirName);
         JsonNode r = JSON.readTree(dir.resolve("result.json").toFile());
@@ -106,23 +140,35 @@ class LoadRigTest {
             assertThat(r.path("tables").path(table).path("bytes_after").asLong()).as(table).isPositive();
             assertThat(r.path("tables").path(table).has("dead_after_settle")).as(table).isTrue();
         }
-        assertThat(Files.readString(dir.resolve("report.md"))).contains("| Error rate |", "p95", "Table growth");
+        assertThat(Files.readString(dir.resolve("report.md"))).contains("| Error rate |", "p95", "Table growth",
+                "Per 1,000 completed", "connection errors");
+        assertThat(load.has("connection_errors") && load.has("script_errors")).isTrue();
         assertThat(dir.resolve("k6-summary.json")).isRegularFile();
     }
 
     @Test
-    void theSoakOfferedTenThousandDocumentsAndTheSteadyRunHeld140PerSecond() throws IOException {
-        JsonNode soak = JSON.readTree(Path.of("load/runs/soak/result.json").toFile()).path("load");
-        // A constant-arrival-rate run also starts one request at time zero.
-        assertThat(soak.path("iterations").asLong() + soak.path("dropped").asLong()).isBetween(10_000L, 10_001L);
-        assertThat(soak.path("error_rate").asDouble()).isZero();
+    void eachRunOfferedItsLoadAndTheServerAnsweredEveryRequestItGot() throws IOException {
+        for (String name : List.of("steady", "steady-300-vus")) {
+            JsonNode steady = JSON.readTree(Path.of("load/runs", name, "result.json").toFile()).path("load");
+            assertThat(steady.path("iterations").asLong() + steady.path("dropped").asLong())
+                    .as(name + ": 5 minutes at 140 per second").isBetween(41_900L, 42_100L);
+            noServerErrors(name, steady);
+        }
+        for (String name : List.of("flood", "flood-1500-vus")) {
+            JsonNode flood = JSON.readTree(Path.of("load/runs", name, "result.json").toFile()).path("load");
+            assertThat(flood.path("main").path("iterations").asLong() + flood.path("dropped").asLong())
+                    .as(name + ": 60 seconds at 1,400 per second").isBetween(83_000L, 84_100L);
+            assertThat(flood.path("recovery").path("extract_ms").path("p95").asLong())
+                    .as(name + ": latency back near the model's own after the flood").isLessThan(2_000);
+            noServerErrors(name, flood);
+        }
+    }
 
-        JsonNode steady = JSON.readTree(Path.of("load/runs/steady/result.json").toFile()).path("load");
-        assertThat(steady.path("iterations").asLong() + steady.path("dropped").asLong())
-                .as("5 minutes at 140 per second").isBetween(41_900L, 42_100L);
-
-        JsonNode flood = JSON.readTree(Path.of("load/runs/flood/result.json").toFile()).path("load");
-        assertThat(flood.path("main").path("iterations").asLong() + flood.path("dropped").asLong())
-                .as("60 seconds at 1,400 per second").isBetween(83_000L, 84_100L);
+    /** Requests that weren't completed were never started by k6; none got an error, a reset or a timeout. */
+    private static void noServerErrors(String name, JsonNode load) {
+        for (String kind : List.of("errors", "timeouts", "connection_errors", "server_errors", "client_errors",
+                "script_errors")) {
+            assertThat(load.path(kind).asLong()).as(name + " " + kind).isZero();
+        }
     }
 }
