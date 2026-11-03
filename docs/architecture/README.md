@@ -4,9 +4,9 @@ Mermaid diagrams, one file each. `task check:diagrams` renders them all in the g
 
 | Diagram | Shows |
 | --- | --- |
-| [context.mmd](context.mmd) | ANVIL, its users (tenant client, operator), and what it talks to: PostgreSQL, the content store, exec workspaces, the model provider |
-| [containers.mmd](containers.mmd) | The running parts (API service, workers, exec jail, Postgres, content store), the model provider, and the trust boundaries between them |
-| [components.mmd](components.mmd) | The building blocks inside the API service (including the extraction path), the workers, and the exec jail |
+| [context.mmd](context.mmd) | ANVIL, its users (tenant client, operator), and what it talks to: PostgreSQL, the content store, exec workspaces, the model provider, exported chain files |
+| [containers.mmd](containers.mmd) | The running parts (API service, workers, operator CLI, exec jail, Postgres, content store), the model provider, exported chains, and the trust boundaries between them |
+| [components.mmd](components.mmd) | The building blocks inside the API service (including the extraction path), the operator CLI (replay, export, offline verify), the workers, and the exec jail |
 | [flow-submit-claim-commit.mmd](flow-submit-claim-commit.mmd) | Submit → claim → commit, including a duplicate submit, an invalid capability, and a zombie worker with a stale fencing token |
 | [flow-reconcile-outbox.mmd](flow-reconcile-outbox.mmd) | Reconciler and outbox relay, including a failed publish and a redelivery that applies once |
 | [state-job.mmd](state-job.mmd) | Job lifecycle: `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `DEAD` |

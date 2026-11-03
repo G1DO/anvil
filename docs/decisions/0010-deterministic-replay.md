@@ -1,6 +1,6 @@
 # 0010 — Deterministic replay with checkpoint acceleration
 
-Status: accepted. Builds on 0009 (immutable audit chain) and 0007 (fail-closed reads); does not change fencing, outbox, CAS durability, or isolation contracts.
+Status: accepted. Builds on 0009 (immutable audit chain) and 0007 (fail-closed reads); does not change fencing, outbox, CAS durability, or isolation contracts. Record 0026 (#75) adds the CLI and the offline verifier deferred below.
 
 ## Context
 

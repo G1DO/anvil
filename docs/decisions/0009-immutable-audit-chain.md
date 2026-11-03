@@ -1,6 +1,6 @@
 # 0009 — Immutable per-job hash-chained audit log
 
-Status: accepted. Builds on 0005 (DB-enforced tenant isolation) and 0006 (capability-gated commits); does not change fencing, outbox, CAS durability, or isolation contracts.
+Status: accepted. Builds on 0005 (DB-enforced tenant isolation) and 0006 (capability-gated commits); does not change fencing, outbox, CAS durability, or isolation contracts. Record 0026 (#75) adds the CLI and the offline verifier deferred below.
 
 ## Context
 

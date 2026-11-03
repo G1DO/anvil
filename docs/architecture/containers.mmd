@@ -6,6 +6,7 @@ flowchart TB
     subgraph anvil["ANVIL: one Spring Boot deployable"]
         api["API service<br/>auth, validate, CBOR, submit, reads, audit, replay, URLs, health, extraction"]
         workers["Workers<br/>claim, heartbeat, commit, relay, reconcile"]
+        cli["Operator CLI, AnvilCli<br/>own process, no Spring context<br/>replay, export, verify"]
         subgraph jailZone["Untrusted code: tenant-supplied execution"]
             jail["Exec jail<br/>bwrap namespaces: own workspace only, private /tmp, no network"]
         end
@@ -17,9 +18,14 @@ flowchart TB
     execWorkspaces["Exec workspaces<br/>per-tenant writable directories"]
     network["Network<br/>egress denied by default"]
     llm["Model provider<br/>DeepSeek chat completions API"]
+    exports["Exported chains<br/>anvil-chain/1 JSON files"]
     broker["JailEgress broker<br/>in the parent: allowlist, connect-time DNS check"]
     tenantClient -->|"TRUST BOUNDARY: X-Tenant-Id checked, input validated"| api
     operator -->|probes, logs| api
+    operator -->|"replay, export, verify"| cli
+    cli -->|"JDBC read-only, as anvil_app, SET LOCAL app.tenant + RLS"| postgres
+    cli -->|"export: never overwrites"| exports
+    exports -.->|"TRUST BOUNDARY: verify reads the file as untrusted input, no database"| cli
     operator -->|"SQL: extraction budgets, kill-switch, revocations"| postgres
     api -->|"JDBC, SET LOCAL app.tenant + RLS"| postgres
     workers -->|"claim, heartbeat, commit, relay, reconcile under RLS"| postgres

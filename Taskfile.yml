@@ -197,6 +197,30 @@ tasks:
       # LOAD_OUT sets another output directory, and arguments after -- override k6 settings (such as PRE_VUS=300).
       - java -cp "target/test-classes:target/classes:$(cat target/test.classpath)" com.g1do.anvil.load.LoadRig {{.SCENARIO}} {{.DIR}} {{.CLI_ARGS}}
 
+  audit:replay:
+    desc: "Replay a job from the database without the running API (#75, record 0026): task -x audit:replay -- --tenant T --job J. Prints the API's {input_sha, output_sha, match}. Exit status with -x: 0 match, 1 no match, 2 usage or malformed, 3 not found, 4 unknown tenant, 5 database, 6 failure. Without -x, task exits 201 on any failure. Connects with SPRING_DATASOURCE_URL, _USERNAME and _PASSWORD, read-only and under RLS"
+    cmds:
+      - task: audit:cli
+        vars: { COMMAND: replay }
+
+  audit:export:
+    desc: "Write a job's chain as an export file, for verifying later with no database: task -x audit:export -- --tenant T --job J --out FILE (never overwrites FILE, which is created owner-only; without --out, prints it). Connects as audit:replay does; exit statuses as audit:replay, with -x"
+    cmds:
+      - task: audit:cli
+        vars: { COMMAND: export }
+
+  audit:verify:
+    desc: "Verify an exported chain with no database: task -x audit:verify -- --tenant T --job J FILE. Prints input_sha, output_sha, match, first_bad_seq and problem; exit statuses as audit:replay, with -x"
+    cmds:
+      - task: audit:cli
+        vars: { COMMAND: verify }
+
+  audit:cli:
+    internal: true
+    cmds:
+      - ./mvnw -q -B -ntp compile dependency:build-classpath -Dmdep.outputFile=target/cli.classpath -Dmdep.includeScope=runtime
+      - java -cp "target/classes:$(cat target/cli.classpath)" com.g1do.anvil.cli.AnvilCli {{.COMMAND}} {{.CLI_ARGS}}
+
   check:sast:
     desc: "Static analysis via Semgrep registry p/default --error, minus rules that only flagged parameterized SQL and the jail's validated argv"
     cmds:

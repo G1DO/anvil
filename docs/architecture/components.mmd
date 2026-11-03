@@ -13,7 +13,7 @@ flowchart TB
         readSvc["ReadService<br/>direct-ID + title-prefix + recheck"]
         auditCtrl["AuditEventsController<br/>GET audit events job limit cursor"]
         auditRead["AuditReadService<br/>caller-tenant chain ORDER BY seq"]
-        replay["ReplayService + ReplayController<br/>input_sha + output_sha + match"]
+        replay["ReplayService + ReplayController<br/>load in the tenant, then evaluate<br/>input_sha + output_sha + match"]
         casPre["CasPresignedService<br/>HMAC URLs TTL 60s"]
         extractCtrl["ExtractionController<br/>POST documents id extract, GET documents id facts<br/>same 404 for forged, missing, other tenant"]
         extractSvc["ExtractionService<br/>screens, then kill-switch, tenant cache, budget, model<br/>one result per tenant + version + prompt + model<br/>revoked never served"]
@@ -23,6 +23,16 @@ flowchart TB
         observe["ObserveController<br/>saturation JSON + metrics text"]
         health["HealthController<br/>healthz readyz + correlation"]
     end
+
+    subgraph cliProc["Operator CLI, AnvilCli: own process, no Spring context"]
+        replayCmd["replay<br/>prints the API's body, exit 0 match, 1 not"]
+        exportCmd["export<br/>never overwrites a file"]
+        verifyCmd["verify<br/>no database connection"]
+        restrict["read-only session<br/>RLS-bypassing login becomes anvil_app<br/>tenant must exist"]
+        chainExport["ChainExport anvil-chain/1<br/>strict parse, 8 MiB cap, no lone surrogates"]
+        offline["OfflineVerifier<br/>seq order, tenant scope, evaluate<br/>input_sha and state bound to the chain<br/>first bad seq"]
+    end
+    exportFile["Exported chain file"]
 
     subgraph workers["Workers"]
         claim["JobService claim + claimNext<br/>tenant lock + quota, order by penalty, next_run_at<br/>LIMIT 20 SKIP LOCKED + token"]
@@ -61,6 +71,14 @@ flowchart TB
     readSvc -->|JDBC SET LOCAL + RLS| pg
     auditRead -->|JDBC SET LOCAL + RLS| pg
     replay -->|chain + checkpoints, read-only| pg
+    replayCmd --> restrict
+    exportCmd --> restrict
+    restrict -->|"ReplayService load + evaluate"| replay
+    exportCmd --> chainExport
+    chainExport -->|write| exportFile
+    verifyCmd -->|read, untrusted| chainExport
+    chainExport --> offline
+    offline -->|"ReplayService.evaluate only"| replay
     casPre -->|authorize fetch| pg
     casPre -->|signed get| cas
     health -->|SELECT 1| pg
