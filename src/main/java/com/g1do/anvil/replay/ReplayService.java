@@ -55,6 +55,12 @@ import com.g1do.anvil.tenant.TenantGuard;
  * {@code checkpointSeqUsed} (proof the path was taken). Full verification is
  * still performed (same-sha guarantee); prefix-skip is residual future work.
  * {@code audit_events} stays append-only with no deletes in v1.</li>
+ * <li>Two steps (issue #75, record 0026): {@link #load} reads the
+ * {@link JobChain} in the caller's tenant, and {@link #evaluate}, a pure
+ * function, computes the result from it. The API, the CLI and the offline
+ * verifier all call {@code evaluate}, so they agree on the same chain. The
+ * reported {@code mismatchSeq} is the earliest failure, a chain break or a
+ * disagreeing checkpoint.</li>
  * </ul>
  */
 @Service
@@ -85,7 +91,8 @@ public class ReplayService {
         }
     }
 
-    private record ChainRow(
+    /** One audit event as replay reads it: the stored row with its payload parsed from JSON. */
+    public record ChainEvent(
             long seq,
             String prevHash,
             String eventHash,
@@ -95,21 +102,54 @@ public class ReplayService {
             Map<String, Object> payload) {
     }
 
+    /** One {@code job_checkpoints} row. */
+    public record Checkpoint(long seq, String sha) {
+    }
+
+    /**
+     * Everything a replay reads, and nothing else (issue #75): the job's
+     * current state, its input root, its chain in {@code seq} order and its
+     * checkpoints. {@link #load} reads it from the database in the caller's
+     * tenant; {@code ChainExport} writes it to a file and reads it back, so the
+     * offline verifier evaluates exactly what the API would.
+     */
+    public record JobChain(
+            String tenantId,
+            UUID jobId,
+            String state,
+            String inputSha,
+            List<ChainEvent> events,
+            List<Checkpoint> checkpoints) {
+
+        public JobChain {
+            events = List.copyOf(events);
+            checkpoints = List.copyOf(checkpoints);
+        }
+    }
+
     /**
      * Checkpoint-accelerated replay (reads checkpoints, verifies full chain).
      */
     public ReplayResult replay(String tenantId, UUID jobId) {
-        return replayInternal(tenantId, jobId, true);
+        return evaluate(load(tenantId, jobId), true);
     }
 
     /**
      * Full replay without consulting checkpoints (test comparison path).
      */
     public ReplayResult replayFull(String tenantId, UUID jobId) {
-        return replayInternal(tenantId, jobId, false);
+        return evaluate(load(tenantId, jobId), false);
     }
 
-    private ReplayResult replayInternal(String tenantId, UUID jobId, boolean useCheckpoint) {
+    /**
+     * Reads one job's chain in one transaction under the caller's tenant
+     * context ({@code WHERE tenant_id = ?} plus RLS plus the per-row re-check
+     * in {@link #scope}). Read-only.
+     *
+     * @throws ReplayNotFoundException when the job, its version or its chain is
+     *         missing or belongs to another tenant (no oracle).
+     */
+    public JobChain load(String tenantId, UUID jobId) {
         String tenant = requireTenant(tenantId);
         requireJobId(jobId);
         return tx.execute(status -> {
@@ -136,79 +176,91 @@ public class ReplayService {
             if (versionShas.isEmpty()) {
                 throw new ReplayNotFoundException("not found");
             }
-            String inputSha = versionShas.get(0);
 
-            // Chain ORDER BY seq, tenant- and job-scoped.
-            List<ChainRow> chain = jdbc.query(
+            // Chain ORDER BY seq, tenant- and job-scoped, then re-checked per row.
+            List<ChainEvent> kept = scope(tenant, jobId, jdbc.query(
                     "SELECT tenant_id, job_id, seq, prev_hash, event_hash, type, payload "
                             + "FROM audit_events WHERE tenant_id = ? AND job_id = ? ORDER BY seq",
                     (rs, i) -> mapChainRow(rs),
+                    tenant, jobId));
+
+            List<Checkpoint> cps = jdbc.query(
+                    "SELECT seq, sha FROM job_checkpoints WHERE tenant_id = ? AND job_id = ? ORDER BY seq",
+                    (rs, i) -> new Checkpoint(rs.getLong("seq"), rs.getString("sha")),
                     tenant, jobId);
-            if (chain.isEmpty()) {
-                throw new ReplayNotFoundException("not found");
-            }
-            // Per-row re-check (defense-in-depth, mirrors AuditReadService).
-            List<ChainRow> kept = new ArrayList<>(chain.size());
-            for (ChainRow r : chain) {
-                if (r != null && tenant.equals(r.tenantId()) && jobId.equals(r.jobId())) {
-                    kept.add(r);
-                }
-            }
-            if (kept.isEmpty()) {
-                throw new ReplayNotFoundException("not found");
-            }
-
-            // Checkpoint path: latest checkpoint <= max_seq, consistency-checked.
-            Long checkpointUsed = null;
-            if (useCheckpoint) {
-                List<Checkpoint> cps = jdbc.query(
-                        "SELECT seq, sha FROM job_checkpoints WHERE tenant_id = ? AND job_id = ? ORDER BY seq",
-                        (rs, i) -> new Checkpoint(rs.getLong("seq"), rs.getString("sha")),
-                        tenant, jobId);
-                // Re-check tenant scope (rows already filtered, but keep symmetric).
-                long maxSeq = kept.get(kept.size() - 1).seq();
-                Checkpoint best = null;
-                for (Checkpoint cp : cps) {
-                    if (cp.seq() <= maxSeq && (best == null || cp.seq() > best.seq())) {
-                        best = cp;
-                    }
-                }
-                if (best != null) {
-                    // Consistency: checkpoint sha must equal stored event_hash at that seq.
-                    String storedAtCheckpoint = null;
-                    for (ChainRow r : kept) {
-                        if (r.seq() == best.seq()) {
-                            storedAtCheckpoint = r.eventHash();
-                            break;
-                        }
-                    }
-                    if (storedAtCheckpoint == null || !storedAtCheckpoint.equals(best.sha())) {
-                        // Checkpoint/chain divergence: tamper, never silent success.
-                        String artifactForOutput = lastArtifactSha(kept);
-                        String terminal = job.state();
-                        String outputSha = outputSha(jobId, terminal, artifactForOutput);
-                        // Surface the checkpoint seq as the mismatch point.
-                        return new ReplayResult(inputSha, outputSha, false, best.seq(), best.seq());
-                    }
-                    checkpointUsed = best.seq();
-                }
-            }
-
-            // Full hash-linkage verification.
-            Long mismatch = verifyChain(jobId, kept);
-
-            String artifactSha = lastArtifactSha(kept);
-            String terminalState = job.state();
-            String outputSha = outputSha(jobId, terminalState, artifactSha);
-
-            boolean terminalOk = isTerminal(terminalState);
-            boolean match = mismatch == null && terminalOk;
-            Long mismatchSeq = mismatch != null ? mismatch : (terminalOk ? null : -1L);
-            // For non-terminal with intact chain, surface -1 as "no chain break,
-            // state not terminal" (service-level; controller still returns
-            // match:false with shas for the owner).
-            return new ReplayResult(inputSha, outputSha, match, mismatchSeq, checkpointUsed);
+            return new JobChain(tenant, jobId, job.state(), versionShas.get(0), kept, cps);
         });
+    }
+
+    /**
+     * The per-row re-check (defense in depth, mirrors {@code AuditReadService}):
+     * keeps only the caller's tenant's events of this job.
+     *
+     * @throws ReplayNotFoundException when none are left (no oracle).
+     */
+    public static List<ChainEvent> scope(String tenant, UUID jobId, List<ChainEvent> chain) {
+        List<ChainEvent> kept = new ArrayList<>(chain.size());
+        for (ChainEvent r : chain) {
+            if (r != null && tenant.equals(r.tenantId()) && jobId.equals(r.jobId())) {
+                kept.add(r);
+            }
+        }
+        if (kept.isEmpty()) {
+            throw new ReplayNotFoundException("not found");
+        }
+        return kept;
+    }
+
+    /**
+     * The replay itself, a pure function of what {@link #load} read, so the
+     * API, the CLI and the offline verifier give the same answer for the same
+     * chain. The chain must already be {@link #scope scoped} to its tenant and job.
+     *
+     * <p>{@code mismatchSeq} is the first sequence number that fails: the
+     * earliest chain break, or the checkpoint that disagrees with the chain if
+     * it comes first. With an intact chain and a non-terminal job it is
+     * {@code -1}: no chain break, state not terminal.
+     */
+    public static ReplayResult evaluate(JobChain chain, boolean useCheckpoint) {
+        UUID jobId = chain.jobId();
+        List<ChainEvent> kept = chain.events();
+        String outputSha = outputSha(jobId, chain.state(), lastArtifactSha(kept));
+
+        // Full hash-linkage verification.
+        Long mismatch = verifyChain(jobId, kept);
+
+        // Checkpoint path: latest checkpoint <= max_seq, consistency-checked.
+        Long checkpointUsed = null;
+        if (useCheckpoint) {
+            long maxSeq = kept.get(kept.size() - 1).seq();
+            Checkpoint best = null;
+            for (Checkpoint cp : chain.checkpoints()) {
+                if (cp.seq() <= maxSeq && (best == null || cp.seq() > best.seq())) {
+                    best = cp;
+                }
+            }
+            if (best != null) {
+                checkpointUsed = best.seq();
+                // Consistency: checkpoint sha must equal stored event_hash at that seq.
+                String storedAtCheckpoint = null;
+                for (ChainEvent r : kept) {
+                    if (r.seq() == best.seq()) {
+                        storedAtCheckpoint = r.eventHash();
+                        break;
+                    }
+                }
+                if (storedAtCheckpoint == null || !storedAtCheckpoint.equals(best.sha())) {
+                    // Checkpoint/chain divergence: tamper, never silent success.
+                    long at = mismatch == null ? best.seq() : Math.min(mismatch, best.seq());
+                    return new ReplayResult(chain.inputSha(), outputSha, false, at, checkpointUsed);
+                }
+            }
+        }
+
+        boolean terminalOk = isTerminal(chain.state());
+        boolean match = mismatch == null && terminalOk;
+        Long mismatchSeq = mismatch != null ? mismatch : (terminalOk ? null : -1L);
+        return new ReplayResult(chain.inputSha(), outputSha, match, mismatchSeq, checkpointUsed);
     }
 
     /**
@@ -216,11 +268,11 @@ public class ReplayService {
      *
      * @return offending seq on first break, else null.
      */
-    static Long verifyChain(UUID jobId, List<ChainRow> chain) {
+    static Long verifyChain(UUID jobId, List<ChainEvent> chain) {
         String prev = AuditChain.GENESIS;
         long expectedSeq = -1;
         boolean first = true;
-        for (ChainRow row : chain) {
+        for (ChainEvent row : chain) {
             if (first) {
                 expectedSeq = row.seq();
                 // First row must start at 0 for an intact chain; a gap at the
@@ -249,9 +301,9 @@ public class ReplayService {
         return null;
     }
 
-    private static String lastArtifactSha(List<ChainRow> chain) {
+    private static String lastArtifactSha(List<ChainEvent> chain) {
         String last = "";
-        for (ChainRow row : chain) {
+        for (ChainEvent row : chain) {
             if (AuditChain.TYPE_CAS_PUT.equals(row.type()) && row.payload() != null) {
                 Object v = row.payload().get("artifact_sha");
                 if (v instanceof String s && s.matches("^[0-9a-f]{64}$")) {
@@ -277,36 +329,32 @@ public class ReplayService {
         }
     }
 
-    private static boolean isTerminal(String state) {
+    /** Whether a job state is final: {@code SUCCEEDED}, {@code FAILED} or {@code DEAD}. */
+    public static boolean isTerminal(String state) {
         return "SUCCEEDED".equals(state) || "FAILED".equals(state) || "DEAD".equals(state);
     }
 
     private record JobRef(UUID documentId, UUID versionId, String state) {
     }
 
-    private record Checkpoint(long seq, String sha) {
+    private static ChainEvent mapChainRow(java.sql.ResultSet rs) throws java.sql.SQLException {
+        return new ChainEvent(rs.getLong("seq"), rs.getString("prev_hash"), rs.getString("event_hash"),
+                rs.getString("type"), rs.getString("tenant_id"), (UUID) rs.getObject("job_id"),
+                parsePayload(rs.getString("payload")));
     }
 
-    private static ChainRow mapChainRow(java.sql.ResultSet rs) throws java.sql.SQLException {
-        UUID jobId = (UUID) rs.getObject("job_id");
-        String tenantId = rs.getString("tenant_id");
-        long seq = rs.getLong("seq");
-        String prevHash = rs.getString("prev_hash");
-        String eventHash = rs.getString("event_hash");
-        String type = rs.getString("type");
-        String payloadJson = rs.getString("payload");
-        if (payloadJson == null) {
-            payloadJson = "{}";
-        }
-        Map<String, Object> payload;
+    /**
+     * Parses a stored payload's JSON the one way replay does, so the canonical
+     * CBOR the hash covers is the same from the database and from an export.
+     */
+    public static Map<String, Object> parsePayload(String payloadJson) {
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> parsed = JSON.readValue(payloadJson, Map.class);
-            payload = parsed == null ? Map.of() : parsed;
+            Map<String, Object> parsed = JSON.readValue(payloadJson == null ? "{}" : payloadJson, Map.class);
+            return parsed == null ? Map.of() : parsed;
         } catch (Exception e) {
             throw new IllegalStateException("audit payload decode failed", e);
         }
-        return new ChainRow(seq, prevHash, eventHash, type, tenantId, jobId, payload);
     }
 
     private static String requireTenant(String tenantId) {
