@@ -50,12 +50,16 @@ import com.g1do.anvil.tenant.TenantGuard;
  * Heartbeat/reconciler-poll/outbox.sent_at are never logged, so dropping them
  * still recomputes the same output.</li>
  * <li>Checkpoints ({@code job_checkpoints}, every 100 per job, sha =
- * chain {@code event_hash} at {@code seq % 100 == 0}) are read for the
- * accelerated path. Every checkpoint must name an event of the chain and carry
- * that event's hash; the reply's {@code checkpointSeqUsed} is the latest one
- * that does. Full verification is still performed (same-sha guarantee);
- * prefix-skip is residual future work. {@code audit_events} stays append-only
- * with no deletes in v1.</li>
+ * chain {@code event_hash} at {@code seq % 100 == 0}) carry the prefix replay
+ * summary: the last artifact, the input root and the last commit. The replay
+ * path reads only the latest checkpoint and the events from its seq onward
+ * (issue #76), verifies that boundary event against the checkpoint sha, and
+ * still returns the full chain's {@code output_sha}. The prefix cannot be
+ * edited or removed in place because both tables are append-only; replay
+ * reports a consistent prefix rewrite at the boundary when its event hash no
+ * longer matches the stored checkpoint. {@code replayFull} remains the
+ * full-chain audit path. {@code audit_events} stays append-only with no
+ * deletes in v1.</li>
  * <li>Two steps (issue #75, record 0026): {@link #load} reads the
  * {@link JobChain} in the caller's tenant, and {@link #evaluate}, a pure
  * function, computes the result from it. The API, the CLI and the offline
@@ -110,16 +114,33 @@ public class ReplayService {
             Map<String, Object> payload) {
     }
 
-    /** One {@code job_checkpoints} row. */
-    public record Checkpoint(long seq, String sha) {
+    /**
+     * One {@code job_checkpoints} row. {@code sha} is the chain event hash at
+     * {@code seq}; the other fields are the V10 prefix replay summary, and are
+     * null for a checkpoint written before V10 or read from an export.
+     */
+    public record Checkpoint(
+            long seq,
+            String sha,
+            String artifactSha,
+            String inputSha,
+            Long commitSeq,
+            String commitOutcome) {
+
+        public Checkpoint(long seq, String sha) {
+            this(seq, sha, null, null, null, null);
+        }
     }
 
     /**
      * Everything a replay reads, and nothing else (issue #75): the job's
      * current state, its input root, its chain in {@code seq} order and its
-     * checkpoints. {@link #load} reads it from the database in the caller's
-     * tenant; {@code ChainExport} writes it to a file and reads it back, so the
-     * offline verifier evaluates exactly what the API would.
+     * checkpoints. {@link #load} reads the whole chain; {@link #loadForReplay}
+     * may read only from the latest checkpoint onward. {@code ChainExport}
+     * writes the whole chain to a file and reads it back, so the offline
+     * verifier evaluates exactly what a full replay would. {@code fromSeq} is
+     * the first event read: 0 for a full chain, the checkpoint seq for a
+     * prefix-skipped replay (issue #76).
      */
     public record JobChain(
             String tenantId,
@@ -127,19 +148,35 @@ public class ReplayService {
             String state,
             String inputSha,
             List<ChainEvent> events,
-            List<Checkpoint> checkpoints) {
+            List<Checkpoint> checkpoints,
+            long fromSeq) {
+
+        public JobChain(
+                String tenantId,
+                UUID jobId,
+                String state,
+                String inputSha,
+                List<ChainEvent> events,
+                List<Checkpoint> checkpoints) {
+            this(tenantId, jobId, state, inputSha, events, checkpoints, 0L);
+        }
 
         public JobChain {
             events = List.copyOf(events);
             checkpoints = List.copyOf(checkpoints);
+            if (fromSeq < 0) {
+                throw new IllegalArgumentException("fromSeq must be >= 0");
+            }
         }
     }
 
     /**
-     * Checkpoint-accelerated replay (reads checkpoints, verifies full chain).
+     * Replay from the latest V10 checkpoint without reading earlier events
+     * (issue #76), falling back to the full chain when no checkpoint summary
+     * exists.
      */
     public ReplayResult replay(String tenantId, UUID jobId) {
-        return evaluate(load(tenantId, jobId), true);
+        return evaluate(loadForReplay(tenantId, jobId), true);
     }
 
     /**
@@ -150,47 +187,72 @@ public class ReplayService {
     }
 
     /**
-     * Reads one job's chain in one transaction under the caller's tenant
+     * Reads one job's whole chain in one transaction under the caller's tenant
      * context ({@code WHERE tenant_id = ?} plus RLS plus the per-row re-check
-     * in {@link #scope}). Read-only.
+     * in {@link #scope}). Read-only; used by export and {@link #replayFull}.
      *
      * @throws ReplayNotFoundException when the job, its version or its chain is
      *         missing or belongs to another tenant (no oracle).
      */
     public JobChain load(String tenantId, UUID jobId) {
+        return load(tenantId, jobId, false);
+    }
+
+    /**
+     * Reads what the fast replay needs: the latest checkpoint and only the
+     * events from its seq onward (issue #76). If that checkpoint predates V10
+     * (no prefix summary columns), it returns the whole chain so replay falls
+     * back to full verification rather than guessing the prefix.
+     *
+     * @throws ReplayNotFoundException when the job, its version or its chain is
+     *         missing or belongs to another tenant (no oracle).
+     */
+    public JobChain loadForReplay(String tenantId, UUID jobId) {
+        return load(tenantId, jobId, true);
+    }
+
+    private JobChain load(String tenantId, UUID jobId, boolean fromCheckpoint) {
         String tenant = requireTenant(tenantId);
         requireJobId(jobId);
         return tx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
 
             // Job row: state + version link (tenant-scoped, RLS underneath).
-            List<JobRef> jobRefs = jdbc.query(
-                    "SELECT document_id, version_id, state FROM jobs WHERE tenant_id = ? AND id = ?",
-                    (rs, i) -> new JobRef(
-                            (UUID) rs.getObject("document_id"),
-                            (UUID) rs.getObject("version_id"),
-                            rs.getString("state")),
-                    tenant, jobId);
-            if (jobRefs.isEmpty()) {
-                throw new ReplayNotFoundException("not found");
-            }
-            JobRef job = jobRefs.get(0);
+            JobRef job = readJob(tenant, jobId);
 
             // Input root: document_versions.sha256 (canonical CBOR hash).
-            List<String> versionShas = jdbc.query(
-                    "SELECT sha256 FROM document_versions WHERE tenant_id = ? AND id = ?",
-                    (rs, i) -> rs.getString("sha256"),
-                    tenant, job.versionId());
-            if (versionShas.isEmpty()) {
-                throw new ReplayNotFoundException("not found");
+            String inputSha = readInputSha(tenant, job);
+
+            if (fromCheckpoint) {
+                // Checkpoints before events: a checkpoint is committed with the event
+                // it names, so every event it needs is visible to the read after it.
+                List<Checkpoint> latest = jdbc.query(
+                        "SELECT seq, sha, artifact_sha, input_sha, commit_seq, commit_outcome "
+                                + "FROM job_checkpoints WHERE tenant_id = ? AND job_id = ? "
+                                + "ORDER BY seq DESC LIMIT 1",
+                        (rs, i) -> mapCheckpointRow(rs),
+                        tenant, jobId);
+                if (!latest.isEmpty() && latest.get(0).inputSha() != null
+                        && latest.get(0).artifactSha() != null) {
+                    Checkpoint checkpoint = latest.get(0);
+                    List<ChainEvent> kept = scope(tenant, jobId, jdbc.query(
+                            "SELECT tenant_id, job_id, seq, prev_hash, event_hash, type, payload "
+                                    + "FROM audit_events WHERE tenant_id = ? AND job_id = ? AND seq >= ? ORDER BY seq",
+                            (rs, i) -> mapChainRow(rs),
+                            tenant, jobId, checkpoint.seq()));
+                    if (!kept.isEmpty()) {
+                        return new JobChain(tenant, jobId, job.state(), inputSha, kept,
+                                List.of(checkpoint), checkpoint.seq());
+                    }
+                    // The boundary event is missing; the full read reports the exact
+                    // checkpoint failure instead of a "not found".
+                }
             }
 
-            // Checkpoints before events: a checkpoint is committed with the event it
-            // names, so every event it needs is visible to the read after it. The other
-            // order could see a checkpoint whose event the chain read missed.
             List<Checkpoint> cps = jdbc.query(
-                    "SELECT seq, sha FROM job_checkpoints WHERE tenant_id = ? AND job_id = ? ORDER BY seq",
-                    (rs, i) -> new Checkpoint(rs.getLong("seq"), rs.getString("sha")),
+                    "SELECT seq, sha, artifact_sha, input_sha, commit_seq, commit_outcome "
+                            + "FROM job_checkpoints WHERE tenant_id = ? AND job_id = ? ORDER BY seq",
+                    (rs, i) -> mapCheckpointRow(rs),
                     tenant, jobId);
 
             // Chain ORDER BY seq, tenant- and job-scoped, then re-checked per row.
@@ -200,8 +262,33 @@ public class ReplayService {
                     (rs, i) -> mapChainRow(rs),
                     tenant, jobId));
 
-            return new JobChain(tenant, jobId, job.state(), versionShas.get(0), kept, cps);
+            return new JobChain(tenant, jobId, job.state(), inputSha, kept, cps);
         });
+    }
+
+    private JobRef readJob(String tenant, UUID jobId) {
+        List<JobRef> jobRefs = jdbc.query(
+                "SELECT document_id, version_id, state FROM jobs WHERE tenant_id = ? AND id = ?",
+                (rs, i) -> new JobRef(
+                        (UUID) rs.getObject("document_id"),
+                        (UUID) rs.getObject("version_id"),
+                        rs.getString("state")),
+                tenant, jobId);
+        if (jobRefs.isEmpty()) {
+            throw new ReplayNotFoundException("not found");
+        }
+        return jobRefs.get(0);
+    }
+
+    private String readInputSha(String tenant, JobRef job) {
+        List<String> versionShas = jdbc.query(
+                "SELECT sha256 FROM document_versions WHERE tenant_id = ? AND id = ?",
+                (rs, i) -> rs.getString("sha256"),
+                tenant, job.versionId());
+        if (versionShas.isEmpty()) {
+            throw new ReplayNotFoundException("not found");
+        }
+        return versionShas.get(0);
     }
 
     /**
@@ -239,31 +326,50 @@ public class ReplayService {
      * <li>the state must be terminal.</li>
      * </ol>
      * An intact chain with a non-terminal job has {@code mismatchSeq = -1}.
+     *
+     * <p>When {@code fromSeq > 0} (issue #76), the prefix is the checkpoint's
+     * trusted summary: only the events from {@code fromSeq} onward are checked,
+     * starting with the boundary event whose recomputed hash must equal the
+     * checkpoint's {@code sha}. The header comes from the checkpoint summary
+     * plus any commit in the suffix. The full-chain path, used by export and
+     * {@link #replayFull}, still checks every event and every checkpoint.
      */
     public static ReplayResult evaluate(JobChain chain, boolean useCheckpoint) {
         UUID jobId = chain.jobId();
         List<ChainEvent> kept = chain.events();
-        String outputSha = outputSha(jobId, chain.state(), lastArtifactSha(kept));
+        boolean prefixSkip = chain.fromSeq() > 0;
+        Checkpoint boundary = prefixSkip ? checkpointAt(chain, chain.fromSeq()) : null;
+        String outputSha = outputSha(jobId, chain.state(), lastArtifactSha(kept, boundary));
 
-        Failure first = verifyChain(jobId, kept);
+        Failure first;
         Long checkpointUsed = null;
-        if (useCheckpoint) {
-            Map<Long, String> hashAt = new HashMap<>();
-            for (ChainEvent e : kept) {
-                hashAt.putIfAbsent(e.seq(), e.eventHash());
+        if (prefixSkip) {
+            first = verifySuffix(jobId, kept, chain.fromSeq());
+            Failure checkpointFailure = verifyBoundary(boundary, kept, chain.fromSeq());
+            first = earlier(first, checkpointFailure);
+            if (checkpointFailure == null) {
+                checkpointUsed = boundary.seq();
             }
-            // Every checkpoint, not only the latest: a checkpoint that names no event
-            // of the chain is a cut tail or a forgery, and one that disagrees is a tamper.
-            for (Checkpoint cp : chain.checkpoints()) {
-                String stored = hashAt.get(cp.seq());
-                if (stored == null) {
-                    first = earlier(first, new Failure(cp.seq(),
-                            "the checkpoint at seq " + cp.seq() + " has no event in the chain"));
-                } else if (!stored.equals(cp.sha())) {
-                    first = earlier(first, new Failure(cp.seq(),
-                            "the checkpoint at seq " + cp.seq() + " does not match the chain"));
-                } else {
-                    checkpointUsed = checkpointUsed == null ? cp.seq() : Math.max(checkpointUsed, cp.seq());
+        } else {
+            first = verifyChain(jobId, kept);
+            if (useCheckpoint) {
+                Map<Long, String> hashAt = new HashMap<>();
+                for (ChainEvent e : kept) {
+                    hashAt.putIfAbsent(e.seq(), e.eventHash());
+                }
+                // Every checkpoint, not only the latest: a checkpoint that names no event
+                // of the chain is a cut tail or a forgery, and one that disagrees is a tamper.
+                for (Checkpoint cp : chain.checkpoints()) {
+                    String stored = hashAt.get(cp.seq());
+                    if (stored == null) {
+                        first = earlier(first, new Failure(cp.seq(),
+                                "the checkpoint at seq " + cp.seq() + " has no event in the chain"));
+                    } else if (!stored.equals(cp.sha())) {
+                        first = earlier(first, new Failure(cp.seq(),
+                                "the checkpoint at seq " + cp.seq() + " does not match the chain"));
+                    } else {
+                        checkpointUsed = checkpointUsed == null ? cp.seq() : Math.max(checkpointUsed, cp.seq());
+                    }
                 }
             }
         }
@@ -271,7 +377,7 @@ public class ReplayService {
             return new ReplayResult(chain.inputSha(), outputSha, false, first.seq(), checkpointUsed, first.problem());
         }
 
-        String header = bindHeader(chain);
+        String header = prefixSkip ? bindSkippedHeader(chain, boundary) : bindHeader(chain);
         if (header != null) {
             return new ReplayResult(chain.inputSha(), outputSha, false, null, checkpointUsed, header);
         }
@@ -280,6 +386,39 @@ public class ReplayService {
                     "the job is not terminal: " + chain.state());
         }
         return new ReplayResult(chain.inputSha(), outputSha, true, null, checkpointUsed, null);
+    }
+
+    /** The checkpoint that starts this prefix-skipped chain, or null when absent. */
+    private static Checkpoint checkpointAt(JobChain chain, long seq) {
+        for (Checkpoint cp : chain.checkpoints()) {
+            if (cp.seq() == seq) {
+                return cp;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The boundary event is the checkpoint's proof of the prefix: its stored
+     * hash must equal the checkpoint's {@code sha}. A consistent rewrite of an
+     * earlier event changes every hash through this one, so it fails here.
+     */
+    private static Failure verifyBoundary(Checkpoint checkpoint, List<ChainEvent> suffix, long fromSeq) {
+        if (checkpoint == null) {
+            return new Failure(fromSeq,
+                    "the checkpoint at seq " + fromSeq + " has no event in the chain");
+        }
+        for (ChainEvent event : suffix) {
+            if (event.seq() == checkpoint.seq()) {
+                if (!event.eventHash().equals(checkpoint.sha())) {
+                    return new Failure(checkpoint.seq(),
+                            "the checkpoint at seq " + checkpoint.seq() + " does not match the chain");
+                }
+                return null;
+            }
+        }
+        return new Failure(checkpoint.seq(),
+                "the checkpoint at seq " + checkpoint.seq() + " has no event in the chain");
     }
 
     /** A failure at a sequence number, and why. */
@@ -316,6 +455,40 @@ public class ReplayService {
                         CanonicalCbor.encodeMap(row.payload()));
             } catch (RuntimeException e) {
                 // A payload that can't be encoded is not the one the hash covers.
+                return new Failure(row.seq(), breaks(row.seq()));
+            }
+            if (!recomputed.equals(row.eventHash())) {
+                return new Failure(row.seq(), breaks(row.seq()));
+            }
+            prev = row.eventHash();
+        }
+        return null;
+    }
+
+    /**
+     * Verifies the suffix from a checkpoint: seqs run from {@code fromSeq}, each
+     * event links to the one before it (the first one's predecessor is part of
+     * the trusted prefix), and every {@code event_hash} recomputes.
+     */
+    private static Failure verifySuffix(UUID jobId, List<ChainEvent> chain, long fromSeq) {
+        if (chain.isEmpty()) {
+            return new Failure(fromSeq, breaks(fromSeq));
+        }
+        String prev = chain.get(0).prevHash();
+        long expected = fromSeq;
+        for (ChainEvent row : chain) {
+            if (row.seq() != expected) {
+                return new Failure(row.seq(), breaks(row.seq()));
+            }
+            if (expected != fromSeq && !prev.equals(row.prevHash())) {
+                return new Failure(row.seq(), breaks(row.seq()));
+            }
+            expected++;
+            String recomputed;
+            try {
+                recomputed = AuditChain.computeHash(row.type(), jobId, row.seq(), row.prevHash(),
+                        CanonicalCbor.encodeMap(row.payload()));
+            } catch (RuntimeException e) {
                 return new Failure(row.seq(), breaks(row.seq()));
             }
             if (!recomputed.equals(row.eventHash())) {
@@ -364,8 +537,42 @@ public class ReplayService {
         return null;
     }
 
-    private static String lastArtifactSha(List<ChainEvent> chain) {
-        String last = "";
+    /**
+     * Binds the unhashed header to the checkpoint summary when the submit and
+     * commit events are before the read boundary (issue #76). A commit in the
+     * suffix is the latest commit, so it wins over the summary.
+     */
+    private static String bindSkippedHeader(JobChain chain, Checkpoint checkpoint) {
+        if (checkpoint == null) {
+            return "no checkpoint records the input_sha";
+        }
+        if (checkpoint.inputSha() != null && !chain.inputSha().equals(checkpoint.inputSha())) {
+            return "input_sha does not match the checkpoint at seq " + checkpoint.seq();
+        }
+        ChainEvent lastCommit = null;
+        for (ChainEvent e : chain.events()) {
+            if (AuditChain.TYPE_COMMIT.equals(e.type())) {
+                lastCommit = e;
+            }
+        }
+        boolean terminal = isTerminal(chain.state());
+        if (lastCommit != null) {
+            if (!chain.state().equals(lastCommit.payload().get("outcome"))) {
+                return "state " + chain.state() + " does not match the commit event at seq " + lastCommit.seq();
+            }
+            return null;
+        }
+        if (checkpoint.commitSeq() == null) {
+            return terminal ? "state " + chain.state() + " has no commit event" : null;
+        }
+        if (!chain.state().equals(checkpoint.commitOutcome())) {
+            return "state " + chain.state() + " does not match the commit event at seq " + checkpoint.commitSeq();
+        }
+        return null;
+    }
+
+    private static String lastArtifactSha(List<ChainEvent> chain, Checkpoint checkpoint) {
+        String last = checkpoint == null || checkpoint.artifactSha() == null ? "" : checkpoint.artifactSha();
         for (ChainEvent row : chain) {
             if (AuditChain.TYPE_CAS_PUT.equals(row.type()) && row.payload() != null) {
                 Object v = row.payload().get("artifact_sha");
@@ -404,6 +611,13 @@ public class ReplayService {
         return new ChainEvent(rs.getLong("seq"), rs.getString("prev_hash"), rs.getString("event_hash"),
                 rs.getString("type"), rs.getString("tenant_id"), (UUID) rs.getObject("job_id"),
                 parsePayload(rs.getString("payload")));
+    }
+
+    private static Checkpoint mapCheckpointRow(java.sql.ResultSet rs) throws java.sql.SQLException {
+        long commitSeq = rs.getLong("commit_seq");
+        Long commit = rs.wasNull() ? null : commitSeq;
+        return new Checkpoint(rs.getLong("seq"), rs.getString("sha"), rs.getString("artifact_sha"),
+                rs.getString("input_sha"), commit, rs.getString("commit_outcome"));
     }
 
     /**
