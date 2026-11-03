@@ -655,12 +655,11 @@ class ReplayTest {
 
     @Test
     void theCommittedReplayLatencyReportDeclaresTheBound() throws Exception {
-        String result = Files.readString(Path.of("load/runs/replay-latency/result.json"));
-        Map<String, Object> measured = jsonMapper.readValue(result, Map.class);
-        assertThat(((Number) measured.get("chain_length")).intValue()).isEqualTo(DECLARED_CHAIN_LENGTH);
-        assertThat(((Number) measured.get("bound_ms")).intValue()).isEqualTo(LATENCY_BOUND_MS);
-        assertThat(((Number) measured.get("p99_ms")).longValue()).isLessThan(LATENCY_BOUND_MS);
-        assertThat(measured.get("postgres")).isEqualTo("postgres:18.6");
+        var measured = jsonMapper.readTree(Files.readString(Path.of("load/runs/replay-latency/result.json")));
+        assertThat(measured.path("chain_length").asInt()).isEqualTo(DECLARED_CHAIN_LENGTH);
+        assertThat(measured.path("bound_ms").asInt()).isEqualTo(LATENCY_BOUND_MS);
+        assertThat(measured.path("p99_ms").asLong()).isLessThan(LATENCY_BOUND_MS);
+        assertThat(measured.path("postgres").asText()).isEqualTo("postgres:18.6");
     }
 
     @Test
