@@ -5,7 +5,6 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
-import com.g1do.anvil.audit.AuditChain;
 import com.g1do.anvil.replay.ReplayService.ChainEvent;
 import com.g1do.anvil.replay.ReplayService.JobChain;
 import com.g1do.anvil.replay.ReplayService.ReplayNotFoundException;
@@ -16,19 +15,24 @@ import com.g1do.anvil.replay.ReplayService.ReplayResult;
  *
  * <p>It runs {@link ReplayService#evaluate}, the replay the API runs, on the
  * export, so an intact export of a job gives the API's {@code input_sha},
- * {@code output_sha} and {@code match}. Two further checks cover what the
- * hashes don't: the export's {@code input_sha} must be the {@code sha256} its
- * submit event recorded, and its {@code state} must be the outcome of its last
- * commit event (every terminal transition appends one), so editing either
- * can't turn a failed job into a match.
+ * {@code output_sha} and {@code match}, and a tampered one fails at the same
+ * sequence number. The header checks (the input root against the submit event,
+ * the state against the commit event) are in {@code evaluate} too, so the
+ * export and the database can't disagree about them.
  *
  * <p>Tenant scoping is the API's: the caller names a tenant and a job, an
  * export of another tenant's or another job's chain is "not found" exactly
  * like a missing one, and events of another tenant or job inside an export
  * are dropped before verification, as {@link ReplayService#scope} drops them
- * from the database. The export holds no secret that proves who wrote it, so
- * a chain rewritten whole, every hash recomputed, still verifies: compare
- * {@code head} with a value kept elsewhere to catch that.
+ * from the database.
+ *
+ * <p>What a verdict cannot show, because no hash in the export covers it
+ * (record 0026, threat model): the tenant label, so a file relabelled to
+ * another tenant verifies as that tenant; the checkpoints, so removing them
+ * removes the cross-check; and the events after the terminal commit, which
+ * can be cut without changing any hash the file checks. A chain rewritten
+ * whole, every hash recomputed, also still verifies. Compare {@code head} with
+ * a value kept elsewhere to catch that.
  */
 public final class OfflineVerifier {
 
@@ -71,51 +75,9 @@ public final class OfflineVerifier {
         JobChain chain = new JobChain(tenant, jobId, export.state(), export.inputSha(), kept, export.checkpoints());
 
         ReplayResult r = ReplayService.evaluate(chain, true);
+        // -1 means the chain is intact and the job is not terminal: no sequence number fails.
+        Long firstBad = r.mismatchSeq() != null && r.mismatchSeq() >= 0 ? r.mismatchSeq() : null;
         String head = kept.get(kept.size() - 1).eventHash();
-        if (r.mismatchSeq() != null && r.mismatchSeq() >= 0) {
-            Long chainBreak = ReplayService.verifyChain(jobId, kept);
-            String problem = r.mismatchSeq().equals(chainBreak)
-                    ? "the chain breaks at seq " + r.mismatchSeq()
-                    : "the checkpoint at seq " + r.mismatchSeq() + " does not match the chain";
-            return new Verdict(r.inputSha(), r.outputSha(), false, r.mismatchSeq(), problem, head);
-        }
-
-        String bound = bindHeader(chain);
-        if (bound != null) {
-            return new Verdict(r.inputSha(), r.outputSha(), false, null, bound, head);
-        }
-        if (!r.match()) {
-            return new Verdict(r.inputSha(), r.outputSha(), false, null,
-                    "the job is not terminal: " + export.state(), head);
-        }
-        return new Verdict(r.inputSha(), r.outputSha(), true, null, null, head);
-    }
-
-    /** The export's unhashed header against what its intact chain recorded, or {@code null} when they agree. */
-    private static String bindHeader(JobChain chain) {
-        ChainEvent submit = null;
-        ChainEvent lastCommit = null;
-        for (ChainEvent e : chain.events()) {
-            if (submit == null && AuditChain.TYPE_SUBMIT.equals(e.type())) {
-                submit = e;
-            }
-            if (AuditChain.TYPE_COMMIT.equals(e.type())) {
-                lastCommit = e;
-            }
-        }
-        if (submit == null) {
-            return "no submit event records the input_sha";
-        }
-        if (!chain.inputSha().equals(submit.payload().get("sha256"))) {
-            return "input_sha does not match the submit event at seq " + submit.seq();
-        }
-        boolean terminal = ReplayService.isTerminal(chain.state());
-        if (lastCommit == null) {
-            return terminal ? "state " + chain.state() + " has no commit event" : null;
-        }
-        if (!chain.state().equals(lastCommit.payload().get("outcome"))) {
-            return "state " + chain.state() + " does not match the commit event at seq " + lastCommit.seq();
-        }
-        return null;
+        return new Verdict(r.inputSha(), r.outputSha(), r.match(), firstBad, r.problem(), head);
     }
 }

@@ -3,6 +3,7 @@ package com.g1do.anvil.replay;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -50,17 +51,17 @@ import com.g1do.anvil.tenant.TenantGuard;
  * still recomputes the same output.</li>
  * <li>Checkpoints ({@code job_checkpoints}, every 100 per job, sha =
  * chain {@code event_hash} at {@code seq % 100 == 0}) are read for the
- * accelerated path: latest checkpoint {@code <= max_seq} is consistency-checked
- * ({@code sha == event_hash} at that seq) and its seq is returned as
- * {@code checkpointSeqUsed} (proof the path was taken). Full verification is
- * still performed (same-sha guarantee); prefix-skip is residual future work.
- * {@code audit_events} stays append-only with no deletes in v1.</li>
+ * accelerated path. Every checkpoint must name an event of the chain and carry
+ * that event's hash; the reply's {@code checkpointSeqUsed} is the latest one
+ * that does. Full verification is still performed (same-sha guarantee);
+ * prefix-skip is residual future work. {@code audit_events} stays append-only
+ * with no deletes in v1.</li>
  * <li>Two steps (issue #75, record 0026): {@link #load} reads the
  * {@link JobChain} in the caller's tenant, and {@link #evaluate}, a pure
  * function, computes the result from it. The API, the CLI and the offline
- * verifier all call {@code evaluate}, so they agree on the same chain. The
- * reported {@code mismatchSeq} is the earliest failure, a chain break or a
- * disagreeing checkpoint.</li>
+ * verifier all call {@code evaluate}, so they agree on the same chain, state
+ * and input root. {@code mismatchSeq} is the earliest failure at a sequence
+ * number: a chain break or a checkpoint that disagrees with the chain.</li>
  * </ul>
  */
 @Service
@@ -76,12 +77,19 @@ public class ReplayService {
         this.tx = new TransactionTemplate(txManager);
     }
 
+    /**
+     * The verdict. {@code mismatchSeq} is the earliest failing sequence number,
+     * {@code null} when no sequence number fails, or {@code -1} when the chain is
+     * intact but the job is not terminal. {@code problem} says why {@code match}
+     * is false, and is {@code null} when it is true.
+     */
     public record ReplayResult(
             String inputSha,
             String outputSha,
             boolean match,
             Long mismatchSeq,
-            Long checkpointSeqUsed) {
+            Long checkpointSeqUsed,
+            String problem) {
     }
 
     /** Thrown when the job/chain is missing or not owned (maps to 404, no oracle). */
@@ -177,6 +185,14 @@ public class ReplayService {
                 throw new ReplayNotFoundException("not found");
             }
 
+            // Checkpoints before events: a checkpoint is committed with the event it
+            // names, so every event it needs is visible to the read after it. The other
+            // order could see a checkpoint whose event the chain read missed.
+            List<Checkpoint> cps = jdbc.query(
+                    "SELECT seq, sha FROM job_checkpoints WHERE tenant_id = ? AND job_id = ? ORDER BY seq",
+                    (rs, i) -> new Checkpoint(rs.getLong("seq"), rs.getString("sha")),
+                    tenant, jobId);
+
             // Chain ORDER BY seq, tenant- and job-scoped, then re-checked per row.
             List<ChainEvent> kept = scope(tenant, jobId, jdbc.query(
                     "SELECT tenant_id, job_id, seq, prev_hash, event_hash, type, payload "
@@ -184,10 +200,6 @@ public class ReplayService {
                     (rs, i) -> mapChainRow(rs),
                     tenant, jobId));
 
-            List<Checkpoint> cps = jdbc.query(
-                    "SELECT seq, sha FROM job_checkpoints WHERE tenant_id = ? AND job_id = ? ORDER BY seq",
-                    (rs, i) -> new Checkpoint(rs.getLong("seq"), rs.getString("sha")),
-                    tenant, jobId);
             return new JobChain(tenant, jobId, job.state(), versionShas.get(0), kept, cps);
         });
     }
@@ -216,87 +228,138 @@ public class ReplayService {
      * API, the CLI and the offline verifier give the same answer for the same
      * chain. The chain must already be {@link #scope scoped} to its tenant and job.
      *
-     * <p>{@code mismatchSeq} is the first sequence number that fails: the
-     * earliest chain break, or the checkpoint that disagrees with the chain if
-     * it comes first. With an intact chain and a non-terminal job it is
-     * {@code -1}: no chain break, state not terminal.
+     * <p>Checks run in this order, and the first failure decides the verdict:
+     * <ol>
+     * <li>the chain: seq contiguity, prev linkage and every hash, and every
+     * checkpoint, each of which must name an event of the chain with its hash.
+     * {@code mismatchSeq} is the earliest failing seq of these;</li>
+     * <li>the header: {@code input_sha} must be the submit event's
+     * {@code sha256}, and a terminal {@code state} must be the outcome of the
+     * job's commit event, since the state and input root are not hashed;</li>
+     * <li>the state must be terminal.</li>
+     * </ol>
+     * An intact chain with a non-terminal job has {@code mismatchSeq = -1}.
      */
     public static ReplayResult evaluate(JobChain chain, boolean useCheckpoint) {
         UUID jobId = chain.jobId();
         List<ChainEvent> kept = chain.events();
         String outputSha = outputSha(jobId, chain.state(), lastArtifactSha(kept));
 
-        // Full hash-linkage verification.
-        Long mismatch = verifyChain(jobId, kept);
-
-        // Checkpoint path: latest checkpoint <= max_seq, consistency-checked.
+        Failure first = verifyChain(jobId, kept);
         Long checkpointUsed = null;
         if (useCheckpoint) {
-            long maxSeq = kept.get(kept.size() - 1).seq();
-            Checkpoint best = null;
-            for (Checkpoint cp : chain.checkpoints()) {
-                if (cp.seq() <= maxSeq && (best == null || cp.seq() > best.seq())) {
-                    best = cp;
-                }
+            Map<Long, String> hashAt = new HashMap<>();
+            for (ChainEvent e : kept) {
+                hashAt.putIfAbsent(e.seq(), e.eventHash());
             }
-            if (best != null) {
-                checkpointUsed = best.seq();
-                // Consistency: checkpoint sha must equal stored event_hash at that seq.
-                String storedAtCheckpoint = null;
-                for (ChainEvent r : kept) {
-                    if (r.seq() == best.seq()) {
-                        storedAtCheckpoint = r.eventHash();
-                        break;
-                    }
-                }
-                if (storedAtCheckpoint == null || !storedAtCheckpoint.equals(best.sha())) {
-                    // Checkpoint/chain divergence: tamper, never silent success.
-                    long at = mismatch == null ? best.seq() : Math.min(mismatch, best.seq());
-                    return new ReplayResult(chain.inputSha(), outputSha, false, at, checkpointUsed);
+            // Every checkpoint, not only the latest: a checkpoint that names no event
+            // of the chain is a cut tail or a forgery, and one that disagrees is a tamper.
+            for (Checkpoint cp : chain.checkpoints()) {
+                String stored = hashAt.get(cp.seq());
+                if (stored == null) {
+                    first = earlier(first, new Failure(cp.seq(),
+                            "the checkpoint at seq " + cp.seq() + " has no event in the chain"));
+                } else if (!stored.equals(cp.sha())) {
+                    first = earlier(first, new Failure(cp.seq(),
+                            "the checkpoint at seq " + cp.seq() + " does not match the chain"));
+                } else {
+                    checkpointUsed = checkpointUsed == null ? cp.seq() : Math.max(checkpointUsed, cp.seq());
                 }
             }
         }
+        if (first != null) {
+            return new ReplayResult(chain.inputSha(), outputSha, false, first.seq(), checkpointUsed, first.problem());
+        }
 
-        boolean terminalOk = isTerminal(chain.state());
-        boolean match = mismatch == null && terminalOk;
-        Long mismatchSeq = mismatch != null ? mismatch : (terminalOk ? null : -1L);
-        return new ReplayResult(chain.inputSha(), outputSha, match, mismatchSeq, checkpointUsed);
+        String header = bindHeader(chain);
+        if (header != null) {
+            return new ReplayResult(chain.inputSha(), outputSha, false, null, checkpointUsed, header);
+        }
+        if (!isTerminal(chain.state())) {
+            return new ReplayResult(chain.inputSha(), outputSha, false, -1L, checkpointUsed,
+                    "the job is not terminal: " + chain.state());
+        }
+        return new ReplayResult(chain.inputSha(), outputSha, true, null, checkpointUsed, null);
+    }
+
+    /** A failure at a sequence number, and why. */
+    private record Failure(long seq, String problem) {
+    }
+
+    private static Failure earlier(Failure a, Failure b) {
+        if (a == null) {
+            return b;
+        }
+        return b.seq() < a.seq() ? b : a;
     }
 
     /**
      * Verifies seq contiguity, prev linkage, and event_hash recomputation.
      *
-     * @return offending seq on first break, else null.
+     * @return the first break, or {@code null} when the chain is intact.
      */
-    static Long verifyChain(UUID jobId, List<ChainEvent> chain) {
+    private static Failure verifyChain(UUID jobId, List<ChainEvent> chain) {
         String prev = AuditChain.GENESIS;
-        long expectedSeq = -1;
-        boolean first = true;
+        long expected = 0;
         for (ChainEvent row : chain) {
-            if (first) {
-                expectedSeq = row.seq();
-                // First row must start at 0 for an intact chain; a gap at the
-                // start (e.g. dropped genesis) is a mismatch at that seq.
-                if (row.seq() != 0) {
-                    return row.seq();
-                }
-                first = false;
-            } else {
-                expectedSeq = expectedSeq + 1;
-                if (row.seq() != expectedSeq) {
-                    return row.seq();
-                }
+            // Seqs run 0, 1, 2, ... with no gap, so a missing event is found at the seq after it.
+            if (row.seq() != expected) {
+                return new Failure(row.seq(), breaks(row.seq()));
             }
+            expected++;
             if (!prev.equals(row.prevHash())) {
-                return row.seq();
+                return new Failure(row.seq(), breaks(row.seq()));
             }
-            byte[] canonical = CanonicalCbor.encodeMap(row.payload());
-            String recomputed = AuditChain.computeHash(
-                    row.type(), jobId, row.seq(), row.prevHash(), canonical);
+            String recomputed;
+            try {
+                recomputed = AuditChain.computeHash(row.type(), jobId, row.seq(), row.prevHash(),
+                        CanonicalCbor.encodeMap(row.payload()));
+            } catch (RuntimeException e) {
+                // A payload that can't be encoded is not the one the hash covers.
+                return new Failure(row.seq(), breaks(row.seq()));
+            }
             if (!recomputed.equals(row.eventHash())) {
-                return row.seq();
+                return new Failure(row.seq(), breaks(row.seq()));
             }
             prev = row.eventHash();
+        }
+        return null;
+    }
+
+    private static String breaks(long seq) {
+        return "the chain breaks at seq " + seq;
+    }
+
+    /**
+     * The state and input root are not hashed, so they are bound to the chain
+     * here: {@code input_sha} to the submit event, and a terminal state to the
+     * outcome of the commit event, which every terminal transition appends.
+     *
+     * @return why the header disagrees with the chain, or {@code null} when it agrees.
+     */
+    private static String bindHeader(JobChain chain) {
+        ChainEvent submit = null;
+        ChainEvent lastCommit = null;
+        for (ChainEvent e : chain.events()) {
+            if (submit == null && AuditChain.TYPE_SUBMIT.equals(e.type())) {
+                submit = e;
+            }
+            if (AuditChain.TYPE_COMMIT.equals(e.type())) {
+                lastCommit = e;
+            }
+        }
+        if (submit == null) {
+            return "no submit event records the input_sha";
+        }
+        if (!chain.inputSha().equals(submit.payload().get("sha256"))) {
+            return "input_sha does not match the submit event at seq " + submit.seq();
+        }
+        boolean terminal = isTerminal(chain.state());
+        if (lastCommit == null) {
+            return terminal ? "state " + chain.state() + " has no commit event" : null;
+        }
+        if (!chain.state().equals(lastCommit.payload().get("outcome"))) {
+            return "state " + chain.state() + " does not match the commit event at seq " + lastCommit.seq();
         }
         return null;
     }

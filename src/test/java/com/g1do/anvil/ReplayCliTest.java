@@ -1,18 +1,28 @@
 package com.g1do.anvil;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.PrintStream;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -37,10 +47,12 @@ import com.g1do.anvil.cli.AnvilCli;
 import com.g1do.anvil.jobs.CapGrant;
 import com.g1do.anvil.jobs.ClaimedJob;
 import com.g1do.anvil.jobs.JobService;
-import com.g1do.anvil.submit.CanonicalCbor;
+import com.g1do.anvil.replay.ChainExport;
+import com.g1do.anvil.replay.ReplayService;
 import com.g1do.anvil.submit.SubmitService;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 
 /**
@@ -53,10 +65,14 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * intact, a running, a tampered and a checkpointed job.</li>
  * <li>{@code anvil verify} checks an export with no database connection: an
  * intact export gives the API's result, and a tampered one reports the first
- * bad sequence number.</li>
+ * bad sequence number, with the checkpoints and header checked as the API
+ * checks them.</li>
  * <li>Both scope by tenant as the API does: another tenant's job is "not
  * found" exactly like a missing one, an unknown tenant is refused, and the CLI
- * reads as the runtime role under RLS, read-only.</li>
+ * reads as the runtime role under RLS, read-only, or refuses.</li>
+ * <li>Failures are never a verdict: a result that doesn't reach stdout, or an
+ * unexpected error, exits 6, and an error message shows no control characters
+ * or password.</li>
  * </ul>
  */
 @Import(TestcontainersConfiguration.class)
@@ -101,6 +117,12 @@ class ReplayCliTest {
         jdbc.update("INSERT INTO tenants (id) VALUES (?) ON CONFLICT DO NOTHING", B);
     }
 
+    /** Leaves no rows behind: job_checkpoints cannot be deleted, so later classes would fail on them. */
+    @AfterEach
+    void leaveNoRows() {
+        clean();
+    }
+
     // ---- replay: the API's result from the command line ----
 
     @Test
@@ -111,11 +133,8 @@ class ReplayCliTest {
         UUID longChain = longChain(A, 250);
 
         for (UUID job : new UUID[] { done, running, tampered, longChain }) {
-            MvcResult api = mvc.perform(get("/audit/replay").header("X-Tenant-Id", A).param("job_id", job.toString()))
-                    .andReturn();
-            assertThat(api.getResponse().getStatus()).isEqualTo(200);
-            String body = api.getResponse().getContentAsString();
-
+            String body = apiBody(A, job);
+            assertThat(json.readTree(body).get("match").asBoolean()).as("job %s", job).isEqualTo(job.equals(done));
             Run cli = cli("replay", "--tenant", A, "--job", job.toString());
             assertThat(cli.out().strip()).as("job %s", job).isEqualTo(body);
             assertThat(json.readTree(cli.out()).fieldNames()).toIterable()
@@ -177,6 +196,11 @@ class ReplayCliTest {
                         .as("no tenant context: RLS hides every row").isEqualTo("0");
                 assertThat(one(s, "SHOW default_transaction_read_only")).isEqualTo("on");
             }
+            assertThatThrownBy(() -> {
+                try (Statement s = c.createStatement()) {
+                    s.execute("INSERT INTO tenants (id) VALUES ('t_cli_refused')");
+                }
+            }).as("the session refuses a write").hasMessageContaining("read-only");
         }
         int events = jdbc.queryForObject("SELECT count(*) FROM audit_events", Integer.class);
         int checkpoints = jdbc.queryForObject("SELECT count(*) FROM job_checkpoints", Integer.class);
@@ -184,6 +208,78 @@ class ReplayCliTest {
         assertThat(cli("export", "--tenant", A, "--job", job.toString()).status()).isEqualTo(AnvilCli.MATCH);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_events", Integer.class)).isEqualTo(events);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM job_checkpoints", Integer.class)).isEqualTo(checkpoints);
+    }
+
+    @Test
+    void theCliConnectionIsReadOnlyAndUnderRlsBeforeItReadsAnything() throws Exception {
+        UUID job = succeeded(A, "session");
+        List<String> sql = new ArrayList<>();
+        Run r = run(() -> recording(connect(), sql), "replay", "--tenant", A, "--job", job.toString());
+        assertThat(r.status()).isEqualTo(AnvilCli.MATCH);
+        // Checked on the CLI's own connection, so deleting the restrict call fails this test.
+        assertThat(sql.get(0)).isEqualTo("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY");
+        int role = sql.indexOf("SET ROLE " + AnvilCli.RUNTIME_ROLE);
+        int firstRead = indexContaining(sql, "FROM tenants");
+        assertThat(role).as("the test login bypasses RLS, so the CLI drops to the runtime role").isPositive();
+        assertThat(role).isLessThan(firstRead);
+        assertThat(sql).as("no write").noneMatch(s -> s.trim().matches("(?is)(insert|update|delete).*"));
+    }
+
+    @Test
+    void aLoginThatBypassesRlsAndCannotBecomeTheRuntimeRoleIsRefused() throws Exception {
+        String role = "t_cli_bypass";
+        String password = UUID.randomUUID().toString();
+        jdbc.execute("DROP ROLE IF EXISTS " + role);
+        jdbc.execute("CREATE ROLE " + role + " LOGIN BYPASSRLS PASSWORD '" + password + "'");
+        try {
+            UUID job = succeeded(A, "bypass");
+            Run r = run(() -> AnvilCli.open(db.getJdbcUrl(), role, password),
+                    "replay", "--tenant", A, "--job", job.toString());
+            assertThat(r.status()).isEqualTo(AnvilCli.DATABASE);
+            assertThat(r.err()).contains("refusing to read");
+            assertThat(r.out()).isEmpty();
+        } finally {
+            jdbc.execute("DROP ROLE IF EXISTS " + role);
+        }
+    }
+
+    @Test
+    void aResultThatDoesNotReachStdoutIsAFailureNotAVerdict() throws Exception {
+        UUID job = succeeded(A, "stdout");
+        PrintStream broken = new PrintStream(new OutputStream() {
+            @Override
+            public void write(int b) throws IOException {
+                throw new IOException("disk full");
+            }
+        }, true, StandardCharsets.UTF_8);
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        PrintStream errStream = new PrintStream(err, true, StandardCharsets.UTF_8);
+
+        assertThat(new AnvilCli(this::connect, broken, errStream)
+                .run("replay", "--tenant", A, "--job", job.toString())).isEqualTo(AnvilCli.FAILURE);
+        assertThat(new AnvilCli(this::connect, broken, errStream)
+                .run("export", "--tenant", A, "--job", job.toString())).isEqualTo(AnvilCli.FAILURE);
+    }
+
+    @Test
+    void anUnexpectedFailureExitsSixNotOne() throws Exception {
+        UUID job = succeeded(A, "crash");
+        Run r = run(() -> {
+            throw new IllegalStateException("connection lost mid-read");
+        }, "replay", "--tenant", A, "--job", job.toString());
+        assertThat(r.status()).as("1 means no match, so a crash must not use it").isEqualTo(AnvilCli.FAILURE);
+        assertThat(r.out()).isEmpty();
+        assertThat(r.err()).startsWith("failed: unexpected java.lang.IllegalStateException");
+    }
+
+    @Test
+    void aPasswordTypedIntoTheUrlIsNotEchoedWhenTheConnectionFails() {
+        String secret = "s3cret-" + UUID.randomUUID();
+        String url = "jdbc:nosuchdriver://db.invalid/anvil?password=" + secret;
+        assertThatThrownBy(() -> AnvilCli.open(url, "anvil", secret))
+                .isInstanceOf(SQLException.class)
+                .hasMessageNotContaining(secret)
+                .hasMessageNotContaining("nosuchdriver");
     }
 
     // ---- verify: an export, with no database ----
@@ -260,18 +356,85 @@ class ReplayCliTest {
     void aCheckpointThatDisagreesWithTheChainIsReported() throws Exception {
         UUID job = longChain(A, 250);
         Path file = export(A, job);
-        Run r = tampered(file, job,
-                e -> ((ObjectNode) e.withArray("checkpoints").get(1)).put("sha", "e".repeat(64)));
+        Run r = tampered(file, job, e -> checkpoint(e, 200).put("sha", "e".repeat(64)));
         assertThat(r.status()).isEqualTo(AnvilCli.NO_MATCH);
         JsonNode out = json.readTree(r.out());
         assertThat(out.get("first_bad_seq").asLong()).isEqualTo(200);
         assertThat(out.get("problem").asText()).isEqualTo("the checkpoint at seq 200 does not match the chain");
         // A break before the checkpoint is still the first bad seq.
         Run both = tampered(file, job, e -> {
-            ((ObjectNode) e.withArray("checkpoints").get(1)).put("sha", "e".repeat(64));
+            checkpoint(e, 200).put("sha", "e".repeat(64));
             payload(e, 150).put("k", "x");
         });
         assertThat(json.readTree(both.out()).get("first_bad_seq").asLong()).isEqualTo(150);
+    }
+
+    @Test
+    void theEarliestBadCheckpointIsReportedNotTheLatest() throws Exception {
+        UUID job = longChain(A, 250);
+        Path file = export(A, job);
+        Run r = tampered(file, job, e -> {
+            checkpoint(e, 100).put("sha", "e".repeat(64));
+            checkpoint(e, 200).put("sha", "f".repeat(64));
+        });
+        JsonNode out = json.readTree(r.out());
+        assertThat(out.get("first_bad_seq").asLong()).isEqualTo(100);
+        assertThat(out.get("problem").asText()).isEqualTo("the checkpoint at seq 100 does not match the chain");
+    }
+
+    @Test
+    void aCorrectDuplicateCheckpointCannotHideAWrongOne() throws Exception {
+        UUID job = longChain(A, 250);
+        Path file = export(A, job);
+        Run r = tampered(file, job, e -> {
+            String right = event(e, 200).get("event_hash").asText();
+            checkpoint(e, 200).put("sha", "f".repeat(64));
+            e.withArray("checkpoints").addObject().put("seq", 200).put("sha", right);
+        });
+        assertThat(r.status()).isEqualTo(AnvilCli.NO_MATCH);
+        assertThat(json.readTree(r.out()).get("first_bad_seq").asLong()).isEqualTo(200);
+    }
+
+    @Test
+    void aCutTailIsReportedByTheCheckpointsThatRemain() throws Exception {
+        UUID job = longChain(A, 250);
+        Path file = export(A, job);
+        // Events 151 and later are cut, but the checkpoint at 200 still names one.
+        Run r = tampered(file, job, e -> keepEventsUpTo(e, 150));
+        assertThat(r.status()).isEqualTo(AnvilCli.NO_MATCH);
+        JsonNode out = json.readTree(r.out());
+        assertThat(out.get("first_bad_seq").asLong()).isEqualTo(200);
+        assertThat(out.get("problem").asText()).isEqualTo("the checkpoint at seq 200 has no event in the chain");
+    }
+
+    @Test
+    void aDatabaseEditToTheStateIsRefusedByReplayAndByAnExportAlike() throws Exception {
+        UUID job = running(A, "state-edit");
+        editInTheDatabase("UPDATE jobs SET state = 'SUCCEEDED' WHERE tenant_id = ? AND id = ?", A, job);
+
+        // The API and the CLI read the same state, and the header binding makes both refuse it.
+        String api = apiBody(A, job);
+        assertThat(json.readTree(api).get("match").asBoolean()).isFalse();
+        Run replay = cli("replay", "--tenant", A, "--job", job.toString());
+        assertThat(replay.out().strip()).isEqualTo(api);
+        assertThat(replay.status()).isEqualTo(AnvilCli.NO_MATCH);
+
+        Run v = verify(A, job, export(A, job));
+        assertThat(v.status()).isEqualTo(AnvilCli.NO_MATCH);
+        assertThat(json.readTree(v.out()).get("problem").asText()).isEqualTo("state SUCCEEDED has no commit event");
+    }
+
+    @Test
+    void aDatabaseTamperIsCaughtByReplayAndByAnExportAlike() throws Exception {
+        UUID job = tamperedInTheDatabase(A);
+        String api = apiBody(A, job);
+        assertThat(json.readTree(api).get("match").asBoolean()).isFalse();
+        assertThat(cli("replay", "--tenant", A, "--job", job.toString()).out().strip()).isEqualTo(api);
+
+        Run v = verify(A, job, export(A, job));
+        assertThat(v.status()).isEqualTo(AnvilCli.NO_MATCH);
+        assertThat(json.readTree(v.out()).get("first_bad_seq").asLong()).isEqualTo(1L);
+        assertThat(json.readTree(v.out()).get("problem").asText()).isEqualTo("the chain breaks at seq 1");
     }
 
     @Test
@@ -284,21 +447,39 @@ class ReplayCliTest {
         assertThat(absent.out()).isEmpty();
         assertThat(verify(B, job, file)).as("another tenant").isEqualTo(absent);
         assertThat(verify(A, UUID.randomUUID(), file)).as("another job").isEqualTo(absent);
-        // Relabelling the whole export to the caller's tenant leaves only foreign events: nothing to verify.
+        // Relabelling only the header leaves events of the first tenant: nothing to verify for the second.
         assertThat(tampered(file, job, e -> e.put("tenant_id", B), B)).isEqualTo(absent);
+    }
+
+    /** What no hash covers (record 0026): a whole export relabelled to another tenant verifies as it. */
+    @Test
+    void aWholeExportRelabelledToAnotherTenantVerifiesAsIt() throws Exception {
+        UUID job = succeeded(A, "relabel");
+        Path file = export(A, job);
+        String headBefore = json.readTree(verify(A, job, file).out()).get("head").asText();
+        Run relabelled = tampered(file, job, e -> {
+            e.put("tenant_id", B);
+            for (JsonNode event : events(e)) {
+                ((ObjectNode) event).put("tenant_id", B);
+            }
+        }, B);
+        assertThat(relabelled.status()).as("the tenant is not hashed, so the file verifies as B").isEqualTo(AnvilCli.MATCH);
+        assertThat(json.readTree(relabelled.out()).get("head").asText())
+                .as("the head is the same, so comparing it with a copy kept elsewhere is the check").isEqualTo(headBefore);
     }
 
     @Test
     void aMalformedExportIsRefusedWithoutAVerdict() throws Exception {
         UUID job = succeeded(A, "malformed");
         Path file = export(A, job);
-        for (Consumer<ObjectNode> bad : java.util.List.<Consumer<ObjectNode>>of(
+        for (Consumer<ObjectNode> bad : List.<Consumer<ObjectNode>>of(
                 e -> e.put("format", "anvil-chain/9"),
                 e -> e.put("extra", 1),
                 e -> e.remove("events"),
                 e -> event(e, 1).put("seq", "one"),
                 e -> event(e, 1).put("seq", -1),
                 e -> event(e, 1).put("payload", "{}"),
+                e -> e.withArray("checkpoints").addObject().put("seq", -1).put("sha", "a".repeat(64)),
                 e -> e.put("job_id", "not-a-uuid"))) {
             Run r = tampered(file, job, bad);
             assertThat(r.status()).isEqualTo(AnvilCli.USAGE);
@@ -312,6 +493,71 @@ class ReplayCliTest {
         assertThat(verify(A, job, notJson).status()).isEqualTo(AnvilCli.USAGE);
     }
 
+    /**
+     * A lone surrogate can't be hashed, so wherever it sits the export is malformed:
+     * not a verdict, and not a crash (the header state reached the hash encoder before).
+     */
+    @Test
+    void aLoneSurrogateAnywhereInAnExportIsMalformedNotAVerdictOrACrash() throws Exception {
+        UUID job = succeeded(A, "surrogate");
+        Path base = export(A, job);
+        for (Consumer<ObjectNode> place : List.<Consumer<ObjectNode>>of(
+                e -> e.put("state", "MARK"),
+                e -> e.put("input_sha", "MARK"),
+                e -> event(e, 1).put("type", "MARK"),
+                e -> event(e, 1).put("tenant_id", "MARK"),
+                e -> payload(e, 1).put("k", "MARK"))) {
+            ObjectNode export = (ObjectNode) json.readTree(base.toFile());
+            place.accept(export);
+            Path marked = tmp.resolve("marked.json");
+            json.writeValue(marked.toFile(), export);
+            // The escape as text, so the file holds an unpaired surrogate, as a hostile file would.
+            Path copy = tmp.resolve("surrogate.json");
+            Files.writeString(copy, Files.readString(marked).replace("\"MARK\"", "\"\\ud800\""));
+            Run r = verify(A, job, copy);
+            assertThat(r.status()).as(r.err()).isEqualTo(AnvilCli.USAGE);
+            assertThat(r.err()).startsWith("malformed export: ");
+        }
+    }
+
+    @Test
+    void aValueAfterTheExportIsMalformed() throws Exception {
+        UUID job = succeeded(A, "trailing");
+        Path file = export(A, job);
+        Path copy = tmp.resolve("trailing.json");
+        Files.writeString(copy, Files.readString(file) + "{}\n");
+        Run r = verify(A, job, copy);
+        assertThat(r.status()).isEqualTo(AnvilCli.USAGE);
+        assertThat(r.err()).isEqualTo("malformed export: export has content after its JSON object\n");
+    }
+
+    @Test
+    void anExportLargerThanTheCapIsRefusedBeforeItIsParsed() throws Exception {
+        UUID job = succeeded(A, "cap");
+        Path big = tmp.resolve("big.json");
+        Files.write(big, new byte[ChainExport.MAX_BYTES + 1]);
+        Run r = verify(A, job, big);
+        assertThat(r.status()).isEqualTo(AnvilCli.USAGE);
+        assertThat(r.err()).isEqualTo("malformed export: export is larger than " + ChainExport.MAX_BYTES + " bytes\n");
+    }
+
+    @Test
+    void anErrorMessageCannotDriveTheTerminal() throws Exception {
+        UUID job = succeeded(A, "terminal");
+        Path file = export(A, job);
+        Run r = tampered(file, job, e -> e.put("x\u001b[2J\u001b[31mfake", 1));
+        assertThat(r.status()).isEqualTo(AnvilCli.USAGE);
+        assertThat(r.err()).doesNotContain("\u001b");
+        assertThat(r.err()).contains("\\u001b");
+    }
+
+    @Test
+    void anExportIsCreatedOwnerOnly() throws Exception {
+        UUID job = succeeded(A, "perms");
+        Path file = export(A, job);
+        assertThat(Files.getPosixFilePermissions(file)).isEqualTo(PosixFilePermissions.fromString("rw-------"));
+    }
+
     @Test
     void exportNeverOverwritesAKeptFile() throws Exception {
         UUID job = succeeded(A, "overwrite");
@@ -320,6 +566,37 @@ class ReplayCliTest {
         Run again = cli("export", "--tenant", A, "--job", job.toString(), "--out", file.toString());
         assertThat(again.status()).isEqualTo(AnvilCli.USAGE);
         assertThat(Files.readAllBytes(file)).isEqualTo(kept);
+    }
+
+    @Test
+    void aFailedWriteLeavesNoPartialFileAndTheRetryWorks() throws Exception {
+        UUID job = succeeded(A, "partial");
+        ReplayService.JobChain good;
+        try (InputStream in = Files.newInputStream(export(A, job))) {
+            good = ChainExport.read(in);
+        }
+        // A payload that can't be encoded makes the write fail after the file exists.
+        ReplayService.ChainEvent bad = new ReplayService.ChainEvent(0, AuditChain.GENESIS, "a".repeat(64),
+                AuditChain.TYPE_SUBMIT, A, job, Map.of("x", new Object()));
+        ReplayService.JobChain broken = new ReplayService.JobChain(A, job, good.state(), good.inputSha(),
+                List.of(bad), List.of());
+        Path target = tmp.resolve("partial.json");
+        assertThatThrownBy(() -> AnvilCli.writeNewExport(target, broken)).isInstanceOf(RuntimeException.class);
+        assertThat(target).doesNotExist();
+        AnvilCli.writeNewExport(target, good);
+        try (InputStream in = Files.newInputStream(target)) {
+            assertThat(ChainExport.read(in).events()).hasSize(good.events().size());
+        }
+    }
+
+    /** What the verifier cannot reach (record 0026): the verifier's code names no database type. */
+    @Test
+    void theVerifierNamesNoDatabaseType() throws Exception {
+        for (String file : new String[] { "replay/OfflineVerifier.java", "replay/ChainExport.java" }) {
+            String source = Files.readString(Path.of("src/main/java/com/g1do/anvil", file));
+            assertThat(source).as(file).doesNotContain("java.sql", "javax.sql", "DriverManager", "DataSource",
+                    "JdbcTemplate");
+        }
     }
 
     // ---- helpers ----
@@ -350,6 +627,49 @@ class ReplayCliTest {
         return DriverManager.getConnection(db.getJdbcUrl(), db.getUsername(), db.getPassword());
     }
 
+    /** The connection, with every statement it runs recorded in order, so a test sees what the CLI did. */
+    private static Connection recording(Connection real, List<String> sql) {
+        return (Connection) Proxy.newProxyInstance(ReplayCliTest.class.getClassLoader(),
+                new Class<?>[] { Connection.class }, (proxy, m, args) -> {
+                    Object result = call(m, real, args);
+                    if (m.getName().equals("prepareStatement") && args != null) {
+                        sql.add((String) args[0]);
+                    }
+                    if (m.getName().equals("createStatement")) {
+                        return recordingStatement((Statement) result, sql);
+                    }
+                    return result;
+                });
+    }
+
+    private static Statement recordingStatement(Statement real, List<String> sql) {
+        return (Statement) Proxy.newProxyInstance(ReplayCliTest.class.getClassLoader(),
+                new Class<?>[] { Statement.class }, (proxy, m, args) -> {
+                    if (m.getName().startsWith("execute") && args != null && args.length > 0
+                            && args[0] instanceof String s) {
+                        sql.add(s);
+                    }
+                    return call(m, real, args);
+                });
+    }
+
+    private static Object call(Method m, Object target, Object[] args) throws Throwable {
+        try {
+            return m.invoke(target, args);
+        } catch (InvocationTargetException e) {
+            throw e.getCause();
+        }
+    }
+
+    private static int indexContaining(List<String> sql, String text) {
+        for (int i = 0; i < sql.size(); i++) {
+            if (sql.get(i).contains(text)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     private Path export(String tenant, UUID job) {
         Path file = tmp.resolve(job + ".json");
         Run r = cli("export", "--tenant", tenant, "--job", job.toString(), "--out", file.toString());
@@ -357,9 +677,15 @@ class ReplayCliTest {
         return file;
     }
 
+    private String apiBody(String tenant, UUID job) throws Exception {
+        MvcResult api = mvc.perform(get("/audit/replay").header("X-Tenant-Id", tenant)
+                .param("job_id", job.toString())).andReturn();
+        assertThat(api.getResponse().getStatus()).isEqualTo(200);
+        return api.getResponse().getContentAsString();
+    }
+
     private JsonNode apiReplay(String tenant, UUID job) throws Exception {
-        return json.readTree(mvc.perform(get("/audit/replay").header("X-Tenant-Id", tenant)
-                .param("job_id", job.toString())).andReturn().getResponse().getContentAsString());
+        return json.readTree(apiBody(tenant, job));
     }
 
     private Run tampered(Path file, UUID job, Consumer<ObjectNode> edit) throws Exception {
@@ -408,10 +734,46 @@ class ReplayCliTest {
         return (ObjectNode) event(export, seq).get("payload");
     }
 
+    /** The checkpoint at this seq. */
+    private static ObjectNode checkpoint(ObjectNode export, long seq) {
+        for (JsonNode c : export.withArray("checkpoints")) {
+            if (c.get("seq").asLong() == seq) {
+                return (ObjectNode) c;
+            }
+        }
+        throw new AssertionError("no checkpoint at seq " + seq);
+    }
+
+    private static void keepEventsUpTo(ObjectNode export, long maxSeq) {
+        ArrayNode events = events(export);
+        for (int i = events.size() - 1; i >= 0; i--) {
+            if (events.get(i).get("seq").asLong() > maxSeq) {
+                events.remove(i);
+            }
+        }
+    }
+
     private static String one(Statement s, String sql) throws SQLException {
         try (var rs = s.executeQuery(sql)) {
             rs.next();
             return rs.getString(1);
+        }
+    }
+
+    /**
+     * Edits the database as a superuser does, past the immutability triggers,
+     * which only a superuser can skip. For tests of what a replay detects.
+     */
+    private void editInTheDatabase(String sql, Object... args) throws SQLException {
+        try (Connection c = connect();
+                Statement s = c.createStatement()) {
+            s.execute("SET session_replication_role = replica");
+            try (var ps = c.prepareStatement(sql)) {
+                for (int i = 0; i < args.length; i++) {
+                    ps.setObject(i + 1, args[i]);
+                }
+                assertThat(ps.executeUpdate()).isEqualTo(1);
+            }
         }
     }
 
@@ -438,15 +800,11 @@ class ReplayCliTest {
         return job;
     }
 
-    /** A submitted job whose seq 1 carries a hash for a payload other than the one stored. */
+    /** A succeeded job whose claim event (seq 1) was rewritten in the database, so its hash no longer holds. */
     private UUID tamperedInTheDatabase(String tenant) throws Exception {
-        UUID job = submits.submit(tenant, "cli-tamper-" + UUID.randomUUID(), "T", "text/plain", "t-body").jobId();
-        String x0 = jdbc.queryForObject("SELECT event_hash FROM audit_events WHERE job_id = ? AND seq = 0",
-                String.class, job);
-        String hash = AuditChain.computeHash("claim", job, 1L, x0, CanonicalCbor.encodeMap(Map.of("state", "RUNNING")));
-        jdbc.update("INSERT INTO audit_events (tenant_id, job_id, seq, prev_hash, event_hash, type, payload) "
-                + "VALUES (?, ?, 1, ?, ?, 'claim', ?::jsonb)", tenant, job, x0, hash,
-                json.writeValueAsString(Map.of("state", "RUNNINH")));
+        UUID job = succeeded(tenant, "tamper-" + UUID.randomUUID());
+        editInTheDatabase("UPDATE audit_events SET payload = ?::jsonb WHERE job_id = ? AND seq = 1",
+                json.writeValueAsString(Map.of("state", "RUNNINH")), job);
         return job;
     }
 

@@ -190,9 +190,11 @@ class RlsLeakTest {
                 "INSERT INTO cap_grants (tenant_id, job_id, epoch, revoked, expires_at) "
                         + "VALUES (?, ?, 1, FALSE, clock_timestamp() + INTERVAL '1 hour')",
                 tenant, job);
-        // The chain head comes from the production helper. The checkpoint row is
+        // The chain head comes from the production helper, with the submit payload
+        // production writes (the replay binds input_sha to it). The checkpoint row is
         // seeded directly; production writes one only every 100 events.
-        String head = AuditChain.append(jdbc, tenant, job, AuditChain.TYPE_SUBMIT, Map.of());
+        String head = AuditChain.append(jdbc, tenant, job, AuditChain.TYPE_SUBMIT,
+                Map.of("doc_id", doc.toString(), "version_id", ver.toString(), "sha256", sha));
         jdbc.update(
                 "INSERT INTO job_checkpoints (tenant_id, job_id, seq, sha) VALUES (?, ?, 0, ?)",
                 tenant, job, head);

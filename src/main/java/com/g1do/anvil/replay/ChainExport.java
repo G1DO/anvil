@@ -46,8 +46,12 @@ public final class ChainExport {
     /** The format name; a later format gets a new one. */
     public static final String FORMAT = "anvil-chain/1";
 
-    /** The largest export read, so a hostile file can't exhaust memory. */
-    public static final int MAX_BYTES = 64 * 1024 * 1024;
+    /**
+     * The largest export read. Measured (record 0026): a worst-case 8 MiB file
+     * loads in a 64 MiB heap, while a 63 MiB one needs 256 to 512 MiB, so the cap
+     * bounds the verifier's memory. A job's chain is tens of events, far under it.
+     */
+    public static final int MAX_BYTES = 8 * 1024 * 1024;
 
     private static final ObjectMapper JSON = JsonMapper.builder()
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
@@ -125,6 +129,7 @@ public final class ChainExport {
         if (root == null || !root.isObject()) {
             throw new MalformedExportException("export is not a JSON object");
         }
+        requireWellFormed(root, "export");
         fields(root, TOP, "export");
         String format = text(root, "format", "export");
         if (!FORMAT.equals(format)) {
@@ -147,8 +152,7 @@ public final class ChainExport {
             }
             events.add(new ChainEvent(seq(n, where), text(n, "prev_hash", where), text(n, "event_hash", where),
                     text(n, "type", where), text(n, "tenant_id", where), uuid(n, "job_id", where),
-                    // The same parse replay applies to a stored payload, so the hashed CBOR matches.
-                    ReplayService.parsePayload(JSON.writeValueAsString(payload))));
+                    payloadOf(payload, where)));
         }
 
         List<Checkpoint> checkpoints = new ArrayList<>();
@@ -163,6 +167,53 @@ public final class ChainExport {
         }
         return new JobChain(tenant, jobId, text(root, "state", "export"), text(root, "input_sha", "export"),
                 events, checkpoints);
+    }
+
+    /**
+     * Every string in the export is Unicode text. A lone surrogate can't be
+     * encoded into the hashed bytes, so it is a malformed file, never a verdict
+     * or a crash.
+     */
+    private static void requireWellFormed(JsonNode n, String where) {
+        if (n.isTextual()) {
+            if (!wellFormed(n.asText())) {
+                throw new MalformedExportException(where + " holds a lone surrogate, which is not Unicode text");
+            }
+        } else if (n.isObject()) {
+            for (Map.Entry<String, JsonNode> f : n.properties()) {
+                requireWellFormed(f.getValue(), where + "." + f.getKey());
+            }
+        } else if (n.isArray()) {
+            int i = 0;
+            for (JsonNode c : n) {
+                requireWellFormed(c, where + "[" + i++ + "]");
+            }
+        }
+    }
+
+    /** Whether every surrogate in the string is paired, which is what makes it Unicode text. */
+    static boolean wellFormed(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (Character.isHighSurrogate(c) && i + 1 < s.length() && Character.isLowSurrogate(s.charAt(i + 1))) {
+                i++;
+            } else if (Character.isSurrogate(c)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * The same parse replay applies to a stored payload, so the hashed CBOR
+     * matches. A payload that can't be read back is a malformed file, not a crash.
+     */
+    private static Map<String, Object> payloadOf(JsonNode payload, String where) {
+        try {
+            return ReplayService.parsePayload(JSON.writeValueAsString(payload));
+        } catch (IOException | RuntimeException e) {
+            throw new MalformedExportException(where + ".payload cannot be read: " + e.getMessage());
+        }
     }
 
     /** Every field present, and none other. */

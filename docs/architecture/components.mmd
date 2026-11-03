@@ -29,7 +29,7 @@ flowchart TB
         exportCmd["export<br/>never overwrites a file"]
         verifyCmd["verify<br/>no database connection"]
         restrict["read-only session<br/>RLS-bypassing login becomes anvil_app<br/>tenant must exist"]
-        chainExport["ChainExport anvil-chain/1<br/>strict parse, 64 MiB cap"]
+        chainExport["ChainExport anvil-chain/1<br/>strict parse, 8 MiB cap, no lone surrogates"]
         offline["OfflineVerifier<br/>seq order, tenant scope, evaluate<br/>input_sha and state bound to the chain<br/>first bad seq"]
     end
     exportFile["Exported chain file"]

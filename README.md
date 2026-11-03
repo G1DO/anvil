@@ -35,7 +35,7 @@ Each guarantee links to the tests that prove it. All tests run against real Post
    - `GET /audit/replay` returns `{input_sha, output_sha, match: true}` for an intact chain. A corrupted, dropped or re-linked event gives a mismatch. Checkpoint replay gives the same result: [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java).
    - **Without the running API.** Why: [record 0026](docs/decisions/0026-replay-cli-and-offline-verifier.md).
      - `anvil replay` reads the database directly and prints the API's result for the same job, byte for byte.
-     - `anvil verify` checks an exported chain with no database connection. It gives the API's result for an intact export, and on a tampered one it reports the first bad sequence number. Editing the export's job state or input can't turn the verdict.
+     - `anvil verify` checks an exported chain with no database connection. It gives the API's result for an intact export, and on a tampered one it reports the first bad sequence number. Editing the export's job state or input root can't turn the verdict, because both are checked against the chain. A file can't prove which tenant it belongs to, or that nothing after the terminal commit was cut, and a chain rewritten whole still verifies. Compare `head` with a value kept elsewhere (record 0026).
      - Both scope by tenant as the API does: another tenant's job is `not found`, like a missing one. The CLI reads as the runtime role under row-level security, read-only.
      - Proven by [`ReplayCliTest`](src/test/java/com/g1do/anvil/ReplayCliTest.java).
 4. **Fencing holds under real faults.**
@@ -117,9 +117,9 @@ task eval:full    # eval gate on the full set (EVAL_CANDIDATE, default the commi
 task eval:nightly # what the nightly workflow runs: the full set against the live model, then its gate
 task load:gin     # measure the full-text index against record 0025's budget
 task load:steady  # 140 extraction requests per second for 5 minutes (also load:flood; load:soak needs a within-budget GIN verdict)
-task audit:replay -- --tenant T --job J               # replay a job from the database, without the API
-task audit:export -- --tenant T --job J --out F.json  # write the job's chain to a file (never overwrites)
-task audit:verify -- --tenant T --job J F.json        # verify that file with no database
+task -x audit:replay -- --tenant T --job J               # replay a job from the database, without the API
+task -x audit:export -- --tenant T --job J --out F.json  # write the job's chain to a file (never overwrites)
+task -x audit:verify -- --tenant T --job J F.json        # verify that file with no database
 ```
 
 The load runs start the app with a stub model that has the live model's recorded latency, containerized Postgres and k6 on this host. They need Docker and write to `load/runs/`. A committed run is never overwritten. The soak refuses to run until `task load:gin` says the budget is met, which it doesn't today (record 0025). `LOAD_OUT=<dir>` and arguments after `--`, such as `PRE_VUS=300`, write a run elsewhere with changed k6 settings.
@@ -127,9 +127,10 @@ The load runs start the app with a stub model that has the live model's recorded
 A failed fault run writes its seed, trace and rerun command to `target/fault-runs/`.
 
 The replay CLI (`AnvilCli`, record 0026) starts no Spring context, so it runs nothing but the command.
-- `replay` and `export` connect with `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`, the variables the service reads. The session is read-only, and a login that bypasses row-level security is switched to `anvil_app` first.
+- `replay` and `export` connect with `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`, the variables the service reads. The session is read-only, and a login that bypasses row-level security is switched to `anvil_app` first, or refused if it can't be.
 - `replay` prints `{input_sha, output_sha, match}`. `verify` adds `first_bad_seq`, `problem` and `head`, the last event's hash. Compare `head` with one you kept, because a chain rewritten whole with every hash recomputed still verifies.
-- Exit statuses: 0 match, 1 no match, 2 usage or malformed input, 3 not found, 4 unknown tenant, 5 database error. A replay without a match exits 1, so `task` reports it as failed.
+- Exit statuses: 0 match, 1 no match, 2 usage or malformed input, 3 not found, 4 unknown tenant, 5 database error, 6 failure (the output could not be written, or an unexpected error; never 1).
+- Run them with `task -x`. Without `-x`, `task` replaces any non-zero status with 201, so the status above is lost.
 - In the deployed image: `docker compose exec app java -cp app.jar -Dloader.main=com.g1do.anvil.cli.AnvilCli org.springframework.boot.loader.launch.PropertiesLauncher replay --tenant T --job J`.
 
 To run the stack the way it's deployed:

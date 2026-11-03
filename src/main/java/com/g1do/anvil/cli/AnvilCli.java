@@ -4,9 +4,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -15,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
@@ -43,16 +46,18 @@ import tools.jackson.databind.json.JsonMapper;
  * {@code SPRING_DATASOURCE_PASSWORD}, the variables the service reads. The
  * session is read-only, and a login that bypasses row-level security (a
  * superuser or {@code BYPASSRLS}) is dropped to {@code anvil_app} first, so
- * RLS always applies. The tenant must exist, as {@code TenantAuthFilter}
- * requires; then {@link ReplayService} reads the chain in that tenant's
- * context, so another tenant's job is "not found" exactly like a missing one.
- * {@code verify} opens no connection at all.
+ * RLS always applies; a login that cannot be dropped is refused. The tenant
+ * must exist, as {@code TenantAuthFilter} requires; then {@link ReplayService}
+ * reads the chain in that tenant's context, so another tenant's job is "not
+ * found" exactly like a missing one. {@code verify} is given no database at all.
  *
  * <p>{@code replay} and {@code verify} print one JSON line on stdout, and
  * {@code export} without {@code --out} prints the export; errors go to
- * stderr. Exit status:
+ * stderr, with control characters shown escaped. Exit status:
  * {@code 0} match, {@code 1} no match, {@code 2} usage or malformed input,
- * {@code 3} not found, {@code 4} unknown tenant, {@code 5} database error.
+ * {@code 3} not found, {@code 4} unknown tenant, {@code 5} database error,
+ * {@code 6} failure: the output could not be written, or an unexpected error
+ * occurred. A crash is never {@code 1}, which means a verdict of no match.
  */
 public final class AnvilCli {
 
@@ -62,6 +67,7 @@ public final class AnvilCli {
     public static final int NOT_FOUND = 3;
     public static final int UNKNOWN_TENANT = 4;
     public static final int DATABASE = 5;
+    public static final int FAILURE = 6;
 
     /** The runtime role a login that bypasses RLS is dropped to. */
     public static final String RUNTIME_ROLE = "anvil_app";
@@ -115,22 +121,26 @@ public final class AnvilCli {
             };
         } catch (ReplayNotFoundException e) {
             // The API's 404: the same words for a missing job and another tenant's.
-            err.println("not found");
+            complain("not found");
             return NOT_FOUND;
         } catch (UnknownTenantException e) {
-            err.println("unknown tenant");
+            complain("unknown tenant");
             return UNKNOWN_TENANT;
         } catch (IllegalArgumentException e) {
             return usage(e.getMessage());
         } catch (ChainExport.MalformedExportException e) {
-            err.println("malformed export: " + e.getMessage());
+            complain("malformed export: " + e.getMessage());
             return USAGE;
         } catch (IOException e) {
-            err.println("i/o error: " + e.getMessage());
+            complain("i/o error: " + e.getMessage());
             return USAGE;
-        } catch (SQLException | org.springframework.dao.DataAccessException e) {
-            err.println("database error: " + e.getMessage());
+        } catch (SQLException | DataAccessException e) {
+            complain("database error: " + e.getMessage());
             return DATABASE;
+        } catch (RuntimeException | OutOfMemoryError e) {
+            // Not a verdict. Only a verdict may exit 1, so a crash can't look like no match.
+            complain("failed: unexpected " + e.getClass().getName());
+            return FAILURE;
         }
     }
 
@@ -142,22 +152,31 @@ public final class AnvilCli {
         ReplayResult r = withDatabase(a.tenant(), svc -> svc.replay(a.tenant(), a.job()));
         // The API's response body: the same record, the same mapper.
         out.println(JSON.writeValueAsString(new ReplayDto(r.inputSha(), r.outputSha(), r.match())));
-        return r.match() ? MATCH : NO_MATCH;
+        return printed(r.match() ? MATCH : NO_MATCH);
     }
 
-    private int export(Args a) throws SQLException, IOException {
+    private int export(Args a) throws SQLException {
         a.noFile();
         ReplayService.JobChain chain = withDatabase(a.tenant(), svc -> svc.load(a.tenant(), a.job()));
         if (a.out() == null) {
-            ChainExport.write(chain, out);
-        } else {
-            // CREATE_NEW: never overwrite an export already kept.
-            try (OutputStream f = Files.newOutputStream(Path.of(a.out()), StandardOpenOption.CREATE_NEW,
-                    StandardOpenOption.WRITE)) {
-                ChainExport.write(chain, f);
+            try {
+                ChainExport.write(chain, out);
+            } catch (IOException e) {
+                complain("could not write the export: " + e.getMessage());
+                return FAILURE;
             }
-            err.println("exported " + chain.events().size() + " events to " + a.out());
+            return printed(MATCH);
         }
+        try {
+            writeNewExport(Path.of(a.out()), chain);
+        } catch (FileAlreadyExistsException e) {
+            complain("refusing to overwrite " + a.out());
+            return USAGE;
+        } catch (IOException e) {
+            complain("could not write " + a.out() + ": " + e.getMessage());
+            return FAILURE;
+        }
+        complain("exported " + chain.events().size() + " events to " + a.out());
         return MATCH;
     }
 
@@ -173,15 +192,51 @@ public final class AnvilCli {
             export = ChainExport.read(in);
         }
         OfflineVerifier.Verdict v = OfflineVerifier.verify(export, a.tenant(), a.job());
+        // The fields hold text from the file, so it is escaped as the terminal output is.
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("input_sha", v.inputSha());
-        body.put("output_sha", v.outputSha());
+        body.put("input_sha", printable(v.inputSha()));
+        body.put("output_sha", printable(v.outputSha()));
         body.put("match", v.match());
         body.put("first_bad_seq", v.firstBadSeq());
-        body.put("problem", v.problem());
-        body.put("head", v.head());
+        body.put("problem", printable(v.problem()));
+        body.put("head", printable(v.head()));
         out.println(JSON.writeValueAsString(body));
-        return v.match() ? MATCH : NO_MATCH;
+        return printed(v.match() ? MATCH : NO_MATCH);
+    }
+
+    /**
+     * Writes one export to a new file, owner-only. An existing file, a symlink
+     * included, is never overwritten, and a write that fails removes what it
+     * made, so a retry isn't blocked by a partial file.
+     *
+     * @throws FileAlreadyExistsException when the path already exists
+     */
+    public static void writeNewExport(Path path, ReplayService.JobChain chain) throws IOException {
+        createNew(path);
+        try (OutputStream f = Files.newOutputStream(path, StandardOpenOption.WRITE)) {
+            ChainExport.write(chain, f);
+        } catch (IOException | RuntimeException e) {
+            try {
+                Files.deleteIfExists(path);
+            } catch (IOException cleanup) {
+                e.addSuppressed(cleanup);
+            }
+            throw e;
+        }
+    }
+
+    private static void createNew(Path path) throws IOException {
+        try {
+            Files.createFile(path, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+        } catch (UnsupportedOperationException notPosix) {
+            Files.createFile(path);
+        }
+    }
+
+    /** The status, unless the output did not reach stdout: a result that was not printed is not a success. */
+    private int printed(int status) {
+        out.flush();
+        return out.checkError() ? FAILURE : status;
     }
 
     private interface Read<T> {
@@ -204,13 +259,18 @@ public final class AnvilCli {
 
     /**
      * Makes the session read-only and subject to RLS: a login that bypasses it
-     * becomes {@link #RUNTIME_ROLE}, and the CLI refuses if it still would.
+     * becomes {@link #RUNTIME_ROLE}, and the CLI refuses if it can't become it.
      */
     public static void restrict(Connection c) throws SQLException {
         try (Statement s = c.createStatement()) {
             s.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY");
             if (bypassesRls(s)) {
-                s.execute("SET ROLE " + RUNTIME_ROLE);
+                try {
+                    s.execute("SET ROLE " + RUNTIME_ROLE);
+                } catch (SQLException e) {
+                    throw new SQLException("the database role bypasses row-level security and cannot become "
+                            + RUNTIME_ROLE + "; refusing to read", e);
+                }
             }
             if (bypassesRls(s)) {
                 throw new SQLException("the database role bypasses row-level security; refusing to read");
@@ -230,12 +290,57 @@ public final class AnvilCli {
         if (url == null || url.isBlank()) {
             throw new SQLException("SPRING_DATASOURCE_URL is not set");
         }
-        return DriverManager.getConnection(url, System.getenv("SPRING_DATASOURCE_USERNAME"),
-                System.getenv("SPRING_DATASOURCE_PASSWORD"));
+        return open(url, System.getenv("SPRING_DATASOURCE_USERNAME"), System.getenv("SPRING_DATASOURCE_PASSWORD"));
+    }
+
+    /**
+     * Opens a connection. A driver's failure message can name the URL, and a URL
+     * can carry a password, so the message the caller sees has neither.
+     */
+    public static Connection open(String url, String user, String password) throws SQLException {
+        try {
+            return DriverManager.getConnection(url, user, password);
+        } catch (SQLException e) {
+            throw new SQLException(redact(e.getMessage(), url, password), e.getSQLState());
+        }
+    }
+
+    static String redact(String message, String url, String password) {
+        String text = message == null ? "connection failed" : message;
+        if (url != null && !url.isEmpty()) {
+            text = text.replace(url, "<SPRING_DATASOURCE_URL>");
+        }
+        if (password != null && !password.isEmpty()) {
+            text = text.replace(password, "***");
+        }
+        return text.replaceAll("(?i)password=[^&;\\s]*", "password=***");
+    }
+
+    /**
+     * Text from an export or the command line may hold control characters, which
+     * a terminal would act on, so they are shown escaped. Returns {@code null} for {@code null}.
+     */
+    static String printable(String s) {
+        if (s == null) {
+            return null;
+        }
+        StringBuilder b = new StringBuilder(s.length());
+        for (char c : s.toCharArray()) {
+            if (Character.isISOControl(c) || Character.isSurrogate(c) || c == ' ' || c == ' ') {
+                b.append(String.format("\\u%04x", (int) c));
+            } else {
+                b.append(c);
+            }
+        }
+        return b.toString();
+    }
+
+    private void complain(String message) {
+        err.println(printable(message));
     }
 
     private int usage(String why) {
-        err.println(why);
+        complain(why == null ? "invalid arguments" : why);
         err.print(USAGE_TEXT);
         return USAGE;
     }
