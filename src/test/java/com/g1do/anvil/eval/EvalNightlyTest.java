@@ -48,7 +48,9 @@ class EvalNightlyTest {
         Map<String, Object> step = map(withKey.get(0));
         assertThat(step.get("run")).isEqualTo("task eval:nightly");
         assertThat(map(step.get("env"))).containsExactly(
-                Map.entry("ANVIL_MODEL_API_KEY", "${{ secrets.ANVIL_MODEL_API_KEY }}"));
+                Map.entry("ANVIL_MODEL_API_KEY", "${{ secrets.ANVIL_GO_API_KEY }}"),
+                Map.entry("ANVIL_MODEL_BASE_URL", "https://opencode.ai/inference/go/openai/v1"),
+                Map.entry("ANVIL_MODEL", "deepseek-v4.1-flash"));
         assertThat(steps).anySatisfy(s -> assertThat(String.valueOf(map(s).get("uses")))
                 .startsWith("actions/upload-artifact@"));
 
@@ -58,7 +60,7 @@ class EvalNightlyTest {
                 .contains("task: eval:extract").contains("EVAL_SET: eval/sets/full-v1")
                 .contains("task: eval:full").contains("EVAL_CANDIDATE: target/eval/nightly/predictions.jsonl")
                 .as("held to the committed live run, not only the baseline")
-                .contains("EVAL_REFERENCE: eval/runs/extract-v1-deepseek-flash-full-v1/predictions.jsonl");
+                .contains("EVAL_REFERENCE: eval/runs/extract-v1-deepseek-v4.1-flash-full-v1/predictions.jsonl");
         assertThat(task("eval:full")).contains("{{if .REFERENCE}}\"{{.REFERENCE}}\"{{end}}");
         assertThat(task("eval:full")).contains("com.g1do.anvil.eval.EvalGate eval/sets/full-v1");
     }

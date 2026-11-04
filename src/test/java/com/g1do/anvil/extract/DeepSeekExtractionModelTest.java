@@ -89,6 +89,7 @@ class DeepSeekExtractionModelTest {
         Sent s = t.sent.getFirst();
         assertThat(s.uri()).hasToString(BASE + "/chat/completions");
         assertThat(s.headers()).containsEntry("Authorization", "Bearer " + KEY);
+        assertThat(s.headers()).doesNotContainKey("x-opencode-session");
         assertThat(s.body()).doesNotContain(KEY);
         JsonNode body = JSON.readTree(s.body());
         assertThat(body.path("model").asText()).isEqualTo("deepseek-flash");
@@ -104,6 +105,42 @@ class DeepSeekExtractionModelTest {
         assertThat(body.path("stream").asBoolean()).isFalse();
         // JSON mode needs the word and an example of the shape in the prompt.
         assertThat(Prompt.SYSTEM).contains("json").contains("{\"facts\": [{\"field\"");
+    }
+
+    @Test
+    void openCodeGoRequestsCarryARandomSessionHeaderPerCall() throws Exception {
+        Scripted t = new Scripted()
+                .then(200, choice("{\"facts\":[]}", "stop"))
+                .then(200, choice("{\"facts\":[]}", "stop"));
+        DeepSeekExtractionModel go = new DeepSeekExtractionModel(
+                new DeepSeekExtractionModel.Settings("https://opencode.ai/inference/go/openai/v1",
+                        "deepseek-v4.1-flash", KEY, Duration.ofSeconds(5), 4096, 0),
+                t, waits::add);
+        Extractor extractor = new Extractor(go);
+        extractor.extract("Acme Ltd paid on 3 March 2024.", "text/plain");
+        extractor.extract("Beta Ltd paid on 4 March 2024.", "text/plain");
+
+        assertThat(t.sent).hasSize(2);
+        assertThat(t.sent.getFirst().uri())
+                .hasToString("https://opencode.ai/inference/go/openai/v1/chat/completions");
+        assertThat(t.sent).allSatisfy(s -> assertThat(s.headers()).containsKey("x-opencode-session"));
+        assertThat(t.sent.get(0).headers().get("x-opencode-session")).isNotBlank()
+                .isNotEqualTo(t.sent.get(1).headers().get("x-opencode-session"));
+    }
+
+    @Test
+    void openCodeGoRetriesReuseTheSameSessionHeader() throws Exception {
+        Scripted t = new Scripted().then(503, "{}").then(200, choice("{\"facts\":[]}", "stop"));
+        DeepSeekExtractionModel go = new DeepSeekExtractionModel(
+                new DeepSeekExtractionModel.Settings("https://opencode.ai/inference/go/openai/v1",
+                        "deepseek-v4.1-flash", KEY, Duration.ofSeconds(5), 4096, 1),
+                t, waits::add);
+
+        go.complete(BoundedText.of("Doc."));
+
+        assertThat(t.sent).hasSize(2);
+        assertThat(t.sent.get(0).headers().get("x-opencode-session"))
+                .isEqualTo(t.sent.get(1).headers().get("x-opencode-session"));
     }
 
     @Test
@@ -132,6 +169,14 @@ class DeepSeekExtractionModelTest {
                 "usage", Map.of("prompt_tokens", 700, "completion_tokens", 120, "total_tokens", 820,
                         "prompt_cache_hit_tokens", 640, "prompt_cache_miss_tokens", 60)));
         assertThat(DeepSeekExtractionModel.reply(body).usage())
+                .isEqualTo(new ModelReply.Usage(640, 60, 120));
+
+        // OpenCode Go answers with OpenAI's shape: prompt_tokens_details.cached_tokens.
+        String openAi = JSON.writeValueAsString(Map.of("choices", List.of(Map.of("index", 0,
+                "message", Map.of("role", "assistant", "content", "{\"facts\":[]}"), "finish_reason", "stop")),
+                "usage", Map.of("prompt_tokens", 700, "completion_tokens", 120, "total_tokens", 820,
+                        "prompt_tokens_details", Map.of("cached_tokens", 640))));
+        assertThat(DeepSeekExtractionModel.reply(openAi).usage())
                 .isEqualTo(new ModelReply.Usage(640, 60, 120));
 
         // No usage, a missing field, a non-integer or a negative count: no usage rather than a guess.

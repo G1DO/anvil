@@ -121,7 +121,7 @@ tasks:
       - java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.eval.EvalGate eval/sets/full-v1 "{{.CANDIDATE}}" "{{.REPORT}}" {{if .REFERENCE}}"{{.REFERENCE}}"{{end}}
 
   eval:nightly:
-    desc: "Nightly live eval (#79): the extraction path over eval/sets/full-v1 with the live model, then the full-set gate on its predictions, against the baseline and against the committed live run, so a drift below either fails. Needs ANVIL_MODEL_API_KEY; fails without it. Writes run, predictions and report to target/eval/nightly/"
+    desc: "Nightly live eval (#79): the extraction path over eval/sets/full-v1 with the live model, then the full-set gate on its predictions, against the baseline and against the committed live run, so a drift below either fails. Needs a model key in ANVIL_MODEL_API_KEY (the workflow passes the ANVIL_GO_API_KEY secret); fails without one. Writes run, predictions and report to target/eval/nightly/"
     cmds:
       - |
         set -a; [ -f .env ] && . ./.env; set +a
@@ -136,7 +136,7 @@ tasks:
         vars:
           EVAL_CANDIDATE: target/eval/nightly/predictions.jsonl
           EVAL_REPORT: target/eval/nightly/report.md
-          EVAL_REFERENCE: eval/runs/extract-v1-deepseek-flash-full-v1/predictions.jsonl
+          EVAL_REFERENCE: eval/runs/extract-v1-deepseek-v4.1-flash-full-v1/predictions.jsonl
 
   eval:issue:
     desc: "File a failed nightly live eval with its report and run summary from target/eval/nightly: a new issue, or a comment on the one still open; needs GH_TOKEN with issues: write and RUN_URL"

@@ -16,6 +16,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
@@ -38,7 +39,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  *
  * <p>Each call is one stateless request: a system message, one user message
  * holding the bounded document, JSON output mode, thinking off and
- * temperature 0. No conversation or tenant identifier is sent. The reply is
+ * temperature 0. No tenant identifier is sent. For OpenCode Go, each call also
+ * carries a random session id in {@code x-opencode-session}, as that API
+ * requires; it is not derived from the tenant or document. The reply is
  * untrusted: the whole exchange, body included, must finish within the
  * timeout, and a body over {@link #MAX_REPLY_BYTES} is cut off and refused.
  *
@@ -84,6 +87,7 @@ public final class DeepSeekExtractionModel implements ExtractionModel {
     private final URI endpoint;
     private final Transport transport;
     private final Sleeper sleeper;
+    private final boolean openCodeGo;
 
     public DeepSeekExtractionModel(Settings settings) {
         this(settings, httpTransport(settings.timeout()), d -> Thread.sleep(d.toMillis()));
@@ -99,6 +103,7 @@ public final class DeepSeekExtractionModel implements ExtractionModel {
         }
         this.settings = settings;
         this.endpoint = URI.create(settings.baseUrl().replaceAll("/+$", "") + "/chat/completions");
+        this.openCodeGo = base.getHost().equals("opencode.ai") || base.getHost().endsWith(".opencode.ai");
         this.transport = transport;
         this.sleeper = sleeper;
     }
@@ -114,10 +119,13 @@ public final class DeepSeekExtractionModel implements ExtractionModel {
             throw new ModelUnavailableException("no model credential is configured");
         }
         String body = requestBody(document);
-        Map<String, String> headers = Map.of(
-                "Authorization", "Bearer " + settings.apiKey().strip(),
-                "Content-Type", "application/json",
-                "User-Agent", "anvil-extract/1.0");
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Authorization", "Bearer " + settings.apiKey().strip());
+        headers.put("Content-Type", "application/json");
+        headers.put("User-Agent", "anvil-extract/1.0");
+        if (openCodeGo) {
+            headers.put("x-opencode-session", UUID.randomUUID().toString());
+        }
         for (int attempt = 0;; attempt++) {
             Response r;
             try {
@@ -189,20 +197,30 @@ public final class DeepSeekExtractionModel implements ExtractionModel {
     }
 
     /**
-     * The billed tokens: {@code prompt_cache_hit_tokens},
-     * {@code prompt_cache_miss_tokens} and {@code completion_tokens}. Null when
-     * any is missing or not a non-negative integer, so a cost is never made up.
+     * The billed tokens, from DeepSeek's {@code prompt_cache_hit_tokens},
+     * {@code prompt_cache_miss_tokens} and {@code completion_tokens}, or from
+     * OpenAI's {@code prompt_tokens_details.cached_tokens},
+     * {@code prompt_tokens} and {@code completion_tokens}. Null when any is
+     * missing or not a non-negative integer, so a cost is never made up.
      */
     static ModelReply.Usage usage(JsonNode u) {
         JsonNode hit = u.path("prompt_cache_hit_tokens");
         JsonNode miss = u.path("prompt_cache_miss_tokens");
         JsonNode out = u.path("completion_tokens");
-        if (!hit.canConvertToLong() || !miss.canConvertToLong() || !out.canConvertToLong()
-                || !hit.isIntegralNumber() || !miss.isIntegralNumber() || !out.isIntegralNumber()
-                || hit.asLong() < 0 || miss.asLong() < 0 || out.asLong() < 0) {
-            return null;
+        if (integral(hit) && integral(miss) && integral(out)) {
+            return new ModelReply.Usage(hit.asLong(), miss.asLong(), out.asLong());
         }
-        return new ModelReply.Usage(hit.asLong(), miss.asLong(), out.asLong());
+        JsonNode prompt = u.path("prompt_tokens");
+        JsonNode cached = u.path("prompt_tokens_details").path("cached_tokens");
+        long cachedTokens = cached.isMissingNode() ? 0 : integral(cached) ? cached.asLong() : -1;
+        if (integral(prompt) && cachedTokens >= 0 && cachedTokens <= prompt.asLong() && integral(out)) {
+            return new ModelReply.Usage(cachedTokens, prompt.asLong() - cachedTokens, out.asLong());
+        }
+        return null;
+    }
+
+    private static boolean integral(JsonNode n) {
+        return n.isIntegralNumber() && n.asLong() >= 0;
     }
 
     /** The server's {@code Retry-After} seconds when given, else 2, 4, 8 … seconds; at most a minute. */

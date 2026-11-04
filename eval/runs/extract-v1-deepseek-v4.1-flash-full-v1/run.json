@@ -1,0 +1,35 @@
+{
+  "set" : "full-v1",
+  "set_frozen_commit" : "0adc2581811a6bbc6507c9997fb98a2ab67261fe",
+  "model" : "deepseek-v4.1-flash",
+  "prompt_version" : "extract-v1",
+  "prompt_sha256" : "eb0203b6e59929eee15423253492b6f5ab2557b8eeac806cabad59bbf1572149",
+  "max_chars" : 500,
+  "started_at" : "2026-11-04T06:02:56Z",
+  "duration_s" : 1300,
+  "documents" : 732,
+  "model_calls" : 732,
+  "truncated" : 0,
+  "quality_facts_indexed" : 3377,
+  "documents_quarantined" : 0,
+  "quarantined_by_reason" : {
+    "CITATION_NOT_IN_SOURCE" : 1,
+    "VALUE_NOT_IN_CITATION" : 1
+  },
+  "latency_ms" : {
+    "p50" : 1635,
+    "p95" : 2574,
+    "max" : 11910
+  },
+  "usage" : {
+    "calls_reporting_usage" : 732,
+    "input_cache_hit_tokens" : 202368,
+    "input_cache_miss_tokens" : 153725,
+    "output_tokens" : 102705
+  },
+  "injection" : {
+    "cases" : 72,
+    "succeeded" : 0,
+    "succeeded_ids" : [ ]
+  }
+}
