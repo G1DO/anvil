@@ -94,6 +94,9 @@ public class OutboxRelay {
      * Single relay pass across all tenants: iterates {@code tenants} and relays
      * each in its own tenant transaction.
      *
+     * <p>A publish that throws holds back that tenant's batch only. The other
+     * tenants still get their pass, and the first failure is then rethrown.
+     *
      * @return the number of events marked sent in this pass (progress
      *         advanced); {@code 0} when no unsent row was available.
      */
@@ -101,10 +104,22 @@ public class OutboxRelay {
         if (publisher == null) {
             throw new IllegalArgumentException("publisher must not be null");
         }
-        List<String> tenants = jdbc.query("SELECT id FROM tenants", (rs, i) -> rs.getString("id"));
+        List<String> tenants = jdbc.query("SELECT id FROM tenants ORDER BY id", (rs, i) -> rs.getString("id"));
         int total = 0;
+        RuntimeException failure = null;
         for (String tenant : tenants) {
-            total += relayOnce(publisher, tenant);
+            try {
+                total += relayOnce(publisher, tenant);
+            } catch (RuntimeException e) {
+                if (failure == null) {
+                    failure = e;
+                } else if (e != failure) {
+                    failure.addSuppressed(e);
+                }
+            }
+        }
+        if (failure != null) {
+            throw failure;
         }
         return total;
     }

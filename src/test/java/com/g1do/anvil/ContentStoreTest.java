@@ -68,6 +68,7 @@ class ContentStoreTest {
 
     private void backdateArtifact(String tenant, String sha, String interval) {
         jdbc.update("UPDATE artifacts SET created_at = clock_timestamp() - INTERVAL '" + interval
+                + "', updated_at = clock_timestamp() - INTERVAL '" + interval
                 + "' WHERE tenant_id = ? AND sha256 = ?", tenant, sha);
     }
 
@@ -428,6 +429,36 @@ class ContentStoreTest {
         assertThat(gc.bytesReclaimed()).isGreaterThan(0L);
     }
 
+    /** An old row written again, or released just now, gets a fresh grace: a writer may still be about to use it. */
+    @Test
+    void graceRunsFromTheLastWriteNotTheRowsAge() throws Exception {
+        byte[] rewritten = "re-put".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        String rewrittenSha = store.put("t_single", rewritten);
+        backdateArtifact("t_single", rewrittenSha, "2 hours");
+        store.put("t_single", rewritten);
+
+        byte[] released = "released".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        String releasedSha = store.put("t_single", released);
+        store.acquire("t_single", releasedSha, released.length);
+        backdateArtifact("t_single", releasedSha, "2 hours");
+        store.release("t_single", releasedSha);
+
+        GcResult gc = store.collectGarbage();
+
+        assertThat(gc.filesDeleted()).isEqualTo(0);
+        assertThat(store.get("t_single", rewrittenSha)).isEqualTo(rewritten);
+        assertThat(store.get("t_single", releasedSha)).isEqualTo(released);
+    }
+
+    @Test
+    void acquireRefusesAnAddressWithNoFileAndWritesNoRow() throws Exception {
+        String sha = "a".repeat(64);
+
+        assertThatThrownBy(() -> store.acquire("t_single", sha, 1L)).isInstanceOf(IllegalStateException.class);
+
+        assertThat(artifactRows("t_single", sha)).isZero();
+    }
+
     @Test
     void graceProtectsYoungUnreferencedRows() throws Exception {
         byte[] bytes = "young-orphan".getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -476,6 +507,8 @@ class ContentStoreTest {
 
         assertThat(store.release("t_single", sha)).isTrue();
         assertThat(refcountOf("t_single", sha)).isEqualTo(1);
+        // Past grace again, because a release is a write: only the reference retains it now.
+        backdateArtifact("t_single", sha, "2 hours");
         assertThat(store.collectGarbage().rowsDeleted()).isEqualTo(0);
 
         assertThat(store.release("t_single", sha)).isTrue();
@@ -483,6 +516,7 @@ class ContentStoreTest {
         // Release below zero is a no-op.
         assertThat(store.release("t_single", sha)).isFalse();
 
+        backdateArtifact("t_single", sha, "2 hours");
         GcResult gc = store.collectGarbage();
         assertThat(gc.rowsDeleted()).isEqualTo(1);
         assertThat(Files.exists(store.pathFor("t_single", sha))).isFalse();

@@ -75,6 +75,9 @@ public final class JailEgress {
     /** Max response body bytes {@link #fetch} keeps; beyond this it truncates. */
     public static final int MAX_RESPONSE_BYTES = 1024 * 1024;
 
+    /** All response headers together; each line is also capped by {@code readLine}. */
+    static final int MAX_HEADER_BYTES = 64 * 1024;
+
     /** Resolves a host name at connect time. */
     @FunctionalInterface
     public interface Resolver {
@@ -279,7 +282,12 @@ public final class JailEgress {
                 throw new IOException("malformed response");
             }
             Map<String, List<String>> headers = new LinkedHashMap<>();
+            int headerBytes = 0;
             for (String line = readLine(in); !line.isEmpty(); line = readLine(in)) {
+                headerBytes += line.length();
+                if (headerBytes > MAX_HEADER_BYTES) {
+                    throw new IOException("response headers too large");
+                }
                 int colon = line.indexOf(':');
                 if (colon > 0) {
                     headers.computeIfAbsent(line.substring(0, colon).trim().toLowerCase(Locale.ROOT),
@@ -568,6 +576,9 @@ public final class JailEgress {
                 }
             }
             truncated = copy(in, body, limit);
+            if (limit != Long.MAX_VALUE && !truncated && body.size() < limit) {
+                throw new IOException("response ended before its content-length");
+            }
         }
         return new Response(code, headers, body.toByteArray(), truncated);
     }

@@ -5,6 +5,7 @@ import java.io.File;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -25,6 +26,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import com.g1do.anvil.outbox.IdempotentConsumer;
@@ -109,6 +111,36 @@ class OutboxRelayTest {
                 applyCount.incrementAndGet();
             }
         }
+    }
+
+    /** A failing publish holds back that tenant's event, and only that tenant's. */
+    @Test
+    void oneTenantsFailingPublishDoesNotStallTheOthers() {
+        for (String tenant : List.of("t_relay_a", "t_relay_b", "t_relay_c")) {
+            jdbc.update("INSERT INTO tenants (id) VALUES (?) ON CONFLICT DO NOTHING", tenant);
+            submitService.submit(tenant, "stall-" + tenant, "Title", "text/plain", "body-" + tenant);
+        }
+        OutboxPublisher failsForB = (event, headers) -> {
+            if (event.tenantId().equals("t_relay_b")) {
+                throw new IllegalStateException("broker refused t_relay_b");
+            }
+        };
+
+        assertThatThrownBy(() -> relay.relayOnce(failsForB))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("t_relay_b");
+
+        Map<String, Boolean> sent = new HashMap<>();
+        jdbc.query("SELECT tenant_id, sent_at IS NOT NULL AS sent FROM outbox WHERE tenant_id LIKE 't_relay_%'",
+                (RowCallbackHandler) rs -> sent.put(rs.getString(1), rs.getBoolean(2)));
+        assertThat(sent).containsOnly(Map.entry("t_relay_a", true), Map.entry("t_relay_b", false),
+                Map.entry("t_relay_c", true));
+
+        // A publisher that throws one shared instance for every tenant must still report it.
+        IllegalStateException shared = new IllegalStateException("broker is down");
+        assertThatThrownBy(() -> relay.relayOnce((event, headers) -> {
+            throw shared;
+        })).isSameAs(shared);
     }
 
     @Test
