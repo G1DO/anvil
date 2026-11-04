@@ -6,6 +6,7 @@ sequenceDiagram
     participant U as AuditChain
     participant W as Worker JobService
     participant S as ContentStore
+    Note over C,S: Submit runs in the app. Claim and commit are library code proven by tests: the running app starts no worker yet.
     C->>A: POST documents with tenant and idempotency key
     A->>D: validate tenant and fields plus encode CBOR
     A->>D: fast-path findExisting by tenant and key

@@ -15,7 +15,7 @@ Mermaid diagrams, one file each. `task check:diagrams` renders them all in the g
 | [deployment.mmd](deployment.mmd) | Where each container runs: one Compose host with the app image and PostgreSQL |
 | `data-model.mmd` | Tables and relationships, generated from the dev database by `task diagrams`; not committed |
 
-The API service, the operator console and the CLI are what runs today. The workers (claim, heartbeat, commit, relay, reconcile), the content store and the exec jail exist and are tested through their Java APIs, but the app starts no worker loop and has no route to them, so a submitted job stays `QUEUED`. The diagrams show those links dashed.
+The API service, the operator console and the CLI are what runs today. The workers (claim, heartbeat, commit, relay, reconcile), the content store and the exec jail exist and are tested through their Java APIs, but the app starts no worker loop and has no route to them, so a submitted job stays `QUEUED`. The diagrams show the links into them dashed, and the flow diagrams that include them carry a note.
 
 ## Numbers and Constraints
 
@@ -35,7 +35,7 @@ No recovery-time or data-loss target is committed; the restore drill measures th
 The SQL in `src/main/resources/db/migration/` is the schema. These are the rules the SQL alone doesn't make obvious.
 
 - **Enforced by the application, not the database:**
-  - Audit hash linkage: event 0 links to `GENESIS`, every later event to the previous `event_hash`, with `seq` running from 0 without gaps. This lives in `AuditChain.append`, and replay reports a gap as a mismatch. The database only rejects a duplicate `(job_id, seq)` or `(job_id, prev_hash)`.
+  - Audit hash linkage: event 0 links to `GENESIS`, every later event to the previous `event_hash`, with `seq` running from 0 without gaps. This lives in `AuditChain.append`, and a full replay or the offline verifier reports a gap as a mismatch. The API's fast path checks only from the latest checkpoint onward (record 0027). The database only rejects a duplicate `(job_id, seq)` or `(job_id, prev_hash)`.
   - The capability check (current epoch, not revoked, not expired). It runs in `JobService`, in the commit's transaction, with `SELECT ... FOR UPDATE` and the database clock.
   - The content store's write order (temp write → fsync → rename → row). It lives in `ContentStore`.
 - **Checkpoints:** one `job_checkpoints` row every 100 events per job (`seq % 100 == 0`, `seq > 0`). Its `sha` is the chain's `event_hash` at that boundary, not the job's `output_sha`. It's written in the same transaction as the audited effect. V10 adds the prefix replay summary (`artifact_sha`, `input_sha`, `commit_seq`/`commit_outcome`), so replay reads the latest checkpoint and the events after it rather than the whole prefix (record 0027).

@@ -73,9 +73,9 @@ Each guarantee links to the tests that prove it. Tests that touch the database r
 
 Not yet guaranteed:
 
-- **Jobs don't run in the service.** The claim, commit, relay, reconcile, content-store and jail code exists and is tested through its Java APIs, but the running app starts no worker loop and exposes no route to it. A submitted job stays `QUEUED`, and its replay answers `match: false`, until something calls that code. Guarantees 1, 4 and 5 and the jail and content claims in 2 hold for that code, not for a job submitted to a running app.
+- **Jobs don't run in the service.** The running app serves submit, reads, the audit and replay reads, extraction, the console, the saturation signals and the health probes. The claim, commit, capability, relay, reconcile, content-store and jail code exists and is tested through its Java APIs, but the app starts no worker loop and has no route to it. So the claims about those paths, in guarantees 1, 2, 4 and 5, hold for that code and not for a job submitted to a running app. There, a job stays `QUEUED`, its replay answers `match: false`, claim latency stays 0, and `QueueBurn` fires once a job has waited 60 s. Tracked in #144.
 - **`X-Tenant-Id` selects a tenant; it doesn't authenticate one.** Anyone who can reach the API and knows a tenant's ID acts as that tenant, so guarantee 2 holds between callers who are honest about their tenant. Put real authentication in front of the API before exposing it. See the [threat model](docs/threat-model.md).
-- **Row-level security needs the runtime role.** The Compose stack logs in as a superuser, which bypasses it, so isolation under Compose rests on the queries' own tenant filters ([record 0018](docs/decisions/0018-dev-only-password-defaults.md)). The tests run as `anvil_app`.
+- **Row-level security needs the runtime role.** The Compose stack logs in as a superuser, which bypasses it, so isolation under Compose rests on the queries' own tenant filters ([record 0018](docs/decisions/0018-dev-only-password-defaults.md)). The default test context logs in as a superuser too, so it proves those filters. `RlsLeakTest` and the other tests that build their own pool log in as `anvil_app`, and they prove row-level security.
 - A target for recovery time or data loss (the drill measures them; it doesn't promise them), or detecting a restore that keeps the database timeline, such as a storage snapshot rolled back in place. See [record 0016](docs/decisions/0016-restore-timeline-gate.md).
 
 ## Success
@@ -161,7 +161,7 @@ To run from source instead, start only the database and point `task dev` at it:
 
 ```bash
 docker compose up -d db
-SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/anvil SPRING_DATASOURCE_USERNAME=anvil SPRING_DATASOURCE_PASSWORD=anvil task dev
+SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/anvil SPRING_DATASOURCE_USERNAME=anvil SPRING_DATASOURCE_PASSWORD="${POSTGRES_PASSWORD:-anvil}" task dev
 ```
 
 Open <http://localhost:8080/console/> to inspect a job. Enter a tenant and a job ID; the

@@ -1,12 +1,12 @@
 sequenceDiagram
     autonumber
-    %% Library code proven by tests: the running app starts neither loop yet.
     participant W as Worker JobService
     participant D as Postgres
     participant U as AuditChain
     participant R as OutboxRelay
     participant P as Publisher
     participant K as IdempotentConsumer
+    Note over W,K: Library code proven by tests. The running app starts neither loop yet.
     loop every 1s reconciler
         W->>D: BEGIN plus SET LOCAL app tenant
         W->>D: deaden QUEUED attempts exhausted
