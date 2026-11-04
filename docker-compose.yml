@@ -10,7 +10,9 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # The image keeps its cluster in a versioned directory under this path and
+      # refuses to start with a volume at the old .../data location.
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U anvil -d anvil"]
       interval: 5s
@@ -25,6 +27,10 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/anvil
       SPRING_DATASOURCE_USERNAME: anvil
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-anvil}
+      # Passed through from your environment or .env; left unset when you set nothing.
+      ANVIL_MODEL_API_KEY:
+      ANVIL_MODEL:
+      ANVIL_MODEL_BASE_URL:
     depends_on:
       db:
         condition: service_healthy
