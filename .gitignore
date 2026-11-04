@@ -4,38 +4,17 @@ var/
 !**/src/main/**/target/
 !**/src/test/**/target/
 
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
-
 ### IntelliJ IDEA ###
 .idea
 *.iws
 *.iml
 *.ipr
 
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
-
 ### VS Code ###
 .vscode/
 
-# Mermaid-cli render artifacts (task diagrams validates .mmd sources)
-/tmp/anvil-mmd.svg
-# Legacy local runtime dirt (root-owned search index, untracked)
-/.structurizr/
+# Local frontend dependency tree (node_modules only)
+/frontend/node_modules/
 
 # Local env values (names live in .env.example)
 .env
