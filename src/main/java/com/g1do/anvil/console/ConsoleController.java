@@ -14,7 +14,13 @@ import org.springframework.web.bind.annotation.GetMapping;
 @Controller
 public class ConsoleController {
 
-    @GetMapping({ "/console", "/console/" })
+    /** The page's assets are relative; keep the base path at /console/. */
+    @GetMapping("/console")
+    public String consoleWithoutSlash() {
+        return "redirect:/console/";
+    }
+
+    @GetMapping("/console/")
     public String console() {
         return "forward:/console/index.html";
     }
