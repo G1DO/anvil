@@ -9,6 +9,8 @@ import java.util.List;
 
 import javax.sql.DataSource;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -42,6 +44,8 @@ public class SaturationSignals {
     public static final String CLAIM_LATENCY_METRIC = "anvil_claim_latency_seconds";
     public static final String POOL_WAIT_METRIC = "anvil_pool_wait_seconds";
 
+    private static final Logger log = LoggerFactory.getLogger(SaturationSignals.class);
+
     private static final int MAX_SAMPLES = 1024;
 
     private static final String QUEUE_AGE_SQL =
@@ -55,8 +59,11 @@ public class SaturationSignals {
     private final Deque<Long> claimSamples = new ArrayDeque<>();
     private final Deque<Long> poolWaitSamples = new ArrayDeque<>();
 
-    /** The last queue age read, reported while the database can't be read. */
+    /** The last queue age read, reported while the database can't be read; 0 before the first read. */
     private volatile double lastQueueAgeSeconds;
+
+    /** How long the latest pool sample took to fail; 0 once a sample succeeds. */
+    private volatile long failedPoolWaitNanos;
 
     public SaturationSignals(
             JdbcTemplate jdbc, PlatformTransactionManager txManager, DataSource dataSource) {
@@ -69,8 +76,9 @@ public class SaturationSignals {
      * Oldest QUEUED age in seconds on the DB clock, max across tenants.
      * Each tenant is read in its own transaction with RLS context set, so
      * collection preserves fencing and RLS and exposes no tenant bytes. When the
-     * database can't be read the last value is reported: an unread queue isn't an
-     * empty one, and 0 would read as healthy when it's needed most.
+     * database can't be read the failure is logged and the last value reported: an
+     * unread queue isn't an empty one. Before any successful read that value is 0;
+     * when the pool is the cause, {@link #poolWaitP99Seconds} carries the alert.
      */
     public double queueAgeSeconds() {
         try {
@@ -87,6 +95,8 @@ public class SaturationSignals {
             lastQueueAgeSeconds = max;
             return max;
         } catch (Exception e) {
+            // The exception's type only: its message can quote a statement's tenant value.
+            log.warn("queue age could not be read: {}", e.getClass().getName());
             return lastQueueAgeSeconds;
         }
     }
@@ -123,8 +133,12 @@ public class SaturationSignals {
         try (Connection c = dataSource.getConnection()) {
             c.isValid(2);
         } catch (Exception e) {
-            // The time spent failing is a wait too: an exhausted pool must show up here.
+            // Counts only while the pool is failing. In the sample ring, one blip would
+            // stay the p99 for the next hundred scrapes, long after recovery.
+            failedPoolWaitNanos = System.nanoTime() - start;
+            return failedPoolWaitNanos / 1_000_000_000.0;
         }
+        failedPoolWaitNanos = 0;
         long waited = System.nanoTime() - start;
         recordPoolWaitNanos(waited);
         return waited / 1_000_000_000.0;
@@ -137,7 +151,7 @@ public class SaturationSignals {
 
     /** p99 pool-wait latency in seconds, 0 when no samples. */
     public double poolWaitP99Seconds() {
-        return p99Seconds(poolWaitSamples);
+        return Math.max(p99Seconds(poolWaitSamples), failedPoolWaitNanos / 1_000_000_000.0);
     }
 
     private static double p99Seconds(Deque<Long> samples) {
@@ -167,6 +181,7 @@ public class SaturationSignals {
         synchronized (poolWaitSamples) {
             poolWaitSamples.clear();
         }
+        failedPoolWaitNanos = 0;
     }
 
     /** Point-in-time snapshot with no tenant bytes. */

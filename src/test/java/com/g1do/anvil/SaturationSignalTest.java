@@ -159,9 +159,8 @@ class SaturationSignalTest {
 
     /** The case these signals exist for: no connection can be had, and the export must not read as healthy. */
     @Test
-    void aPoolThatGivesNoConnectionFiresClaimBurnAndKeepsTheLastQueueAge() {
-        UUID job = seedQueued("t_single", "q-exhausted");
-        jdbc.update("UPDATE jobs SET created_at = clock_timestamp() - INTERVAL '10 minutes' WHERE id = ?", job);
+    void aPoolThatGivesNoConnectionFiresClaimBurnUntilItRecovers() {
+        seedQueued("t_single", "q-exhausted");
         AtomicBoolean exhausted = new AtomicBoolean();
         DataSource pool = new DelegatingDataSource(dataSource) {
             @Override
@@ -179,16 +178,24 @@ class SaturationSignalTest {
         };
         SaturationSignals watched = new SaturationSignals(
                 new JdbcTemplate(pool), new DataSourceTransactionManager(pool), pool);
-        double lastAge = watched.queueAgeSeconds();
-        assertThat(lastAge).isGreaterThan(BurnAlerts.QUEUE_AGE_THRESHOLD_SECONDS);
+        SaturationSignals.SaturationSnapshot healthy = watched.snapshot();
+        double lastAge = healthy.queueAgeSeconds();
+        assertThat(lastAge).isGreaterThan(0.0);
+        assertThat(claimBurnFires(healthy)).as("healthy").isFalse();
 
         exhausted.set(true);
         SaturationSignals.SaturationSnapshot snap = watched.snapshot();
-
-        assertThat(snap.queueAgeSeconds()).isEqualTo(lastAge);
+        assertThat(snap.queueAgeSeconds()).as("an unread queue keeps its last value").isEqualTo(lastAge);
         assertThat(snap.poolWaitP99Seconds()).isGreaterThan(BurnAlerts.POOL_WAIT_P99_THRESHOLD_SECONDS);
-        assertThat(BurnAlerts.anyFiring(BurnAlerts.evaluate(
-                snap.queueAgeSeconds(), snap.claimP99Seconds(), snap.poolWaitP99Seconds()))).isTrue();
+        assertThat(claimBurnFires(snap)).as("exhausted").isTrue();
+
+        exhausted.set(false);
+        assertThat(claimBurnFires(watched.snapshot())).as("clears on the next good sample").isFalse();
+    }
+
+    private static boolean claimBurnFires(SaturationSignals.SaturationSnapshot snap) {
+        return BurnAlerts.evaluate(snap.queueAgeSeconds(), snap.claimP99Seconds(), snap.poolWaitP99Seconds())
+                .stream().filter(f -> f.alert().equals(BurnAlerts.CLAIM_BURN)).findFirst().orElseThrow().firing();
     }
 
     @Test
