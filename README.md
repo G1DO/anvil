@@ -13,7 +13,7 @@ Teams that run work on behalf of many tenants hit three problems:
 ANVIL is for:
 
 - **Tenant clients** that submit documents and jobs over HTTP (`X-Tenant-Id`, `Idempotency-Key`), read their documents, and read or replay their jobs' audit chains.
-- **Operators** who run the service, watch its health and saturation signals, and replay or verify a job's chain from the command line.
+- **Operators** who run the service, watch its health and saturation signals, inspect a job's state, chain and replay result in a browser, and replay or verify a job's chain from the command line.
 
 ## Guarantees
 
@@ -33,6 +33,7 @@ Each guarantee links to the tests that prove it. All tests run against real Post
 3. **Any job can be replayed bit-for-bit from its audit chain, and tampering is detected.**
    - Every effect is recorded in an append-only, hash-linked chain in the same transaction: [`AuditChainTest`](src/test/java/com/g1do/anvil/AuditChainTest.java).
    - `GET /audit/replay` returns `{input_sha, output_sha, match: true}` for an intact chain. A corrupted, dropped or re-linked event gives a mismatch. Checkpoint replay gives the same result: [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java).
+   - The [operator console](http://localhost:8080/console/) shows a job's current state (`GET /api/jobs/{id}`), its audit chain and its replay result. It uses the API's tenant scoping for every request, and a missing or another tenant's job takes the same generic not-found path: [`OperatorConsoleTest`](src/test/java/com/g1do/anvil/OperatorConsoleTest.java).
    - **A long chain replays from its latest checkpoint within a bound.** Replay reads the checkpoint and the events after it, not the prefix, and a declared 100,000-event chain replays at p99 8 ms against a 500 ms bound on containerized Postgres. A consistent prefix rewrite is caught at the checkpoint boundary; a privileged partial edit is caught by `replayFull` or the offline verifier. Why: [record 0027](docs/decisions/0027-replay-from-latest-checkpoint.md); [measurement](load/runs/replay-latency/report.md).
    - **Without the running API.** Why: [record 0026](docs/decisions/0026-replay-cli-and-offline-verifier.md).
      - `anvil replay` reads the database directly and prints the API's result for the same job, byte for byte.
@@ -89,6 +90,7 @@ Success is measured by the guarantees above. Each measure names the test that sh
 - A job replays bit-for-bit from its audit chain, and a corrupted, dropped or re-linked event is detected: [`AuditChainTest`](src/test/java/com/g1do/anvil/AuditChainTest.java), [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java).
 - A declared 100,000-event chain replays from its latest checkpoint at p99 8 ms, under the 500 ms bound, with the same `output_sha` as a full replay: [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java), [measurement](load/runs/replay-latency/report.md).
 - The CLI prints the API's replay result for the same job, and an exported chain verifies with no database, reporting the first bad sequence number when tampered, with the API's tenant scoping: [`ReplayCliTest`](src/test/java/com/g1do/anvil/ReplayCliTest.java).
+- The browser console shows a job's state, audit chain and replay result, and a missing job and another tenant's job look the same: [`OperatorConsoleTest`](src/test/java/com/g1do/anvil/OperatorConsoleTest.java).
 - A seeded fencing break is caught in under 500 simulator runs: [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
 - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java).
 - Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
@@ -143,6 +145,11 @@ curl -s localhost:8080/healthz    # liveness
 curl -s localhost:8080/readyz     # readiness (checks the database)
 ```
 
+Open <http://localhost:8080/console/> to inspect a job. Enter a tenant and a job ID; the
+console sends `X-Tenant-Id` to the same API routes as any other client, shows the job's
+state, chain and replay result, and shows the same "Job not found" for a missing job and
+another tenant's job.
+
 Compose reads `POSTGRES_PASSWORD` from your environment or an untracked `.env`; the names are in `.env.example`. With nothing set it uses a local-only default.
 
 Extraction calls the model configured under `anvil.extraction` in `application.yaml` (DeepSeek's chat completions API, `deepseek-flash`) with the key in `ANVIL_MODEL_API_KEY`. `ANVIL_MODEL` and `ANVIL_MODEL_BASE_URL` override the model and URL for the app and `task eval:extract` alike. Without a key the app still starts, and extraction answers `503` without calling anything. A tenant also needs a call budget, which an operator grants in `extraction_budgets`. Without one, or with the kill-switch in `extraction_switch` off, the rules answer and the result is marked as fallback. The statements are in [record 0023](docs/decisions/0023-restrict-extraction-behind-budget-and-kill-switch.md).
@@ -157,10 +164,12 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | `GET /api/documents?query=&limit=&cursor=` | Title-prefix search |
 | `POST /api/documents/{id}/extract` | Extract cited facts from a document, once per version, prompt and model; from the tenant's cache, the model, or the rules fallback |
 | `GET /api/documents/{id}/facts` | The document's indexed facts, marked when they come from the fallback |
+| `GET /api/jobs/{id}` | A job's current state, scoped like the other reads |
 | `GET /audit/events?job_id=` | A job's audit chain |
 | `GET /audit/replay?job_id=` | Replay a job |
 | `GET /observe/saturation`, `GET /metrics` | Saturation signals |
 | `GET /healthz`, `GET /readyz` | Health probes |
+| `GET /console/` | Operator console page (browser; calls the routes above with `X-Tenant-Id`) |
 
 ## Where things are
 
@@ -178,6 +187,7 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | Frozen eval sets and gate fixtures | `eval/sets/pilot-v1/` (record 0021), `eval/sets/full-v1/` (record 0024; built by `src/test/java/com/g1do/anvil/eval/FullSetGenerator.java`), never edited; `eval/fixtures/` |
 | Extraction harness runs and the cost report | `eval/runs/` (records 0022, 0023, 0024) |
 | Load script, GIN budget and load reports | `load/extract.js`, `load/runs/` (record 0025) |
+| Operator console | `src/main/resources/static/console/` (`index.html`, `console.js`, `console.css`) and `src/main/java/com/g1do/anvil/console/ConsoleController.java` |
 | Replay CLI, export format and offline verifier | `src/main/java/com/g1do/anvil/cli/AnvilCli.java`; `replay/ChainExport.java` (`anvil-chain/1`) and `replay/OfflineVerifier.java` (record 0026) |
 | Replay from the latest checkpoint and its latency report | `src/main/java/com/g1do/anvil/replay/ReplayService.java`; `load/runs/replay-latency/` (record 0027) |
 | Filing a failed scheduled run | `scripts/file-issue.sh` (one issue per title while it's open) |

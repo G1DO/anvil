@@ -1,5 +1,6 @@
 flowchart TB
     client["Tenant client<br/>X-Tenant-Id + Idempotency-Key"]
+    operator["Operator browser<br/>console page"]
     pg["PostgreSQL 18<br/>RLS FORCE + tenant context"]
     cas["CAS store<br/>tenants/tenant/sha"]
     ws["Exec workspaces<br/>per-tenant writable dirs"]
@@ -11,6 +12,8 @@ flowchart TB
         submitSvc["SubmitService<br/>validate + canonical CBOR + one txn"]
         searchCtrl["DocumentSearchController<br/>GET documents query limit cursor"]
         readSvc["ReadService<br/>direct-ID + title-prefix + recheck"]
+        jobRead["JobReadController<br/>GET jobs id state<br/>same generic 404"]
+        console["Console page<br/>static HTML/CSS/JS<br/>state + chain + replay<br/>X-Tenant-Id, textContent only"]
         auditCtrl["AuditEventsController<br/>GET audit events job limit cursor"]
         auditRead["AuditReadService<br/>caller-tenant chain ORDER BY seq"]
         replay["ReplayService + ReplayController<br/>load in the tenant, then evaluate<br/>latest checkpoint + suffix, fallback full<br/>input_sha + output_sha + match"]
@@ -58,8 +61,11 @@ flowchart TB
     end
 
     client --> filter
+    operator --> console
+    console -->|"X-Tenant-Id on every request"| filter
     filter --> submitCtrl --> submitSvc
     filter --> searchCtrl --> readSvc
+    filter --> jobRead --> readSvc
     filter --> auditCtrl --> auditRead
     filter --> replay
     filter --> extractCtrl --> extractSvc --> extractor

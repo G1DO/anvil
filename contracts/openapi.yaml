@@ -161,6 +161,31 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: missing or cross-tenant job_id (same message, no bytes, no oracle)
+  /api/jobs/{id}:
+    get:
+      summary: A job's current state for the caller's tenant (operator console, #77)
+      description: >
+        A malformed, missing or another tenant's job gets the same generic 404,
+        so the console has no existence oracle. Reads run under the same tenant
+        context, row-level security and per-row re-check as the other read APIs.
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - name: id
+          in: path
+          required: true
+          description: A malformed, missing or other tenant's ID gets the same 404
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The caller-tenant job's current state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /healthz:
     get:
       summary: Liveness, no dependency checks, no auth
@@ -267,6 +292,13 @@ components:
         input_sha: { type: string }
         output_sha: { type: string }
         match: { type: boolean }
+    JobState:
+      type: object
+      required: [id, tenant_id, state]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        state: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, DEAD] }
     Extraction:
       type: object
       required: [extraction_id, document_id, version_id, status, facts, quarantined, truncated, source, fallback]
