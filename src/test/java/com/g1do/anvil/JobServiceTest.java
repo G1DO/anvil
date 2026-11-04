@@ -610,18 +610,21 @@ class JobServiceTest {
                 int stopCode = killStop.waitFor();
                 if (stopCode == 0) {
                     try {
-                        Process ps = new ProcessBuilder("ps", "-o", "stat=", "-p", Long.toString(pid))
-                                .start();
-                        String stat = new String(ps.getInputStream().readAllBytes()).trim();
-                        ps.waitFor();
-                        // Best-effort verification: 'T' = stopped by job control
-                        // signal. No hard assert: kill -STOP exit 0 already proves
-                        // OS suspend; ps parsing may vary by platform.
-                        if (!stat.contains("T")) {
-                            // Still STOPped; ps format differs — proceed.
+                        // 'T' = stopped by job control signal. Delivery is asynchronous, so poll.
+                        String stat = "";
+                        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                        while (!stat.contains("T") && System.nanoTime() < deadline) {
+                            Process ps = new ProcessBuilder("ps", "-o", "stat=", "-p", Long.toString(pid))
+                                    .start();
+                            stat = new String(ps.getInputStream().readAllBytes()).trim();
+                            ps.waitFor();
+                            if (!stat.contains("T")) {
+                                Thread.sleep(50);
+                            }
                         }
-                    } catch (Exception parseIgnored) {
-                        // ps unavailable — kill -STOP exit 0 remains the proof.
+                        assertThat(stat).as("the helper process is really stopped").contains("T");
+                    } catch (Exception psUnavailable) {
+                        // ps unavailable: kill -STOP exit 0 remains the proof.
                     }
                 }
             } catch (Exception osUnavailable) {
