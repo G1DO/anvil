@@ -61,6 +61,11 @@ public class DocumentSearchController {
         }
         String tenant = tenantId.trim();
 
+        // Text columns can't hold NUL, so Postgres would refuse the comparison.
+        if (query != null && query.indexOf('\0') >= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid query");
+        }
+
         UUID cursorId;
         try {
             cursorId = ReadService.parseCursor(cursor);

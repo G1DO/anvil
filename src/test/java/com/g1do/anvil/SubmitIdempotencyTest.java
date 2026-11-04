@@ -82,6 +82,35 @@ class SubmitIdempotencyTest {
         return jsonMapper.readTree(result.getResponse().getContentAsString());
     }
 
+    /** Text that can't be stored or hashed faithfully is the caller's error, and nothing is written. */
+    @Test
+    void textThatCantBeStoredIsRefusedWith400() throws Exception {
+        String[] bad = {
+                "{\"title\":\"a\\ud800\",\"mime_type\":\"text/plain\",\"body\":\"x\"}",
+                "{\"title\":\"a\\u0000b\",\"mime_type\":\"text/plain\",\"body\":\"x\"}",
+                "{\"title\":\"a\",\"mime_type\":\"text/\\ud800\",\"body\":\"x\"}",
+                "{\"title\":\"a\",\"mime_type\":\"text/\\u0000\",\"body\":\"x\"}",
+                "{\"title\":\"a\",\"mime_type\":\"text/plain\",\"body\":\"x\\ud800\"}",
+        };
+        for (String json : bad) {
+            mockMvc.perform(post("/api/documents")
+                            .header("X-Tenant-Id", "t_single")
+                            .header("Idempotency-Key", "bad-text-" + UUID.randomUUID())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json))
+                    .andExpect(status().isBadRequest());
+        }
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM jobs WHERE idempotency_key LIKE 'bad-text-%'",
+                Integer.class)).isZero();
+    }
+
+    /** The body is stored as bytes, so a NUL in it is ordinary content. */
+    @Test
+    void aNulInTheBodyIsAccepted() throws Exception {
+        postSubmit("t_single", "nul-body-" + UUID.randomUUID(),
+                "{\"title\":\"a\",\"mime_type\":\"text/plain\",\"body\":\"x\\u0000y\"}");
+    }
+
     @Test
     void dupePostSameKeyTwiceReturnsIdenticalIdsWithOneJobRow() throws Exception {
         String key = "dupe-" + UUID.randomUUID();
