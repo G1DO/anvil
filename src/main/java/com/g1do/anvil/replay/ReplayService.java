@@ -429,6 +429,9 @@ public class ReplayService {
         if (a == null) {
             return b;
         }
+        if (b == null) {
+            return a;
+        }
         return b.seq() < a.seq() ? b : a;
     }
 
