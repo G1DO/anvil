@@ -1,6 +1,6 @@
 # 0019 — Kernel-sandboxed exec jail and connect-time egress checks
 
-Status: proposed 2026-10-31 (#73). Closes the residuals record 0008 left open. No production code calls the jail yet.
+Status: accepted 2026-11-04, proposed 2026-10-31 (#73). Closes the residuals record 0008 left open. No production code calls the jail yet.
 
 ## Context
 

@@ -51,15 +51,18 @@ import com.g1do.anvil.tenant.TenantGuard;
  * still recomputes the same output.</li>
  * <li>Checkpoints ({@code job_checkpoints}, every 100 per job, sha =
  * chain {@code event_hash} at {@code seq % 100 == 0}) carry the prefix replay
- * summary: the last artifact, the input root and the last commit. The replay
- * path reads only the latest checkpoint and the events from its seq onward
- * (issue #76), verifies that boundary event against the checkpoint sha, and
- * still returns the full chain's {@code output_sha}. The prefix cannot be
- * edited or removed in place because both tables are append-only; replay
- * reports a consistent prefix rewrite at the boundary when its event hash no
- * longer matches the stored checkpoint. {@code replayFull} remains the
- * full-chain audit path. {@code audit_events} stays append-only with no
- * deletes in v1.</li>
+ * summary: the last artifact, the input root and the last commit. V11 derives
+ * and validates that summary in a BEFORE INSERT trigger, so a forged or
+ * non-boundary row is rejected or overwritten rather than trusted from the
+ * writer. The replay path reads only the latest checkpoint and the events from
+ * its seq onward (issue #76), verifies that boundary event against the
+ * checkpoint sha, and still returns the full chain's {@code output_sha}. The
+ * prefix cannot be edited or removed in place because both tables are
+ * append-only; replay reports a consistent prefix rewrite at the boundary when
+ * the boundary event's hash no longer matches the stored checkpoint. A rewrite
+ * that leaves the boundary event unchanged is invisible to the fast path; the
+ * full replay catches its broken link. {@code replayFull} remains the full-chain
+ * audit path. {@code audit_events} stays append-only with no deletes in v1.</li>
  * <li>Two steps (issue #75, record 0026): {@link #load} reads the
  * {@link JobChain} in the caller's tenant, and {@link #evaluate}, a pure
  * function, computes the result from it. The API, the CLI and the offline
@@ -116,8 +119,9 @@ public class ReplayService {
 
     /**
      * One {@code job_checkpoints} row. {@code sha} is the chain event hash at
-     * {@code seq}; the other fields are the V10 prefix replay summary, and are
-     * null for a checkpoint written before V10 or read from an export.
+     * {@code seq}; the other fields are the prefix replay summary introduced by
+     * V10 and derived by the V11 checkpoint trigger, and are null for a
+     * checkpoint written before V10 or read from an export.
      */
     public record Checkpoint(
             long seq,
@@ -235,17 +239,19 @@ public class ReplayService {
                 if (!latest.isEmpty() && latest.get(0).inputSha() != null
                         && latest.get(0).artifactSha() != null) {
                     Checkpoint checkpoint = latest.get(0);
-                    List<ChainEvent> kept = scope(tenant, jobId, jdbc.query(
+                    List<ChainEvent> raw = jdbc.query(
                             "SELECT tenant_id, job_id, seq, prev_hash, event_hash, type, payload "
                                     + "FROM audit_events WHERE tenant_id = ? AND job_id = ? AND seq >= ? ORDER BY seq",
                             (rs, i) -> mapChainRow(rs),
-                            tenant, jobId, checkpoint.seq()));
-                    if (!kept.isEmpty()) {
+                            tenant, jobId, checkpoint.seq());
+                    // scope() throws on an empty chain; check the raw rows first so an
+                    // orphan checkpoint can fall through to the full read and report
+                    // the exact checkpoint failure instead of a "not found".
+                    if (!raw.isEmpty()) {
+                        List<ChainEvent> kept = scope(tenant, jobId, raw);
                         return new JobChain(tenant, jobId, job.state(), inputSha, kept,
                                 List.of(checkpoint), checkpoint.seq());
                     }
-                    // The boundary event is missing; the full read reports the exact
-                    // checkpoint failure instead of a "not found".
                 }
             }
 

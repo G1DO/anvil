@@ -38,9 +38,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Acceptance check for issue #77: an operator inspects a job in a browser.
  *
- * <p>Runs the real console page in HtmlUnit against the embedded server and
- * containerized Postgres. The page fetches the same endpoints an operator
- * would:
+ * <p>Runs the real console page (the committed React/TypeScript production
+ * bundle) in HtmlUnit against the embedded server and containerized Postgres.
+ * The page fetches the same endpoints an operator would:
  * <ul>
  * <li>{@code GET /api/jobs/{id}} for the job's current state;</li>
  * <li>{@code GET /audit/events?job_id=} for the audit chain;</li>

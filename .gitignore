@@ -10,11 +10,14 @@ var/
 ### VS Code ###
 .vscode/
 
-# Local frontend dependency tree (node_modules only)
-/frontend/node_modules/
-
 # Local env values (names live in .env.example)
 .env
+# Frontend dependencies and local build caches; the production bundle is committed
+# under src/main/resources/static/console and checked by task frontend:check.
+frontend/node_modules/
+frontend/.vite/
+frontend/coverage/
+*.tsbuildinfo
 # Pinned tool downloads (task diagrams, task check:tla)
 /.bin/
 # Generated on demand by task diagrams; not committed

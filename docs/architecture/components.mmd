@@ -13,7 +13,7 @@ flowchart TB
         searchCtrl["DocumentSearchController<br/>GET documents query limit cursor"]
         readSvc["ReadService<br/>direct-ID + title-prefix + recheck"]
         jobRead["JobReadController<br/>GET jobs id state<br/>same generic 404"]
-        console["Console page<br/>static HTML/CSS/JS<br/>state + chain + replay<br/>X-Tenant-Id, textContent only"]
+        console["Console SPA<br/>React 19 + TypeScript, Vite build<br/>state + chain + replay<br/>X-Tenant-Id, escaped text only"]
         auditCtrl["AuditEventsController<br/>GET audit events job limit cursor"]
         auditRead["AuditReadService<br/>caller-tenant chain ORDER BY seq"]
         replay["ReplayService + ReplayController<br/>load in the tenant, then evaluate<br/>latest checkpoint + suffix, fallback full<br/>input_sha + output_sha + match"]

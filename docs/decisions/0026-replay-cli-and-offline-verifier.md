@@ -1,6 +1,6 @@
 # 0026 — Replay from the command line, and an export verified with no database
 
-Status: proposed 2026-11-03 (#75). Builds on the immutable audit chain (record 0009) and deterministic replay (record 0010). It doesn't change the chain, the hashes, the API's response or the schema. It does make the API's replay stricter, as the first decision below says. Record 0027 (#76) later lets the database replay path read from the latest checkpoint; the offline verifier still reads the whole export.
+Status: accepted 2026-11-04, proposed 2026-11-03 (#75). Builds on the immutable audit chain (record 0009) and deterministic replay (record 0010). It doesn't change the chain, the hashes, the API's response or the schema. It does make the API's replay stricter, as the first decision below says. Record 0027 (#76) later lets the database replay path read from the latest checkpoint; the offline verifier still reads the whole export.
 
 ## Context
 
@@ -68,7 +68,7 @@ So the cap is 8 MiB, about 15,000 realistic events. A job's chain is tens of eve
   - tenant scoping holds for both, and the CLI's own connection reads as `anvil_app`, read-only, before it reads anything, and refuses a login that can't become it.
 - The CLI opens a second way into tenant data: database credentials instead of `X-Tenant-Id`. It holds the same rules as the API, and adds RLS for logins that the API in Compose runs without. An export is tenant data at rest, and whoever holds the file holds the chain.
 - **Residual: no key signs the chain.** Anyone who can write the file, or the database, can rewrite a chain whole with every hash recomputed, and it still verifies. `head` is printed so a value kept elsewhere can be compared. Anchoring heads outside the database, or signing exports, is future work.
-- **The fast database replay and an export can disagree on a privileged prefix edit** (record 0027). Replay from a V10 checkpoint reads only the suffix and trusts the checkpoint summary; `anvil verify` reads the whole export. A superuser who bypasses the append-only triggers and edits an earlier payload without rehashing is caught by the verifier and by `replayFull`, but not by the fast replay. An in-place edit is refused for every role; a consistent rewrite fails at the checkpoint boundary.
+- **The fast database replay and an export can disagree on a privileged prefix edit** (record 0027). Replay from a V10 checkpoint reads only the suffix and trusts the checkpoint row and its V11-derived summary; `anvil verify` reads the whole export. A superuser who bypasses the append-only triggers and edits an earlier payload without rehashing, or rewrites the prefix but leaves the boundary event unchanged, is caught by the verifier and by `replayFull`, but not by the fast replay. An in-place edit is refused for every role; a rewrite that rehashes through the boundary fails at the checkpoint boundary.
 - **Residual: what no hash covers.** The file's hashes don't cover four things, so a verdict can't rule them out:
   - the tenant label: relabelling every `tenant_id` in a file makes it verify as the new tenant, and `head` is unchanged, so an operator must know which tenant a file came from;
   - the checkpoints: removing one removes the check it made, so a tail rewritten with every hash recomputed passes if the checkpoints beyond the edit are gone;

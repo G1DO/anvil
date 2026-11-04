@@ -1,6 +1,6 @@
 # 0025 — A measured budget and a kill-switch for the full-text (GIN) index, before any soak numbers
 
-Status: proposed 2026-11-02, revised 2026-11-03 after review (#79, moved from #65). The budget was written and committed before anything was measured, and hasn't changed since. The measurements and the decision below came after it.
+Status: accepted 2026-11-04, proposed 2026-11-02, revised 2026-11-03 after review (#79, moved from #65). The budget was written and committed before anything was measured, and hasn't changed since. The measurements and the decision below came after it.
 
 ## Context
 

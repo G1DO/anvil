@@ -1,6 +1,6 @@
 # 0022 — Single bounded extraction with exact citations and a dead-letter queue
 
-Status: proposed 2026-11-02 (#37). Builds on the frozen eval gate (record 0021). Record 0023 (#38) adds the tenant cache, the call budget, the kill-switch and the rules fallback, and decides to restrict extraction.
+Status: accepted 2026-11-04, proposed 2026-11-02 (#37). Builds on the frozen eval gate (record 0021). Record 0023 (#38) adds the tenant cache, the call budget, the kill-switch and the rules fallback, and decides to restrict extraction.
 
 ## Context
 

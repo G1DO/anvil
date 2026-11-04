@@ -1,6 +1,6 @@
 # 0020 — Fair claim across tenants under a per-tenant quota
 
-Status: proposed 2026-10-31 (#35). Changes how record 0002's claim picks a job. Fencing, leases and the reconciler are unchanged.
+Status: accepted 2026-11-04, proposed 2026-10-31 (#35). Changes how record 0002's claim picks a job. Fencing, leases and the reconciler are unchanged.
 
 ## Context
 

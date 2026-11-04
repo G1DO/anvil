@@ -24,6 +24,12 @@ updates:
       # proposes the next major and never a 25.x update.
       - dependency-name: eclipse-temurin
         update-types: ["version-update:semver-major"]
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
   - package-ecosystem: docker-compose
     directory: /
     schedule:
