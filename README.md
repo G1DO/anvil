@@ -112,7 +112,7 @@ Success is measured by the guarantees above. Each measure names the test that sh
 
 ## How to run
 
-You need Java 25, Docker, [Task](https://taskfile.dev), [Node 22.22.1](https://nodejs.org/) and [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, with unprivileged user namespaces allowed), which the exec jail runs every child under. Node is only needed to work on the operator console; the committed production bundle is served by the Java app.
+You need Java 25, Docker, [Task](https://taskfile.dev), [Node 22.22.1](https://nodejs.org/) and [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, with unprivileged user namespaces allowed), which the exec jail runs every child under. Node is only needed to work on the operator console; the committed bundle is served by the Java app.
 
 ```bash
 task dev       # run locally; starts no Postgres, so point it at one (below)
@@ -213,7 +213,7 @@ Work starts from an issue and lands through a PR that fills in the template. The
 | Frozen eval sets and gate fixtures | `eval/sets/pilot-v1/` (record 0021), `eval/sets/full-v1/` (record 0024; built by `src/test/java/com/g1do/anvil/eval/FullSetGenerator.java`), never edited; `eval/fixtures/` |
 | Extraction harness runs and the cost report | `eval/runs/` (records 0022, 0023, 0024) |
 | Load script, GIN budget and load reports | `load/extract.js`, `load/runs/` (record 0025) |
-| Operator console | `frontend/` (React 19 + TypeScript + Vite source, tests and lockfile); the committed production bundle is `src/main/resources/static/console/`, served by `src/main/java/com/g1do/anvil/console/ConsoleController.java` (record 0028) |
+| Operator console | `frontend/` (React 19 + TypeScript + Vite source, tests and lockfile); the committed bundle is `src/main/resources/static/console/`, served by `src/main/java/com/g1do/anvil/console/ConsoleController.java` (record 0028) |
 | Replay CLI, export format and offline verifier | `src/main/java/com/g1do/anvil/cli/AnvilCli.java`; `replay/ChainExport.java` (`anvil-chain/1`) and `replay/OfflineVerifier.java` (record 0026) |
 | Replay from the latest checkpoint and its latency report | `src/main/java/com/g1do/anvil/replay/ReplayService.java`; `load/runs/replay-latency/` (record 0027) |
 | Filing a failed scheduled run | `scripts/file-issue.sh` (one issue per title while it's open) |
