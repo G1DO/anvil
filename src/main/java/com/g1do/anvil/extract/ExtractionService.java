@@ -127,7 +127,8 @@ public class ExtractionService {
      * Extracts the latest version of the caller's document, or returns its
      * stored result. Empty when the caller can't see the document. Throws
      * {@link ModelUnavailableException} when the model can't be asked; nothing
-     * is stored then, and the call still counts against the budget.
+     * is stored then. A call that was attempted still counts against the budget;
+     * with no credential configured none is attempted, so none is spent.
      */
     public Optional<Result> extract(String tenant, UUID documentId) {
         Optional<Lookup> found = tx.execute(status -> {
@@ -187,6 +188,10 @@ public class ExtractionService {
         if (hit.isPresent()) {
             return store(tenant, v, hit.get().outcome(), Source.CACHE, extractor.modelId(), Prompt.SHA256,
                     p.contentSha256(), hit.get().original(), null);
+        }
+        if (!extractor.modelConfigured()) {
+            // No call can be made, so none is spent; the budget pays only for attempts.
+            throw new ModelUnavailableException("no model credential is configured");
         }
         if (!spendOneCall(tenant)) {
             return fallback(tenant, l, p, FallbackReason.BUDGET_EXHAUSTED);

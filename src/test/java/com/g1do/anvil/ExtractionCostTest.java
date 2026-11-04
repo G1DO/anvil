@@ -114,6 +114,7 @@ class ExtractionCostTest {
         jdbc.update("INSERT INTO tenants (id) VALUES (?), (?) ON CONFLICT DO NOTHING", A, B);
         model.script(ExtractionCostTest::firstWord);
         model.calls().clear();
+        model.configured(true);
     }
 
     @AfterEach
@@ -378,6 +379,23 @@ class ExtractionCostTest {
         assertThat(remaining(A)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM extractions WHERE tenant_id = ?", Integer.class, A))
                 .isZero();
+    }
+
+    @Test
+    void withNoCredentialTheAnswerIs503AndNoBudgetIsSpent() throws Exception {
+        model.configured(false);
+        budget(A, 2);
+        UUID id = doc(A, TEXT);
+        int status = mvc.perform(post("/api/documents/" + id + "/extract").header("X-Tenant-Id", A)).andReturn()
+                .getResponse().getStatus();
+        assertThat(status).isEqualTo(503);
+        assertThat(remaining(A)).isEqualTo(2);
+        assertThat(model.calls()).isEmpty();
+
+        // A tenant with no budget gets the same answer: the missing credential is the cause.
+        UUID other = doc(B, TEXT);
+        assertThat(mvc.perform(post("/api/documents/" + other + "/extract").header("X-Tenant-Id", B)).andReturn()
+                .getResponse().getStatus()).isEqualTo(503);
     }
 
     @Test

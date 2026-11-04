@@ -593,6 +593,32 @@ class ReplayTest {
     }
 
     @Test
+    void anEditAfterTheCheckpointIsAMismatchNotACrash() throws Exception {
+        var submitted = submitTerminal(TENANT_A, "suffix-edit");
+        UUID job = submitted.jobId();
+        TransactionTemplate txn = new TransactionTemplate(txManager);
+        for (int i = 1; i <= 250; i++) {
+            final int n = i;
+            txn.execute(status -> {
+                jdbc.queryForObject("SELECT set_config('app.tenant', ?, true)", String.class, TENANT_A);
+                AuditChain.append(jdbc, TENANT_A, job, AuditChain.TYPE_CLAIM,
+                        Map.of("state", "RUNNING", "k", "s" + n));
+                return null;
+            });
+        }
+
+        // The boundary at seq 200 stays intact, so only the suffix check finds the break.
+        editInTheDatabase("UPDATE audit_events SET payload = ?::jsonb "
+                + "WHERE tenant_id = ? AND job_id = ? AND seq = 230",
+                "{\"state\":\"RUNNING\",\"k\":\"edited\"}", TENANT_A, job);
+
+        ReplayService.ReplayResult fast = replays.replay(TENANT_A, job);
+        assertThat(fast.match()).isFalse();
+        assertThat(fast.mismatchSeq()).isEqualTo(230L);
+        assertThat(fast.checkpointSeqUsed()).isEqualTo(200L);
+    }
+
+    @Test
     void replayOfDeclaredLongChainStaysUnderTheLatencyBound() throws Exception {
         var submitted = submitTerminal(TENANT_A, "latency");
         UUID job = submitted.jobId();

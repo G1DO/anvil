@@ -182,6 +182,9 @@ public class SubmitService {
         if (title.length() > 4096) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "title too long");
         }
+        if (!storableText(title)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "title is not valid text");
+        }
         return title;
     }
 
@@ -192,6 +195,9 @@ public class SubmitService {
         if (mimeType.trim().length() > 255) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "mime_type too long");
         }
+        if (!storableText(mimeType)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "mime_type is not valid text");
+        }
         return mimeType.trim();
     }
 
@@ -199,6 +205,16 @@ public class SubmitService {
         if (body == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "body must be present");
         }
+        // The body is stored as bytes, so a NUL is content, but an unpaired surrogate
+        // would be replaced by the encoder and hashed as text the caller never sent.
+        if (!StandardCharsets.UTF_8.newEncoder().canEncode(body)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "body is not valid text");
+        }
         return body;
+    }
+
+    /** Text columns refuse NUL, and an unpaired surrogate can't be encoded or hashed. */
+    private static boolean storableText(String text) {
+        return text.indexOf('\0') < 0 && StandardCharsets.UTF_8.newEncoder().canEncode(text);
     }
 }

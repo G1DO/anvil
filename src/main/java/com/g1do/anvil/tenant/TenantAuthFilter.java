@@ -7,6 +7,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -28,6 +29,8 @@ import jakarta.servlet.http.HttpServletResponse;
 @Order(Ordered.HIGHEST_PRECEDENCE + 1)
 public class TenantAuthFilter extends OncePerRequestFilter {
 
+    private static final UrlPathHelper PATHS = new UrlPathHelper();
+
     private final JdbcTemplate jdbc;
 
     public TenantAuthFilter(JdbcTemplate jdbc) {
@@ -36,7 +39,9 @@ public class TenantAuthFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        String path = request.getRequestURI();
+        // Decoded and without path parameters, as routing sees it: the raw URI would
+        // let /%61pi/... or /api;a=b/... reach a controller past this filter.
+        String path = PATHS.getRequestUri(request);
         // Enforce on the submit slice, fail-closed reads, and the audit read API;
         // leave any future/other paths alone.
         return !(path.startsWith("/api/")

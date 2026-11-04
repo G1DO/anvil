@@ -12,6 +12,11 @@ public interface ExtractionModel {
     /** The model's identifier, recorded with each extraction. */
     String id();
 
+    /** Whether a call can be attempted at all; false when no credential is configured. Makes no call. */
+    default boolean configured() {
+        return true;
+    }
+
     /** Asks the model once. Throws {@link ModelUnavailableException} when it can't be reached or isn't configured. */
     ModelReply complete(BoundedText document);
 }

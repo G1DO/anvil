@@ -307,6 +307,25 @@ tasks:
         echo "{{.TLC_SHA256}}  $jar" | sha256sum -c -
         java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -metadir target/tlc -config docs/faults/fencing.cfg docs/faults/fencing.tla
 
+  check:stack:
+    desc: "docker compose starts the stack on a fresh volume and it serves requests (a throwaway project; your own volume is untouched; needs ports 5432 and 8080 free)"
+    cmds:
+      - |
+        set -e
+        p=anvil-check-stack
+        trap 'docker compose -p "$p" down -v >/dev/null 2>&1' EXIT
+        docker compose -p "$p" up -d --build --wait db app
+        ready=0
+        for i in $(seq 1 60); do
+          if curl -fs localhost:8080/readyz >/dev/null; then ready=1; break; fi
+          sleep 2
+        done
+        [ "$ready" = 1 ] || { docker compose -p "$p" logs app; echo "stack: /readyz never answered"; exit 1; }
+        curl -fs -o /dev/null localhost:8080/console/
+        curl -fs -o /dev/null localhost:8080/api/documents -H 'X-Tenant-Id: t_single' -H 'Idempotency-Key: check-stack' \
+          -H 'Content-Type: application/json' -d '{"title":"check","mime_type":"text/plain","body":"check"}'
+        echo "stack: up, ready and accepting a submit"
+
   faults:sim:
     desc: "Fault simulator: FAULT_SIM_RUNS runs (default 100) from FAULT_SEED; a violation writes its seed and trace to target/fault-runs/"
     cmds:
@@ -369,5 +388,6 @@ tasks:
       - task check:audit
       - task check:diagrams
       - task check:tla
+      - task check:stack
       - task eval
       - task eval:full
