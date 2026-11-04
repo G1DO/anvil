@@ -135,9 +135,9 @@ The replay CLI (`AnvilCli`, record 0026) starts no Spring context, so it runs no
 - `replay` prints `{input_sha, output_sha, match}`. `verify` adds `first_bad_seq`, `problem` and `head`, the last event's hash. Compare `head` with one you kept, because a chain rewritten whole with every hash recomputed still verifies.
 - Exit statuses: 0 match, 1 no match, 2 usage or malformed input, 3 not found, 4 unknown tenant, 5 database error, 6 failure (the output could not be written, or an unexpected error; never 1).
 - Run them with `task -x`. Without `-x`, `task` replaces any non-zero status with 201, so the status above is lost.
-- In the deployed image: `docker compose exec app java -cp app.jar -Dloader.main=com.g1do.anvil.cli.AnvilCli org.springframework.boot.loader.launch.PropertiesLauncher replay --tenant T --job J`.
+- In the built image: `docker compose exec app java -cp app.jar -Dloader.main=com.g1do.anvil.cli.AnvilCli org.springframework.boot.loader.launch.PropertiesLauncher replay --tenant T --job J`.
 
-To run the stack the way it's deployed:
+To run the stack with real Postgres:
 
 ```bash
 docker compose up --build

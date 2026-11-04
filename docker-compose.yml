@@ -1,5 +1,5 @@
-# Mirrors production dependencies (real Postgres) so local, Testcontainers,
-# and CI exercise the same services. One command starts, one verifies.
+# Runs the stack with real Postgres so local, Testcontainers and CI exercise
+# the same services. One command starts, one verifies.
 services:
   db:
     image: postgres:18.6
