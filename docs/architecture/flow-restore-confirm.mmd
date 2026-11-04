@@ -1,0 +1,44 @@
+sequenceDiagram
+    autonumber
+    participant W as Worker JobService
+    participant G as TimelineGuard
+    participant D as Postgres
+    participant U as AuditChain
+
+    W->>D: BEGIN claim transaction and SET LOCAL app.tenant
+    W->>G: requireConfirmed
+    G->>D: compare db_timeline with pg_control_system and the current WAL timeline
+    alt stored pair matches the server
+        G-->>W: gate open
+    else unknown or does not match
+        G-->>W: 503 TIMELINE_UNCONFIRMED, zero job rows
+        Note over W: heartbeat and commit stop here. claim and claimNext try confirmTimeline
+        W->>D: BEGIN confirmTimeline and lock db_timeline FOR UPDATE
+        W->>G: current reads the server system_identifier and timeline_id
+        alt timeline unreadable
+            G-->>W: UNKNOWN
+            W->>D: roll back, nothing changes
+        else stored pair already matches
+            W->>W: CONFIRMED
+        else restore detected
+            W->>D: SELECT id FROM tenants
+            loop each tenant
+                W->>D: SET LOCAL app.tenant with read-back
+                W->>D: SELECT EXISTS live lease on clock_timestamp
+                alt any lease is live
+                    W->>D: roll back
+                    W->>W: WAITING_FOR_LEASES
+                else no lease is live
+                    W->>D: UPDATE open jobs SET fencing_token = fencing_token + max_attempts
+                    W->>D: DELETE cap_grants RETURNING job_id, epoch
+                    loop each deleted grant
+                        W->>U: append cap.revoke with the epoch
+                        U->>D: INSERT audit_events cap.revoke
+                    end
+                end
+            end
+            W->>D: UPSERT db_timeline with the server pair
+            W->>W: CONFIRMED
+        end
+        W->>D: retry the claim once with the gate open
+    end
