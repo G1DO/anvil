@@ -831,7 +831,9 @@ class JobServiceTest {
         // next_run_at first (V7, record 0020); its plan is checked on
         // jobs_claim_order_idx in atomicClaimHasZeroDoubleClaimsAtGateScale and
         // FairClaimTest.claimUsesTheClaimOrderIndex.
-        for (int i = 0; i < 200; i++) {
+        // At 200 rows the sequential scan and the index cost about the same, so the plan
+        // could flip with the table's physical state. At this size the index is clearly cheaper.
+        for (int i = 0; i < 1000; i++) {
             seedQueued("t_single", "explain-" + i + "-" + UUID.randomUUID());
         }
         jdbc.execute("ANALYZE jobs");
