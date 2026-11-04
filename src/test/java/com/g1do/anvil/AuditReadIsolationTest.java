@@ -226,6 +226,21 @@ class AuditReadIsolationTest {
     }
 
     @Test
+    void httpEventsReturnTheStoredPayload() throws Exception {
+        var result = mockMvc.perform(get("/audit/events")
+                        .header("X-Tenant-Id", TENANT_A)
+                        .param("job_id", jobA.toString()))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode tree = jsonMapper.readTree(result.getResponse().getContentAsString());
+        List<AuditReadService.AuditEventRow> rows = auditReads.listEvents(TENANT_A, jobA, 100, null);
+        assertThat(tree.size()).isEqualTo(rows.size());
+        for (int i = 0; i < rows.size(); i++) {
+            assertThat(tree.get(i).get("payload")).isEqualTo(rows.get(i).payload());
+        }
+    }
+
+    @Test
     void missingOrUnknownTenantIs401() throws Exception {
         mockMvc.perform(get("/audit/events").param("job_id", jobA.toString()))
                 .andExpect(status().isUnauthorized());

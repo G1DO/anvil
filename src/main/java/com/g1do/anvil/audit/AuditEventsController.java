@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.annotation.JsonRawValue;
 import com.g1do.anvil.tenant.TenantContext;
 
 /**
@@ -51,7 +51,7 @@ public class AuditEventsController {
             String prev_hash,
             String event_hash,
             String type,
-            JsonNode payload,
+            @JsonRawValue String payload,
             OffsetDateTime created_at) {
     }
 
@@ -92,7 +92,7 @@ public class AuditEventsController {
         List<AuditEventDto> dtos = rows.stream()
                 .map(r -> new AuditEventDto(
                         r.id(), r.tenantId(), r.jobId(), r.seq(),
-                        r.prevHash(), r.eventHash(), r.type(), r.payload(), r.createdAt()))
+                        r.prevHash(), r.eventHash(), r.type(), r.payload().toString(), r.createdAt()))
                 .toList();
         return ResponseEntity.ok(dtos);
     }
