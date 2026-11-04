@@ -13,6 +13,9 @@ var/
 ### VS Code ###
 .vscode/
 
+# Local frontend dependency tree (node_modules only)
+/frontend/node_modules/
+
 # Local env values (names live in .env.example)
 .env
 # Pinned tool downloads (task diagrams)
