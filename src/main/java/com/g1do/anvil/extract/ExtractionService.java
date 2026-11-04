@@ -127,7 +127,8 @@ public class ExtractionService {
      * Extracts the latest version of the caller's document, or returns its
      * stored result. Empty when the caller can't see the document. Throws
      * {@link ModelUnavailableException} when the model can't be asked; nothing
-     * is stored then, and the call still counts against the budget.
+     * is stored then. A call that was attempted still counts against the budget;
+     * with no credential configured none is attempted, so none is spent.
      */
     public Optional<Result> extract(String tenant, UUID documentId) {
         Optional<Lookup> found = tx.execute(status -> {

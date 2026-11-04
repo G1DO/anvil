@@ -27,10 +27,12 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/anvil
       SPRING_DATASOURCE_USERNAME: anvil
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-anvil}
-      # Passed through from your environment or .env; left unset when you set nothing.
+      # From your environment or .env. The key stays unset when you set nothing. The
+      # other two repeat application.yaml's defaults, because a blank value would
+      # reach the app as blank and stop it at startup.
       ANVIL_MODEL_API_KEY:
-      ANVIL_MODEL:
-      ANVIL_MODEL_BASE_URL:
+      ANVIL_MODEL: ${ANVIL_MODEL:-deepseek-flash}
+      ANVIL_MODEL_BASE_URL: ${ANVIL_MODEL_BASE_URL:-https://api.deepseek.com}
     depends_on:
       db:
         condition: service_healthy
