@@ -13,8 +13,8 @@ var/
 ### VS Code ###
 .vscode/
 
-# Legacy local runtime dirt (root-owned search index, untracked)
-/.structurizr/
+# Local frontend dependency tree (node_modules only)
+/frontend/node_modules/
 
 # Local env values (names live in .env.example)
 .env
