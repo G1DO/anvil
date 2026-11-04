@@ -1,6 +1,6 @@
 # 0001 — Durable V1 schema with legal-transition guard
 
-Status: accepted.
+Status: accepted. Row-level security came with record 0005, and record 0020 replaced `jobs_claim_idx`.
 
 ## Context
 

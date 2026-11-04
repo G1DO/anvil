@@ -4,7 +4,7 @@ stateDiagram-v2
     RUNNING --> QUEUED : reconciler reclaim
     RUNNING --> SUCCEEDED : commitSucceeded
     RUNNING --> FAILED : commitFailed
-    QUEUED --> FAILED : fail without running
+    QUEUED --> FAILED : allowed by the trigger, no code path yet
     RUNNING --> DEAD : reconciler exhausts attempts
     QUEUED --> DEAD : reconciler exhausts queued
     SUCCEEDED --> [*]

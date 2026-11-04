@@ -4,6 +4,7 @@ sequenceDiagram
     participant G as TimelineGuard
     participant D as Postgres
     participant U as AuditChain
+    Note over W,U: Library code proven by tests. The running app starts no worker yet.
 
     W->>D: BEGIN claim transaction and SET LOCAL app.tenant
     W->>G: requireConfirmed

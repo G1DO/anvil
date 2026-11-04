@@ -22,7 +22,7 @@ A job could be replayed only through `GET /audit/replay`. An operator couldn't c
   3. the state must be terminal.
 - **This changes the API too, and makes it stricter.** Its replay used to check only the latest checkpoint and did not read the header. Every chain the system writes passes the new checks, so no honest job changes its answer. A database edit to the state or the input root, or to an earlier checkpoint, is now refused by the API as well as by the CLI.
 
-**The CLI.** It is `com.g1do.anvil.cli.AnvilCli`, in the same jar, and starts no Spring context, so no worker or relay runs. Operators run it with `task audit:replay`, `task audit:export` and `task audit:verify`, or from the deployed jar through Spring Boot's `PropertiesLauncher`.
+**The CLI.** It is `com.g1do.anvil.cli.AnvilCli`, in the same jar, and starts no Spring context, so nothing else runs. Operators run it with `task audit:replay`, `task audit:export` and `task audit:verify`, or from the deployed jar through Spring Boot's `PropertiesLauncher`.
 - `replay` and `export` connect to Postgres with the service's own `SPRING_DATASOURCE_*` variables, not through the API. The session is read-only.
 - If the login bypasses row-level security (a superuser or `BYPASSRLS`, like the Compose default `anvil`), the CLI switches to `anvil_app` with `SET ROLE`. If it can't, or the role still bypasses RLS, the CLI refuses to read.
 - The tenant must exist in `tenants`, as `TenantAuthFilter` requires. After that, `ReplayService` reads under `SET LOCAL app.tenant`, so another tenant's job is "not found", exactly like a missing one.
@@ -76,6 +76,6 @@ So the cap is 8 MiB, about 15,000 realistic events. A job's chain is tens of eve
 - **Residual: an export is capped at 8 MiB.** Verification time grows with chain length, as the offline verifier reads the whole export. The database replay path is bounded from record 0027 (#76); the CLI still exports the whole chain.
 - **Rejected:**
   - An export route on the API. It needs the API running, which is the case #75 is about.
-  - Starting the Spring application for the CLI. It would start workers and the relay.
+  - Starting the Spring application for the CLI. It would start the web server and everything else in the app.
   - Trusting the export header.
   - Writing to an existing file.
