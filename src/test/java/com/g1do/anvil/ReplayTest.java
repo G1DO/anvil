@@ -710,6 +710,42 @@ class ReplayTest {
     }
 
     @Test
+    void checkpointGuardUsesTheHashedSubmitRootNotTheMutableVersionRow() throws Exception {
+        // Cross the checkpoint at 200 only after changing the mutable version row.
+        // The summary must still carry the root from the hashed submit event, so
+        // the fast path reports the same mismatch as the full path.
+        var submitted = submitTerminalWithClaims("guard-mutable-input", 195);
+        UUID job = submitted.jobId();
+        String submittedSha = versionSha(TENANT_A, submitted.versionId());
+        String changedSha = "b".repeat(64);
+        assertThat(changedSha).isNotEqualTo(submittedSha);
+
+        editInTheDatabase("UPDATE document_versions SET sha256 = ? WHERE tenant_id = ? AND id = ?",
+                changedSha, TENANT_A, submitted.versionId());
+
+        TransactionTemplate txn = new TransactionTemplate(txManager);
+        txn.execute(status -> {
+            jdbc.queryForObject("SELECT set_config('app.tenant', ?, true)", String.class, TENANT_A);
+            AuditChain.append(jdbc, TENANT_A, job, AuditChain.TYPE_CLAIM,
+                    Map.of("state", "RUNNING", "k", "mutable-input"));
+            return null;
+        });
+
+        Map<String, Object> cp = jdbc.queryForMap(
+                "SELECT input_sha FROM job_checkpoints WHERE tenant_id = ? AND job_id = ? AND seq = 200",
+                TENANT_A, job);
+        assertThat(cp.get("input_sha")).isEqualTo(submittedSha);
+
+        ReplayService.ReplayResult fast = replays.replay(TENANT_A, job);
+        ReplayService.ReplayResult full = replays.replayFull(TENANT_A, job);
+        assertThat(fast.match()).isFalse();
+        assertThat(full.match()).isFalse();
+        assertThat(fast.inputSha()).isEqualTo(changedSha);
+        assertThat(fast.problem()).isEqualTo("input_sha does not match the checkpoint at seq 200");
+        assertThat(full.problem()).isEqualTo("input_sha does not match the submit event at seq 0");
+    }
+
+    @Test
     void forgedCheckpointSummaryIsOverwrittenFromTheChain() throws Exception {
         var submitted = submitTerminalWithClaims("guard-forged", 350);
         UUID job = submitted.jobId();
