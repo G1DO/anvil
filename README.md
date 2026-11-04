@@ -17,7 +17,7 @@ ANVIL is for:
 
 ## Guarantees
 
-Each guarantee links to the tests that prove it. All tests run against real PostgreSQL in containers, restored from a backup before the suite starts.
+Each guarantee links to the tests that prove it. Tests that touch the database run against real PostgreSQL in containers, restored from a backup before the suite starts.
 
 1. **No lost work, no double effect.** Execution is at-least-once with fenced, idempotent effects; it is never exactly-once.
    - A duplicate submit returns the same IDs and creates one job: [`SubmitIdempotencyTest`](src/test/java/com/g1do/anvil/SubmitIdempotencyTest.java).
@@ -45,9 +45,7 @@ Each guarantee links to the tests that prove it. All tests run against real Post
    - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java). It mirrors [`docs/faults/fencing.tla`](docs/faults/fencing.tla).
    - TLC model-checks [`docs/faults/fencing.tla`](docs/faults/fencing.tla) on every gate run, with TLC pinned to 1.7.4 and a SHA-256 check. The job is `tla` in [`gate.yml`](.github/workflows/gate.yml) and runs `task check:tla`. Its runs are on the [gate workflow page](https://github.com/G1DO/anvil/actions/workflows/gate.yml).
    - Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
-- Each of the nine fault-matrix cases shows a single effect and no lost work: [`FaultMatrixTest`](src/test/java/com/g1do/anvil/FaultMatrixTest.java).
-- A failed scheduled fault run opens an issue with its seed and trace: [`FaultScheduleTest`](src/test/java/com/g1do/anvil/FaultScheduleTest.java), [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
-   - The real-Postgres fault matrix covers a crash before and after the effect, a lost ack, duplicate and out-of-order delivery, a stuck lease, a GIN pending-list flush, autovacuum and connection-pool exhaustion. Each case shows a single effect and no lost work: [`FaultMatrixTest`](src/test/java/com/g1do/anvil/FaultMatrixTest.java).
+   - The real-Postgres fault matrix has nine cases: a crash before and after the effect, a lost ack, duplicate and out-of-order delivery, a stuck lease, a GIN pending-list flush, autovacuum and connection-pool exhaustion. Each case shows a single effect and no lost work: [`FaultMatrixTest`](src/test/java/com/g1do/anvil/FaultMatrixTest.java).
    - The [`faults`](.github/workflows/faults.yml) workflow runs the simulator 100 times nightly and the real-Postgres fault suite 5 times weekly, each from a fresh seed. A failed run opens an issue with its seed and trace: [`FaultScheduleTest`](src/test/java/com/g1do/anvil/FaultScheduleTest.java), [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java). Its runs are on the [faults workflow page](https://github.com/G1DO/anvil/actions/workflows/faults.yml).
    - A simulated point-in-time restore that rewinds the epoch lets a stale owner affect 0 rows with no double effect: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0013](docs/decisions/0013-pitr-timeline-check.md).
    - When the database timeline is unknown or rewound, claims, heartbeats and commits are refused (`503 TIMELINE_UNCONFIRMED`) until leases expire and capabilities are re-issued: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0016](docs/decisions/0016-restore-timeline-gate.md).
@@ -73,7 +71,12 @@ Each guarantee links to the tests that prove it. All tests run against real Post
      - One process tops out near 170 extractions a second, because each model call holds a request thread. So 140 requests per second is at its edge: p95 2.2 s to 9.2 s, and 0.7% to 19% not started, depending on how many clients wait. A 10x flood is queued, not refused, and recovers at once. The tables grow about 4 MiB per 1,000 documents, and autovacuum keeps them under 8% wasted. No soak numbers are claimed, because the index is over budget: [load summary](load/README.md), [`LoadRigTest`](src/test/java/com/g1do/anvil/load/LoadRigTest.java).
 7. **Saturation is visible.** Queue age, claim latency and pool wait are exported without tenant data. The burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 
-Not yet guaranteed: a target for recovery time or data loss (the drill measures them; it doesn't promise them), or detecting a restore that keeps the database timeline, such as a storage snapshot rolled back in place. See [record 0016](docs/decisions/0016-restore-timeline-gate.md).
+Not yet guaranteed:
+
+- **Jobs don't run in the service.** The claim, commit, relay, reconcile, content-store and jail code exists and is tested through its Java APIs, but the running app starts no worker loop and exposes no route to it. A submitted job stays `QUEUED`, and its replay answers `match: false`, until something calls that code. Guarantees 1, 4 and 5 and the jail and content claims in 2 hold for that code, not for a job submitted to a running app.
+- **`X-Tenant-Id` selects a tenant; it doesn't authenticate one.** Anyone who can reach the API and knows a tenant's ID acts as that tenant, so guarantee 2 holds between callers who are honest about their tenant. Put real authentication in front of the API before exposing it. See the [threat model](docs/threat-model.md).
+- **Row-level security needs the runtime role.** The Compose stack logs in as a superuser, which bypasses it, so isolation under Compose rests on the queries' own tenant filters ([record 0018](docs/decisions/0018-dev-only-password-defaults.md)). The tests run as `anvil_app`.
+- A target for recovery time or data loss (the drill measures them; it doesn't promise them), or detecting a restore that keeps the database timeline, such as a storage snapshot rolled back in place. See [record 0016](docs/decisions/0016-restore-timeline-gate.md).
 
 ## Success
 
@@ -102,6 +105,8 @@ Success is measured by the guarantees above. Each measure names the test that sh
 - The full set runs nightly against the live model, fails when it drifts below the committed run, and files one issue: [`EvalNightlyTest`](src/test/java/com/g1do/anvil/eval/EvalNightlyTest.java), [`FileIssueScriptTest`](src/test/java/com/g1do/anvil/FileIssueScriptTest.java).
 - The full-text index was measured against its budget before any soak number, and over budget it stays out of the schema; dropping it leaves extraction working: [`GinIndexTest`](src/test/java/com/g1do/anvil/GinIndexTest.java).
 - Load at 140 rps and a 10x flood report p95, error rate and table growth, and the soak refuses to run while the full-text index is over budget: [`LoadRigTest`](src/test/java/com/g1do/anvil/load/LoadRigTest.java).
+- Each of the nine fault-matrix cases shows a single effect and no lost work, and a failed scheduled fault run opens an issue with its seed and trace: [`FaultMatrixTest`](src/test/java/com/g1do/anvil/FaultMatrixTest.java), [`FaultScheduleTest`](src/test/java/com/g1do/anvil/FaultScheduleTest.java).
+- Queue age, claim latency and pool wait are exported without tenant data, and the burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 - An unconfirmed or rewound database timeline refuses claims, heartbeats and commits: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java).
 - A backup, clean and point-in-time restore reports its measured recovery time and data loss, with no target claimed: [`PitrRestoreDrillTest`](src/test/java/com/g1do/anvil/PitrRestoreDrillTest.java).
 
@@ -110,14 +115,14 @@ Success is measured by the guarantees above. Each measure names the test that sh
 You need Java 25, Docker, [Task](https://taskfile.dev) and [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, with unprivileged user namespaces allowed), which the exec jail runs every child under.
 
 ```bash
-task dev       # run locally; starts no Postgres, and startup fails without a configured datasource
+task dev       # run locally; starts no Postgres, so point it at one (below)
 task test      # full suite against Testcontainers Postgres restored from a backup (also compiles with lint)
-task verify    # everything the gate runs
+task verify    # everything the gate runs, except its PR description check; needs ports 5432 and 8080 free
 task faults:sim   # the nightly simulator runs (FAULT_SEED, FAULT_SIM_RUNS, FAULT_SIM_BREAK)
 task faults:pg    # one weekly real-Postgres fault run (FAULT_SEED)
 task eval         # eval gate on the frozen set (EVAL_CANDIDATE, default the committed extraction run)
 task eval:extract # harness run: the extraction path over a frozen set (EVAL_SET; needs ANVIL_MODEL_API_KEY)
-task eval:full    # eval gate on the full set (EVAL_CANDIDATE, default the committed full-set run)
+task eval:full    # eval gate on the full set (EVAL_CANDIDATE, default eval/runs/extract-v1-deepseek-flash-full-v1)
 task eval:nightly # what the nightly workflow runs: the full set against the live model, then its gate
 task load:gin     # measure the full-text index against record 0025's budget
 task load:steady  # 140 extraction requests per second for 5 minutes (also load:flood; load:soak needs a within-budget GIN verdict)
@@ -145,6 +150,20 @@ curl -s localhost:8080/healthz    # liveness
 curl -s localhost:8080/readyz     # readiness (checks the database)
 ```
 
+Submit a document as the seeded tenant `t_single`. The response holds the `job_id` to look up. The job stays `QUEUED`, because the app runs no workers yet (see "Not yet guaranteed").
+
+```bash
+curl -s localhost:8080/api/documents -H 'X-Tenant-Id: t_single' -H 'Idempotency-Key: demo-1' \
+  -H 'Content-Type: application/json' -d '{"title":"demo","mime_type":"text/plain","body":"hello"}'
+```
+
+To run from source instead, start only the database and point `task dev` at it:
+
+```bash
+docker compose up -d db
+SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/anvil SPRING_DATASOURCE_USERNAME=anvil SPRING_DATASOURCE_PASSWORD=anvil task dev
+```
+
 Open <http://localhost:8080/console/> to inspect a job. Enter a tenant and a job ID; the
 console sends `X-Tenant-Id` to the same API routes as any other client, shows the job's
 state, chain and replay result, and shows the same "Job not found" for a missing job and
@@ -170,6 +189,10 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | `GET /observe/saturation`, `GET /metrics` | Saturation signals |
 | `GET /healthz`, `GET /readyz` | Health probes |
 | `GET /console/` | Operator console page (browser; calls the routes above with `X-Tenant-Id`) |
+
+## Working on it
+
+Work starts from an issue and lands through a PR that fills in the template. The gate must pass, and PRs merge with a merge commit, so every commit stays on `main`. Run `./mvnw clean` before `task test` or `task verify` when an IDE has compiled the sources: the VS Code Java build can write stub classes into `target/` that fail with "Unresolved compilation problem", which is a stale build, not a bug in the code.
 
 ## Where things are
 
