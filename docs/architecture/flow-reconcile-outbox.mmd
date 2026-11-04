@@ -1,5 +1,6 @@
 sequenceDiagram
     autonumber
+    %% Library code proven by tests: the running app starts neither loop yet.
     participant W as Worker JobService
     participant D as Postgres
     participant U as AuditChain
@@ -24,7 +25,6 @@ sequenceDiagram
         alt publish throws
             R->>D: skip mark republish later
         else publish ok
-            R->>D: UPDATE outbox SET sent_at in new txn
             P->>K: consume event_id
             K->>D: INSERT processed_events ON CONFLICT DO NOTHING
             alt first time
@@ -32,5 +32,6 @@ sequenceDiagram
             else redelivery
                 D-->>K: false skip duplicate
             end
+            R->>D: UPDATE outbox SET sent_at in new txn
         end
     end
