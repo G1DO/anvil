@@ -113,7 +113,7 @@ public class OutboxRelay {
             } catch (RuntimeException e) {
                 if (failure == null) {
                     failure = e;
-                } else {
+                } else if (e != failure) {
                     failure.addSuppressed(e);
                 }
             }

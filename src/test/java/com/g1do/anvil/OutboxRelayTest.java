@@ -135,6 +135,12 @@ class OutboxRelayTest {
                 (RowCallbackHandler) rs -> sent.put(rs.getString(1), rs.getBoolean(2)));
         assertThat(sent).containsOnly(Map.entry("t_relay_a", true), Map.entry("t_relay_b", false),
                 Map.entry("t_relay_c", true));
+
+        // A publisher that throws one shared instance for every tenant must still report it.
+        IllegalStateException shared = new IllegalStateException("broker is down");
+        assertThatThrownBy(() -> relay.relayOnce((event, headers) -> {
+            throw shared;
+        })).isSameAs(shared);
     }
 
     @Test
