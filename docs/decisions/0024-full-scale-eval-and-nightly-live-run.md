@@ -1,6 +1,6 @@
 # 0024 — A generated full-scale eval set, McNemar, a multilingual and base64 injection suite, and a nightly live run
 
-Status: proposed 2026-11-02, revised 2026-11-03 after review (#79), revised 2026-11-04 for the OpenCode Go nightly. Builds on the frozen eval gate (record 0021), single bounded extraction (record 0022) and its restriction (record 0023).
+Status: accepted 2026-11-04, proposed 2026-11-02, revised 2026-11-03 after review (#79), revised 2026-11-04 for the OpenCode Go nightly. Builds on the frozen eval gate (record 0021), single bounded extraction (record 0022) and its restriction (record 0023).
 
 ## Context
 

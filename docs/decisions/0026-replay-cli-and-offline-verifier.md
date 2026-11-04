@@ -1,6 +1,6 @@
 # 0026 — Replay from the command line, and an export verified with no database
 
-Status: proposed 2026-11-03 (#75). Builds on the immutable audit chain (record 0009) and deterministic replay (record 0010). It doesn't change the chain, the hashes, the API's response or the schema. It does make the API's replay stricter, as the first decision below says. Record 0027 (#76) later lets the database replay path read from the latest checkpoint; the offline verifier still reads the whole export.
+Status: accepted 2026-11-04, proposed 2026-11-03 (#75). Builds on the immutable audit chain (record 0009) and deterministic replay (record 0010). It doesn't change the chain, the hashes, the API's response or the schema. It does make the API's replay stricter, as the first decision below says. Record 0027 (#76) later lets the database replay path read from the latest checkpoint; the offline verifier still reads the whole export.
 
 ## Context
 
