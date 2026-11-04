@@ -1,13 +1,12 @@
-import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
 import type { Plugin } from 'vite';
+import { defineConfig } from 'vitest/config';
 
 /**
  * HtmlUnit 5.7 does not execute ES modules for this page. Vite emits a module
  * script by default; in production, downgrade it to a classic deferred script.
- * `defer` keeps execution after the document body has been parsed, so React can
- * mount into #root without a DOMContentLoaded listener.
- *
- * Dev mode must keep the module script: `/src/main.tsx` only works as a module.
+ * Dev mode keeps the module script because `/src/main.tsx` is only served as a
+ * module by the Vite dev server.
  */
 function classicDeferredScript(enabled: boolean): Plugin {
   return {
@@ -28,13 +27,14 @@ function classicDeferredScript(enabled: boolean): Plugin {
   };
 }
 
+// https://vite.dev/config/
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [classicDeferredScript(command === 'build')],
+  plugins: [react(), classicDeferredScript(command === 'build')],
   server: {
     proxy: {
-      '/api': { target: 'http://localhost:8080', changeOrigin: true },
-      '/audit': { target: 'http://localhost:8080', changeOrigin: true },
+      '/api': 'http://localhost:8080',
+      '/audit': 'http://localhost:8080',
     },
   },
   build: {

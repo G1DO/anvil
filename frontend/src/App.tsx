@@ -96,7 +96,7 @@ function verdict(bundle: InspectBundle, tenant: string, jobId: string): View {
   };
 }
 
-export function App() {
+export default function App() {
   const tenantRef = useRef<HTMLInputElement>(null);
   const jobIdRef = useRef<HTMLInputElement>(null);
   const requestSequence = useRef(0);
