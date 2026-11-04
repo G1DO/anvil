@@ -18,6 +18,8 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.g1do.anvil.eval.EvalSet.AttackCase;
+import com.g1do.anvil.extract.BoundedText;
+import com.g1do.anvil.extract.Prompt;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -123,15 +125,34 @@ class FullSetTest {
         assertThat(r.byLanguage()).hasSize(13);
     }
 
-    @Test
-    void theCommittedFullSetReportIsAFreshRescoreOfTheCommittedRun(@org.junit.jupiter.api.io.TempDir Path tmp)
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = { "eval/runs/extract-v1-deepseek-flash-full-v1",
+            "eval/runs/extract-v1-deepseek-v4.1-flash-full-v1" })
+    void theCommittedFullSetReportIsAFreshRescoreOfTheCommittedRun(String dir, @org.junit.jupiter.api.io.TempDir Path tmp)
             throws IOException {
-        Path run = Path.of("eval/runs/extract-v1-deepseek-flash-full-v1");
+        Path run = Path.of(dir);
         Path report = tmp.resolve("report.md");
         java.io.PrintStream sink = new java.io.PrintStream(java.io.OutputStream.nullOutputStream());
         assertThat(EvalGate.cli(new String[] { SET.toString(), run.resolve("predictions.jsonl").toString(),
                 report.toString() }, sink, sink)).isZero();
         assertThat(Files.readString(report)).isEqualTo(Files.readString(run.resolve("report.md")));
+    }
+
+    @Test
+    void theCommittedGoBaselineMatchesThePromptModelAndSet() throws IOException {
+        Path dir = Path.of("eval/runs/extract-v1-deepseek-v4.1-flash-full-v1");
+        JsonNode run = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(dir.resolve("run.json").toFile());
+        EvalSet set = EvalSet.load(SET);
+
+        assertThat(run.path("prompt_sha256").asText()).isEqualTo(Prompt.SHA256);
+        assertThat(run.path("prompt_version").asText()).isEqualTo(Prompt.VERSION);
+        assertThat(run.path("model").asText()).isEqualTo("deepseek-v4.1-flash");
+        assertThat(run.path("max_chars").asInt()).isEqualTo(BoundedText.MAX_CHARS);
+        assertThat(run.path("set").asText()).isEqualTo(set.name());
+        assertThat(run.path("set_frozen_commit").asText()).isEqualTo(set.manifest().at("/frozen/commit").asText());
+        assertThat(run.path("documents").asInt()).isEqualTo(set.docIds().size());
+        assertThat(run.path("model_calls").asInt()).isEqualTo(set.docIds().size());
     }
 
     @Test
