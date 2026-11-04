@@ -32,8 +32,6 @@ public class ObserveController {
     @GetMapping("/observe/saturation")
     public ResponseEntity<Map<String, Object>> saturation() {
         SaturationSignals.SaturationSnapshot snap = signals.snapshot();
-        List<BurnAlerts.Firing> firings = BurnAlerts.evaluate(
-                snap.queueAgeSeconds(), snap.claimP99Seconds(), snap.poolWaitP99Seconds());
         Map<String, Object> body = new LinkedHashMap<>();
         Map<String, Object> signalMap = new LinkedHashMap<>();
         signalMap.put("anvil_queue_age_seconds",

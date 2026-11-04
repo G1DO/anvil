@@ -55,6 +55,9 @@ public class SaturationSignals {
     private final Deque<Long> claimSamples = new ArrayDeque<>();
     private final Deque<Long> poolWaitSamples = new ArrayDeque<>();
 
+    /** The last queue age read, reported while the database can't be read. */
+    private volatile double lastQueueAgeSeconds;
+
     public SaturationSignals(
             JdbcTemplate jdbc, PlatformTransactionManager txManager, DataSource dataSource) {
         this.jdbc = jdbc;
@@ -65,26 +68,27 @@ public class SaturationSignals {
     /**
      * Oldest QUEUED age in seconds on the DB clock, max across tenants.
      * Each tenant is read in its own transaction with RLS context set, so
-     * collection preserves fencing and RLS and exposes no tenant bytes.
+     * collection preserves fencing and RLS and exposes no tenant bytes. When the
+     * database can't be read the last value is reported: an unread queue isn't an
+     * empty one, and 0 would read as healthy when it's needed most.
      */
     public double queueAgeSeconds() {
-        List<String> tenants;
         try {
-            tenants = jdbc.queryForList("SELECT id FROM tenants", String.class);
-        } catch (Exception e) {
-            return 0.0;
-        }
-        double max = 0.0;
-        for (String tenant : tenants) {
-            Double age = tx.execute(status -> {
-                TenantGuard.setTenant(jdbc, tenant);
-                return jdbc.queryForObject(QUEUE_AGE_SQL, Double.class);
-            });
-            if (age != null && age > max) {
-                max = age;
+            double max = 0.0;
+            for (String tenant : jdbc.queryForList("SELECT id FROM tenants", String.class)) {
+                Double age = tx.execute(status -> {
+                    TenantGuard.setTenant(jdbc, tenant);
+                    return jdbc.queryForObject(QUEUE_AGE_SQL, Double.class);
+                });
+                if (age != null && age > max) {
+                    max = age;
+                }
             }
+            lastQueueAgeSeconds = max;
+            return max;
+        } catch (Exception e) {
+            return lastQueueAgeSeconds;
         }
-        return max;
     }
 
     /** Records one claim latency sample (nanoseconds). Bounded ring, drops oldest. */
@@ -119,11 +123,11 @@ public class SaturationSignals {
         try (Connection c = dataSource.getConnection()) {
             c.isValid(2);
         } catch (Exception e) {
-            return poolWaitP99Seconds();
+            // The time spent failing is a wait too: an exhausted pool must show up here.
         }
-        double seconds = (System.nanoTime() - start) / 1_000_000_000.0;
-        recordPoolWaitNanos(System.nanoTime() - start);
-        return seconds;
+        long waited = System.nanoTime() - start;
+        recordPoolWaitNanos(waited);
+        return waited / 1_000_000_000.0;
     }
 
     /** p99 claim latency in seconds, 0 when no samples. */
