@@ -1,6 +1,6 @@
 # 0011 — Fault-verified fencing with deterministic sim and reduced real-PG proof
 
-Status: accepted.
+Status: accepted. Files named here were later removed; see the git history. A failed run now writes to `target/fault-runs/`.
 
 ## Context
 
