@@ -1,8 +1,5 @@
 target/
 var/
-.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
 
 ### IntelliJ IDEA ###
 .idea
@@ -18,7 +15,7 @@ var/
 
 # Local env values (names live in .env.example)
 .env
-# Pinned tool downloads (task diagrams)
+# Pinned tool downloads (task diagrams, task check:tla)
 /.bin/
 # Generated on demand by task diagrams; not committed
 docs/architecture/data-model.mmd

@@ -610,18 +610,21 @@ class JobServiceTest {
                 int stopCode = killStop.waitFor();
                 if (stopCode == 0) {
                     try {
-                        Process ps = new ProcessBuilder("ps", "-o", "stat=", "-p", Long.toString(pid))
-                                .start();
-                        String stat = new String(ps.getInputStream().readAllBytes()).trim();
-                        ps.waitFor();
-                        // Best-effort verification: 'T' = stopped by job control
-                        // signal. No hard assert: kill -STOP exit 0 already proves
-                        // OS suspend; ps parsing may vary by platform.
-                        if (!stat.contains("T")) {
-                            // Still STOPped; ps format differs — proceed.
+                        // 'T' = stopped by job control signal. Delivery is asynchronous, so poll.
+                        String stat = "";
+                        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                        while (!stat.contains("T") && System.nanoTime() < deadline) {
+                            Process ps = new ProcessBuilder("ps", "-o", "stat=", "-p", Long.toString(pid))
+                                    .start();
+                            stat = new String(ps.getInputStream().readAllBytes()).trim();
+                            ps.waitFor();
+                            if (!stat.contains("T")) {
+                                Thread.sleep(50);
+                            }
                         }
-                    } catch (Exception parseIgnored) {
-                        // ps unavailable — kill -STOP exit 0 remains the proof.
+                        assertThat(stat).as("the helper process is really stopped").contains("T");
+                    } catch (Exception psUnavailable) {
+                        // ps unavailable: kill -STOP exit 0 remains the proof.
                     }
                 }
             } catch (Exception osUnavailable) {
@@ -828,7 +831,9 @@ class JobServiceTest {
         // next_run_at first (V7, record 0020); its plan is checked on
         // jobs_claim_order_idx in atomicClaimHasZeroDoubleClaimsAtGateScale and
         // FairClaimTest.claimUsesTheClaimOrderIndex.
-        for (int i = 0; i < 200; i++) {
+        // At 200 rows the sequential scan and the index cost about the same, so the plan
+        // could flip with the table's physical state. At this size the index is clearly cheaper.
+        for (int i = 0; i < 1000; i++) {
             seedQueued("t_single", "explain-" + i + "-" + UUID.randomUUID());
         }
         jdbc.execute("ANALYZE jobs");
