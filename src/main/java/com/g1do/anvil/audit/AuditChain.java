@@ -46,10 +46,13 @@ import com.g1do.anvil.submit.CanonicalCbor;
  * {@code outbox.sent_at} are never appended (callers simply do not call).</li>
  * <li>Checkpoints ({@code seq % 100 == 0}, {@code seq > 0}) also record the
  * replay summary of the prefix at that boundary: the last {@code cas.put}
- * artifact, the submit input root, and the last commit seq/outcome. Replay
- * reads only the latest checkpoint and the events from it onward; the summary
- * lets it return the full chain's {@code output_sha} and header verdict
- * without reading earlier events (V10, issue #76).</li>
+ * artifact, the submit input root, and the last commit seq/outcome. From V11
+ * the database derives and validates that summary in a BEFORE INSERT trigger,
+ * so the writer supplies only tenant, job, seq and sha; a non-boundary seq, a
+ * missing event or a wrong sha is rejected and a supplied summary is
+ * overwritten (V11, issue #76). Replay reads only the latest checkpoint and the
+ * events from it onward; the summary lets it return the full chain's
+ * {@code output_sha} and header verdict without reading earlier events.</li>
  * </ul>
  */
 public final class AuditChain {
@@ -121,52 +124,15 @@ public final class AuditChain {
                 tenant, jobId, seq, prevHash, eventHash, cleanType, payloadJson);
         // Checkpoint hook (issue #30): every 100 events per job, same txn.
         // sha is the chain event_hash at the boundary (seq % 100 == 0, seq > 0),
-        // not output_sha. Immutable + RLS mirror audit_events (V5). V10 also
-        // stores the prefix replay summary, so replay can skip the earlier
-        // events without losing output_sha or the header binding (#76).
+        // not output_sha. Immutable + RLS mirror audit_events (V5). Since V11
+        // the database trigger derives and validates the replay summary, so the
+        // writer supplies only the boundary identity (#76).
         if (seq > 0 && seq % CHECKPOINT_INTERVAL == 0) {
-            PrefixSummary prefix = prefixSummary(jdbc, tenant, jobId);
             jdbc.update(
-                    "INSERT INTO job_checkpoints "
-                            + "(tenant_id, job_id, seq, sha, artifact_sha, input_sha, commit_seq, commit_outcome) "
-                            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    tenant, jobId, seq, eventHash, prefix.artifactSha(), prefix.inputSha(),
-                    prefix.commitSeq(), prefix.commitOutcome());
+                    "INSERT INTO job_checkpoints (tenant_id, job_id, seq, sha) VALUES (?, ?, ?, ?)",
+                    tenant, jobId, seq, eventHash);
         }
         return eventHash;
-    }
-
-    /** What replay needs from the prefix to answer without reading it (V10). */
-    private record PrefixSummary(String artifactSha, String inputSha, Long commitSeq, String commitOutcome) {
-    }
-
-    private static PrefixSummary prefixSummary(JdbcTemplate jdbc, String tenantId, UUID jobId) {
-        // Each checkpoint repeats a small read of the prefix; at one event in a
-        // hundred this stays cheaper than asking every replay to read it again.
-        List<String> artifacts = jdbc.query(
-                "SELECT payload->>'artifact_sha' FROM audit_events "
-                        + "WHERE tenant_id = ? AND job_id = ? AND type = 'cas.put' ORDER BY seq DESC LIMIT 1",
-                (rs, i) -> rs.getString(1), tenantId, jobId);
-        List<Commit> commits = jdbc.query(
-                "SELECT seq, payload->>'outcome' FROM audit_events "
-                        + "WHERE tenant_id = ? AND job_id = ? AND type = 'commit' ORDER BY seq DESC LIMIT 1",
-                (rs, i) -> new Commit(rs.getLong(1), rs.getString(2)), tenantId, jobId);
-        List<String> inputs = jdbc.query(
-                "SELECT v.sha256 FROM jobs j "
-                        + "JOIN document_versions v ON v.tenant_id = j.tenant_id AND v.id = j.version_id "
-                        + "WHERE j.tenant_id = ? AND j.id = ?",
-                (rs, i) -> rs.getString(1), tenantId, jobId);
-        if (inputs.isEmpty()) {
-            throw new IllegalStateException("checkpoint has no input root for job " + jobId);
-        }
-        String artifact = artifacts.isEmpty() || artifacts.get(0) == null ? "" : artifacts.get(0);
-        Commit commit = commits.isEmpty() ? null : commits.get(0);
-        return new PrefixSummary(artifact, inputs.get(0),
-                commit == null ? null : commit.seq(),
-                commit == null ? null : commit.outcome());
-    }
-
-    private record Commit(long seq, String outcome) {
     }
 
     /**

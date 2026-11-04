@@ -139,6 +139,26 @@ class ReplayTest {
                 String.class, tenant, versionId);
     }
 
+    /**
+     * A terminal job followed by {@code claims} appended RUNNING events, which
+     * also writes the 100-event checkpoints the replay tests read.
+     */
+    private SubmitService.SubmitResult submitTerminalWithClaims(String keySuffix, int claims)
+            throws Exception {
+        var submitted = submitTerminal(TENANT_A, keySuffix);
+        TransactionTemplate txn = new TransactionTemplate(txManager);
+        for (int i = 1; i <= claims; i++) {
+            final int n = i;
+            txn.execute(status -> {
+                jdbc.queryForObject("SELECT set_config('app.tenant', ?, true)", String.class, TENANT_A);
+                AuditChain.append(jdbc, TENANT_A, submitted.jobId(), AuditChain.TYPE_CLAIM,
+                        Map.of("state", "RUNNING", "k", keySuffix + n));
+                return null;
+            });
+        }
+        return submitted;
+    }
+
     private String expectedOutputSha(UUID jobId, String terminalState, String artifactSha) {
         return ReplayService.outputSha(jobId, terminalState, artifactSha);
     }
@@ -535,6 +555,232 @@ class ReplayTest {
     }
 
     @Test
+    void suffixTamperAfterTheCheckpointReturnsMismatchNotAnException() throws Exception {
+        UUID job = submitTerminalWithClaims("suffix-201", 250).jobId();
+        assertThat(replays.replay(TENANT_A, job).match()).isTrue();
+
+        // Edit only seq 201, after the latest checkpoint at 200. The boundary is
+        // intact, so the checkpoint check passes and the suffix hash breaks.
+        editInTheDatabase("UPDATE audit_events SET payload = ?::jsonb "
+                + "WHERE tenant_id = ? AND job_id = ? AND seq = 201",
+                "{\"state\":\"RUNNING\",\"k\":\"edited-201\"}", TENANT_A, job);
+
+        ReplayService.ReplayResult r = replays.replay(TENANT_A, job);
+        assertThat(r.match()).isFalse();
+        assertThat(r.mismatchSeq()).isEqualTo(201L);
+        assertThat(r.problem()).isEqualTo("the chain breaks at seq 201");
+        assertThat(replays.replayFull(TENANT_A, job).mismatchSeq()).isEqualTo(201L);
+    }
+
+    @Test
+    void boundaryEventTamperReturnsMismatchNotAnException() throws Exception {
+        UUID job = submitTerminalWithClaims("suffix-200", 250).jobId();
+        assertThat(replays.replay(TENANT_A, job).match()).isTrue();
+
+        // Edit the boundary event itself. Its stored hash no longer recomputes,
+        // while the checkpoint still names that stored hash.
+        editInTheDatabase("UPDATE audit_events SET payload = ?::jsonb "
+                + "WHERE tenant_id = ? AND job_id = ? AND seq = 200",
+                "{\"state\":\"RUNNING\",\"k\":\"edited-200\"}", TENANT_A, job);
+
+        ReplayService.ReplayResult r = replays.replay(TENANT_A, job);
+        assertThat(r.match()).isFalse();
+        assertThat(r.mismatchSeq()).isEqualTo(200L);
+        assertThat(r.problem()).isEqualTo("the chain breaks at seq 200");
+    }
+
+    @Test
+    void deletedSuffixEventReturnsMismatchNotAnException() throws Exception {
+        UUID job = submitTerminalWithClaims("suffix-delete", 250).jobId();
+
+        editInTheDatabase("DELETE FROM audit_events "
+                + "WHERE tenant_id = ? AND job_id = ? AND seq = 201", TENANT_A, job);
+
+        ReplayService.ReplayResult r = replays.replay(TENANT_A, job);
+        assertThat(r.match()).isFalse();
+        assertThat(r.mismatchSeq()).isEqualTo(202L);
+    }
+
+    @Test
+    void checkpointGuardRejectsNonBoundaryAndWrongSha() throws Exception {
+        UUID job = submitTerminalWithClaims("guard-reject", 350).jobId();
+        String hash250 = jdbc.queryForObject(
+                "SELECT event_hash FROM audit_events WHERE tenant_id = ? AND job_id = ? AND seq = 250",
+                String.class, TENANT_A, job);
+
+        // V11 only accepts positive 100-event boundaries.
+        assertThatThrownBy(() -> jdbc.update(
+                "INSERT INTO job_checkpoints (tenant_id, job_id, seq, sha) VALUES (?, ?, 250, ?)",
+                TENANT_A, job, hash250))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+
+        // A boundary checkpoint must name the event hash at that seq. Remove the
+        // existing one at 300 so this tries the sha check, not UNIQUE(job_id, seq).
+        editInTheDatabase("DELETE FROM job_checkpoints "
+                + "WHERE tenant_id = ? AND job_id = ? AND seq = 300", TENANT_A, job);
+        String wrongSha = "f".repeat(64);
+        String hash300 = jdbc.queryForObject(
+                "SELECT event_hash FROM audit_events WHERE tenant_id = ? AND job_id = ? AND seq = 300",
+                String.class, TENANT_A, job);
+        assertThat(hash300).isNotEqualTo(wrongSha);
+
+        assertThatThrownBy(() -> jdbc.update(
+                "INSERT INTO job_checkpoints (tenant_id, job_id, seq, sha) VALUES (?, ?, 300, ?)",
+                TENANT_A, job, wrongSha))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+    }
+
+    @Test
+    void checkpointGuardRejectsACheckpointThatJumpsOverAGap() throws Exception {
+        // submitTerminal writes seq 0..4; 245 claims end the chain at seq 249.
+        UUID job = submitTerminalWithClaims("guard-gap", 245).jobId();
+        String hash249 = jdbc.queryForObject(
+                "SELECT event_hash FROM audit_events WHERE tenant_id = ? AND job_id = ? AND seq = 249",
+                String.class, TENANT_A, job);
+
+        // A runtime writer can insert a far-ahead event whose prev_hash names the
+        // tail. A checkpoint at it would make the fast path skip the gap.
+        Map<String, Object> payload = Map.of("state", "RUNNING", "k", "jump");
+        String hash300 = AuditChain.computeHash(AuditChain.TYPE_CLAIM, job, 300L, hash249,
+                CanonicalCbor.encodeMap(payload));
+        jdbc.update(
+                "INSERT INTO audit_events (tenant_id, job_id, seq, prev_hash, event_hash, type, payload) "
+                        + "VALUES (?, ?, 300, ?, ?, 'claim', ?::jsonb)",
+                TENANT_A, job, hash249, hash300, jsonMapper.writeValueAsString(payload));
+
+        // The event and sha match, but seq 299 is missing, so the trigger refuses.
+        assertThatThrownBy(() -> jdbc.update(
+                "INSERT INTO job_checkpoints (tenant_id, job_id, seq, sha) VALUES (?, ?, 300, ?)",
+                TENANT_A, job, hash300))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+    }
+
+    @Test
+    void checkpointGuardDerivesTheSameSummaryAsFullReplayForExtraEvents() throws Exception {
+        // submitTerminal writes seq 0..4 and 195 claims end at seq 199.
+        var submitted = submitTerminalWithClaims("guard-mirror", 195);
+        UUID job = submitted.jobId();
+        String inputSha = versionSha(TENANT_A, submitted.versionId());
+        String artifact = lastCasArtifact(TENANT_A, job);
+
+        TransactionTemplate txn = new TransactionTemplate(txManager);
+        // Extra runtime-appended submit and invalid cas.put before the next
+        // boundary. The trigger must still use the first submit and the last
+        // valid artifact, exactly as full replay does.
+        txn.execute(status -> {
+            jdbc.queryForObject("SELECT set_config('app.tenant', ?, true)", String.class, TENANT_A);
+            AuditChain.append(jdbc, TENANT_A, job, AuditChain.TYPE_SUBMIT,
+                    Map.of("doc_id", UUID.randomUUID().toString(),
+                            "version_id", submitted.versionId().toString(),
+                            "sha256", "a".repeat(64)));
+            return null;
+        });
+        txn.execute(status -> {
+            jdbc.queryForObject("SELECT set_config('app.tenant', ?, true)", String.class, TENANT_A);
+            AuditChain.append(jdbc, TENANT_A, job, AuditChain.TYPE_CAS_PUT,
+                    Map.of("artifact_sha", "not-a-sha", "size", 1));
+            return null;
+        });
+        for (int i = 1; i <= 99; i++) {
+            final int n = i;
+            txn.execute(status -> {
+                jdbc.queryForObject("SELECT set_config('app.tenant', ?, true)", String.class, TENANT_A);
+                AuditChain.append(jdbc, TENANT_A, job, AuditChain.TYPE_CLAIM,
+                        Map.of("state", "RUNNING", "k", "mirror" + n));
+                return null;
+            });
+        }
+
+        Map<String, Object> cp = jdbc.queryForMap(
+                "SELECT artifact_sha, input_sha, commit_seq, commit_outcome "
+                        + "FROM job_checkpoints WHERE tenant_id = ? AND job_id = ? AND seq = 300",
+                TENANT_A, job);
+        assertThat(cp.get("artifact_sha")).isEqualTo(artifact);
+        assertThat(cp.get("input_sha")).isEqualTo(inputSha);
+        assertThat(((Number) cp.get("commit_seq")).longValue()).isEqualTo(4L);
+        assertThat(cp.get("commit_outcome")).isEqualTo("SUCCEEDED");
+
+        ReplayService.ReplayResult fast = replays.replay(TENANT_A, job);
+        ReplayService.ReplayResult full = replays.replayFull(TENANT_A, job);
+        assertThat(fast.match()).isTrue();
+        assertThat(full.match()).isTrue();
+        assertThat(fast.inputSha()).isEqualTo(full.inputSha());
+        assertThat(fast.outputSha()).isEqualTo(full.outputSha());
+        assertThat(fast.checkpointSeqUsed()).isEqualTo(300L);
+    }
+
+    @Test
+    void forgedCheckpointSummaryIsOverwrittenFromTheChain() throws Exception {
+        var submitted = submitTerminalWithClaims("guard-forged", 350);
+        UUID job = submitted.jobId();
+        String inputSha = versionSha(TENANT_A, submitted.versionId());
+        String artifact = lastCasArtifact(TENANT_A, job);
+        String hash300 = jdbc.queryForObject(
+                "SELECT event_hash FROM audit_events WHERE tenant_id = ? AND job_id = ? AND seq = 300",
+                String.class, TENANT_A, job);
+
+        editInTheDatabase("DELETE FROM job_checkpoints "
+                + "WHERE tenant_id = ? AND job_id = ? AND seq = 300", TENANT_A, job);
+        jdbc.update("INSERT INTO job_checkpoints "
+                + "(tenant_id, job_id, seq, sha, artifact_sha, input_sha, commit_seq, commit_outcome) "
+                + "VALUES (?, ?, 300, ?, ?, ?, 999, 'FAILED')",
+                TENANT_A, job, hash300, "f".repeat(64), "e".repeat(64));
+
+        Map<String, Object> cp = jdbc.queryForMap(
+                "SELECT artifact_sha, input_sha, commit_seq, commit_outcome "
+                        + "FROM job_checkpoints WHERE tenant_id = ? AND job_id = ? AND seq = 300",
+                TENANT_A, job);
+        assertThat(cp.get("artifact_sha")).isEqualTo(artifact);
+        assertThat(cp.get("input_sha")).isEqualTo(inputSha);
+        assertThat(((Number) cp.get("commit_seq")).longValue()).isEqualTo(4L);
+        assertThat(cp.get("commit_outcome")).isEqualTo("SUCCEEDED");
+
+        ReplayService.ReplayResult fast = replays.replay(TENANT_A, job);
+        ReplayService.ReplayResult full = replays.replayFull(TENANT_A, job);
+        assertThat(fast.match()).isTrue();
+        assertThat(full.match()).isTrue();
+        assertThat(fast.inputSha()).isEqualTo(full.inputSha());
+        assertThat(fast.outputSha()).isEqualTo(full.outputSha());
+        assertThat(fast.checkpointSeqUsed()).isEqualTo(300L);
+    }
+
+    @Test
+    void orphanCheckpointFallsThroughToFullReadAndReportsItsSeq() throws Exception {
+        var submitted = submitTerminalWithClaims("orphan", 250);
+        UUID job = submitted.jobId();
+
+        // A V10-shaped checkpoint at a boundary with no event. The V11 guard
+        // refuses this; bypass it to model legacy/residual data and prove replay
+        // reports the checkpoint failure instead of "not found".
+        editInTheDatabase("INSERT INTO job_checkpoints "
+                + "(tenant_id, job_id, seq, sha, artifact_sha, input_sha, commit_seq, commit_outcome) "
+                + "VALUES (?, ?, 300, ?, ?, ?, 4, 'SUCCEEDED')",
+                TENANT_A, job, "a".repeat(64), lastCasArtifact(TENANT_A, job),
+                versionSha(TENANT_A, submitted.versionId()));
+
+        ReplayService.ReplayResult r = replays.replay(TENANT_A, job);
+        assertThat(r.match()).isFalse();
+        assertThat(r.mismatchSeq()).isEqualTo(300L);
+        assertThat(r.problem()).isEqualTo("the checkpoint at seq 300 has no event in the chain");
+    }
+
+    @Test
+    void preV10CheckpointWithoutSummaryFallsBackToTheFullChain() throws Exception {
+        UUID job = submitTerminalWithClaims("legacy-summary", 250).jobId();
+
+        editInTheDatabase("UPDATE job_checkpoints SET artifact_sha = NULL, input_sha = NULL, "
+                + "commit_seq = NULL, commit_outcome = NULL "
+                + "WHERE tenant_id = ? AND job_id = ? AND seq = 200", TENANT_A, job);
+
+        ReplayService.ReplayResult fast = replays.replay(TENANT_A, job);
+        ReplayService.ReplayResult full = replays.replayFull(TENANT_A, job);
+        assertThat(fast.match()).isTrue();
+        assertThat(fast.inputSha()).isEqualTo(full.inputSha());
+        assertThat(fast.outputSha()).isEqualTo(full.outputSha());
+        assertThat(fast.mismatchSeq()).isNull();
+    }
+
+    @Test
     void aConsistentRewriteBeforeTheCheckpointIsCaughtAtTheBoundary() throws Exception {
         var submitted = submitTerminal(TENANT_A, "prefix-tamper");
         UUID job = submitted.jobId();
@@ -559,6 +805,24 @@ class ReplayTest {
         assertThat(r.match()).isFalse();
         assertThat(r.mismatchSeq()).isEqualTo(200L);
         assertThat(r.problem()).isEqualTo("the checkpoint at seq 200 does not match the chain");
+    }
+
+    @Test
+    void aPrefixRewriteThatStopsBeforeTheBoundaryIsCaughtByFullReplayOnly() throws Exception {
+        UUID job = submitTerminalWithClaims("prefix-before-boundary", 250).jobId();
+
+        // Rehash 150..199 but leave the boundary event at 200 untouched. The fast
+        // path starts at 200 and cannot see the broken 199 -> 200 link; the full
+        // replay reports it.
+        rewritePrefix(TENANT_A, job, 150, 199,
+                Map.of("state", "RUNNING", "k", "rewritten-before-boundary"));
+
+        ReplayService.ReplayResult fast = replays.replay(TENANT_A, job);
+        ReplayService.ReplayResult full = replays.replayFull(TENANT_A, job);
+        assertThat(fast.match()).isTrue();
+        assertThat(full.match()).isFalse();
+        assertThat(full.mismatchSeq()).isEqualTo(200L);
+        assertThat(full.problem()).isEqualTo("the chain breaks at seq 200");
     }
 
     @Test
@@ -658,7 +922,10 @@ class ReplayTest {
         var measured = jsonMapper.readTree(Files.readString(Path.of("load/runs/replay-latency/result.json")));
         assertThat(measured.path("chain_length").asInt()).isEqualTo(DECLARED_CHAIN_LENGTH);
         assertThat(measured.path("bound_ms").asInt()).isEqualTo(LATENCY_BOUND_MS);
-        assertThat(measured.path("p99_ms").asLong()).isLessThan(LATENCY_BOUND_MS);
+        var p99 = measured.get("p99_ms");
+        assertThat(p99).as("p99_ms is recorded").isNotNull();
+        assertThat(p99.isNumber()).as("p99_ms is numeric").isTrue();
+        assertThat(p99.asLong()).isLessThan(LATENCY_BOUND_MS);
         assertThat(measured.path("postgres").asText()).isEqualTo("postgres:18.6");
     }
 
@@ -716,6 +983,26 @@ class ReplayTest {
         Integer trg = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM pg_trigger WHERE tgname = 'job_checkpoints_immutable'", Integer.class);
         assertThat(trg).isGreaterThanOrEqualTo(1);
+
+        // V11: checkpoint summary guard + the index its prefix lookups need.
+        Integer summaryTrigger = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM pg_trigger WHERE tgname = 'job_checkpoints_summary_guard'",
+                Integer.class);
+        assertThat(summaryTrigger).isGreaterThanOrEqualTo(1);
+        String triggerDef = jdbc.queryForObject(
+                "SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE tgname = 'job_checkpoints_summary_guard'",
+                String.class);
+        assertThat(triggerDef).contains("BEFORE INSERT");
+        String functionOwner = jdbc.queryForObject(
+                "SELECT r.rolname FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner "
+                        + "WHERE p.proname = 'guard_job_checkpoint_summary'",
+                String.class);
+        assertThat(functionOwner).isEqualTo("anvil_migrator");
+        Integer summaryIndex = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'audit_events' "
+                        + "AND indexname = 'audit_events_tenant_job_type_seq_idx'",
+                Integer.class);
+        assertThat(summaryIndex).isEqualTo(1);
 
         // Append-only: UPDATE/DELETE rejected even as superuser.
         assertThatThrownBy(() -> jdbc.update(

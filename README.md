@@ -17,7 +17,7 @@ ANVIL is for:
 
 ## Guarantees
 
-Each guarantee links to the tests that prove it. All tests run against real PostgreSQL in containers, restored from a backup before the suite starts.
+Each guarantee links to the tests that prove it. The service and database tests run against real PostgreSQL in containers, restored from a backup before the suite starts; the console has unit/component tests plus a browser acceptance test against the same stack.
 
 1. **No lost work, no double effect.** Execution is at-least-once with fenced, idempotent effects; it is never exactly-once.
    - A duplicate submit returns the same IDs and creates one job: [`SubmitIdempotencyTest`](src/test/java/com/g1do/anvil/SubmitIdempotencyTest.java).
@@ -34,7 +34,7 @@ Each guarantee links to the tests that prove it. All tests run against real Post
    - Every effect is recorded in an append-only, hash-linked chain in the same transaction: [`AuditChainTest`](src/test/java/com/g1do/anvil/AuditChainTest.java).
    - `GET /audit/replay` returns `{input_sha, output_sha, match: true}` for an intact chain. A corrupted, dropped or re-linked event gives a mismatch. Checkpoint replay gives the same result: [`ReplayTest`](src/test/java/com/g1do/anvil/ReplayTest.java).
    - The [operator console](http://localhost:8080/console/) shows a job's current state (`GET /api/jobs/{id}`), its audit chain and its replay result. It uses the API's tenant scoping for every request, and a missing or another tenant's job takes the same generic not-found path: [`OperatorConsoleTest`](src/test/java/com/g1do/anvil/OperatorConsoleTest.java).
-   - **A long chain replays from its latest checkpoint within a bound.** Replay reads the checkpoint and the events after it, not the prefix, and a declared 100,000-event chain replays at p99 8 ms against a 500 ms bound on containerized Postgres. A consistent prefix rewrite is caught at the checkpoint boundary; a privileged partial edit is caught by `replayFull` or the offline verifier. Why: [record 0027](docs/decisions/0027-replay-from-latest-checkpoint.md); [measurement](load/runs/replay-latency/report.md).
+   - **A long chain replays from its latest checkpoint within a bound.** Replay reads the checkpoint and the events after it, not the prefix, and a declared 100,000-event chain replays at p99 8 ms against a 500 ms bound on containerized Postgres. A prefix rewrite that also rehashes through the boundary is caught there; one that leaves the boundary event unchanged, like a privileged partial edit, is caught by `replayFull` or the offline verifier. Why: [record 0027](docs/decisions/0027-replay-from-latest-checkpoint.md); [measurement](load/runs/replay-latency/report.md).
    - **Without the running API.** Why: [record 0026](docs/decisions/0026-replay-cli-and-offline-verifier.md).
      - `anvil replay` reads the database directly and prints the API's result for the same job, byte for byte.
      - `anvil verify` checks an exported chain with no database connection. It gives the API's result for an intact export, and on a tampered one it reports the first bad sequence number. Editing the export's job state or input root can't turn the verdict, because both are checked against the chain. A file can't prove which tenant it belongs to, or that nothing after the terminal commit was cut, and a chain rewritten whole still verifies. Compare `head` with a value kept elsewhere (record 0026).
@@ -107,11 +107,13 @@ Success is measured by the guarantees above. Each measure names the test that sh
 
 ## How to run
 
-You need Java 25, Docker, [Task](https://taskfile.dev) and [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, with unprivileged user namespaces allowed), which the exec jail runs every child under.
+You need Java 25, Docker, [Task](https://taskfile.dev), [Node 22.22.1](https://nodejs.org/) and [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, with unprivileged user namespaces allowed), which the exec jail runs every child under. Node is only needed to work on the operator console; the committed production bundle is served by the Java app.
 
 ```bash
 task dev       # run locally; starts no Postgres, and startup fails without a configured datasource
 task test      # full suite against Testcontainers Postgres restored from a backup (also compiles with lint)
+task frontend:check # lint, test and rebuild the TypeScript console; fails if the committed bundle is stale
+task frontend:dev   # Vite dev server for the console, proxying /api and /audit to localhost:8080
 task verify    # everything the gate runs
 task faults:sim   # the nightly simulator runs (FAULT_SEED, FAULT_SIM_RUNS, FAULT_SIM_BREAK)
 task faults:pg    # one weekly real-Postgres fault run (FAULT_SEED)
@@ -145,10 +147,11 @@ curl -s localhost:8080/healthz    # liveness
 curl -s localhost:8080/readyz     # readiness (checks the database)
 ```
 
-Open <http://localhost:8080/console/> to inspect a job. Enter a tenant and a job ID; the
-console sends `X-Tenant-Id` to the same API routes as any other client, shows the job's
-state, chain and replay result, and shows the same "Job not found" for a missing job and
-another tenant's job.
+Open <http://localhost:8080/console/> to inspect a job. The operator console is a
+TypeScript single-page app (React 19, Vite 8) built from `frontend/` into the app's
+static resources. It sends `X-Tenant-Id` to the same API routes as any other client,
+shows the job's state, chain and replay result, and shows the same "Job not found" for a
+missing job and another tenant's job.
 
 Compose reads `POSTGRES_PASSWORD` from your environment or an untracked `.env`; the names are in `.env.example`. With nothing set it uses a local-only default.
 
@@ -187,7 +190,7 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | Frozen eval sets and gate fixtures | `eval/sets/pilot-v1/` (record 0021), `eval/sets/full-v1/` (record 0024; built by `src/test/java/com/g1do/anvil/eval/FullSetGenerator.java`), never edited; `eval/fixtures/` |
 | Extraction harness runs and the cost report | `eval/runs/` (records 0022, 0023, 0024) |
 | Load script, GIN budget and load reports | `load/extract.js`, `load/runs/` (record 0025) |
-| Operator console | `src/main/resources/static/console/` (`index.html`, `console.js`, `console.css`) and `src/main/java/com/g1do/anvil/console/ConsoleController.java` |
+| Operator console | `frontend/` (React 19 + TypeScript + Vite source, tests and lockfile); the committed production bundle is `src/main/resources/static/console/`, served by `src/main/java/com/g1do/anvil/console/ConsoleController.java` (record 0028) |
 | Replay CLI, export format and offline verifier | `src/main/java/com/g1do/anvil/cli/AnvilCli.java`; `replay/ChainExport.java` (`anvil-chain/1`) and `replay/OfflineVerifier.java` (record 0026) |
 | Replay from the latest checkpoint and its latency report | `src/main/java/com/g1do/anvil/replay/ReplayService.java`; `load/runs/replay-latency/` (record 0027) |
 | Filing a failed scheduled run | `scripts/file-issue.sh` (one issue per title while it's open) |

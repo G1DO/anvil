@@ -358,10 +358,51 @@ tasks:
           --schema public --useAllTables --showAllConstraints --outputFileName docs/architecture/data-model.mmd
         echo "wrote docs/architecture/data-model.mmd"
 
+  frontend:install:
+    desc: "Install the operator console's pinned Node dependencies (Node 22.22.1)"
+    dir: frontend
+    cmds:
+      - npm ci
+
+  frontend:dev:
+    desc: "Run the Vite dev server for the operator console; proxies /api and /audit to localhost:8080"
+    dir: frontend
+    cmds:
+      - npm run dev
+
+  frontend:build:
+    desc: "Build the TypeScript operator console into src/main/resources/static/console"
+    dir: frontend
+    cmds:
+      - npm run build
+
+  frontend:test:
+    desc: "Unit and component tests for the operator console"
+    dir: frontend
+    cmds:
+      - npm run test
+
+  frontend:check:
+    desc: "Gate the operator console: lint, test, rebuild, and prove the committed static bundle is current"
+    dir: frontend
+    cmds:
+      - npm ci
+      - npm audit --omit=dev --audit-level=high
+      - npm run lint
+      - npm run test
+      - npm run build
+      - |
+        if [ -n "$(git -C .. status --porcelain -- src/main/resources/static/console)" ]; then
+          echo "frontend: the committed console bundle is stale; run task frontend:build and commit the result"
+          git -C .. status --porcelain -- src/main/resources/static/console
+          exit 1
+        fi
+
   verify:
     desc: "Full local gate: the same commands CI runs"
     cmds:
       - task test
+      - task frontend:check
       - task test:contract
       - task build
       - task check:sast

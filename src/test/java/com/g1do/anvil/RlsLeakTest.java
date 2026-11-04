@@ -191,13 +191,17 @@ class RlsLeakTest {
                         + "VALUES (?, ?, 1, FALSE, clock_timestamp() + INTERVAL '1 hour')",
                 tenant, job);
         // The chain head comes from the production helper, with the submit payload
-        // production writes (the replay binds input_sha to it). The checkpoint row is
-        // seeded directly; production writes one only every 100 events.
+        // production writes (the replay binds input_sha to it). This one-event
+        // fixture keeps its checkpoint at seq 0 in the pre-V11 shape, so bypass the
+        // V11 boundary/summary guard as the seeding superuser would for an old row.
         String head = AuditChain.append(jdbc, tenant, job, AuditChain.TYPE_SUBMIT,
                 Map.of("doc_id", doc.toString(), "version_id", ver.toString(), "sha256", sha));
-        jdbc.update(
-                "INSERT INTO job_checkpoints (tenant_id, job_id, seq, sha) VALUES (?, ?, 0, ?)",
-                tenant, job, head);
+        new TransactionTemplate(new DataSourceTransactionManager(dataSource)).execute(status -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            return jdbc.update(
+                    "INSERT INTO job_checkpoints (tenant_id, job_id, seq, sha) VALUES (?, ?, 0, ?)",
+                    tenant, job, head);
+        });
         // Extraction rows (#37): one extraction with one indexed fact and one dead letter.
         UUID extraction = jdbc.queryForObject(
                 "INSERT INTO extractions (tenant_id, document_id, version_id, model, prompt_sha256, status, truncated) "

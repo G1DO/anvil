@@ -38,9 +38,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Acceptance check for issue #77: an operator inspects a job in a browser.
  *
- * <p>Runs the real console page in HtmlUnit against the embedded server and
- * containerized Postgres. The page fetches the same endpoints an operator
- * would:
+ * <p>Runs the real console page (the committed React/TypeScript production
+ * bundle) in HtmlUnit against the embedded server and containerized Postgres.
+ * The page fetches the same endpoints an operator would:
  * <ul>
  * <li>{@code GET /api/jobs/{id}} for the job's current state;</li>
  * <li>{@code GET /audit/events?job_id=} for the audit chain;</li>
@@ -187,6 +187,18 @@ class OperatorConsoleTest {
             assertThat(page.getElementById("status").getTextContent().trim()).isEqualTo("Tenant not found.");
         }
         assertThat(get("/api/jobs/" + job, "t_console_nobody").statusCode()).isEqualTo(401);
+    }
+
+    @Test
+    void consoleWithoutTrailingSlashKeepsTheRelativeAssetBase() throws Exception {
+        HttpResponse<String> response = HttpClient.newHttpClient().send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port + "/console"))
+                .GET()
+                .build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+
+        assertThat(response.statusCode()).isEqualTo(302);
+        assertThat(response.headers().firstValue("Location"))
+                .hasValueSatisfying(location -> assertThat(location).endsWith("/console/"));
     }
 
     // ---- browser helpers ----

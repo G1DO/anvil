@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'">
+  <meta name="description" content="ANVIL operator console: inspect tenant-scoped job state, replay verdicts and audit chains.">
+  <title>ANVIL · Operator console</title>
+  <link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to console</a>
+  <div id="root"></div>
+  <noscript>
+    <div class="noscript-panel" id="main">
+      <h1>ANVIL operator console</h1>
+      <p>This console needs JavaScript. The same data is available over the API with
+        <code>GET /api/jobs/{id}</code>, <code>GET /audit/events</code> and
+        <code>GET /audit/replay</code>.</p>
+    </div>
+  </noscript>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

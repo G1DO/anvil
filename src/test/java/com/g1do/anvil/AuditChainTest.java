@@ -76,7 +76,7 @@ class AuditChainTest {
 
     @BeforeEach
     void clean() {
-        jdbc.execute("TRUNCATE TABLE audit_events");
+        jdbc.execute("TRUNCATE TABLE job_checkpoints, audit_events");
         jdbc.execute("DELETE FROM cap_grants");
         jdbc.execute("DELETE FROM processed_events");
         jdbc.execute("DELETE FROM outbox");
@@ -219,6 +219,39 @@ class AuditChainTest {
         Integer trg = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM pg_trigger WHERE tgname = 'audit_events_immutable'", Integer.class);
         assertThat(trg).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void checkpointGuardRunsForTheRuntimeRoleUnderRls() {
+        var submitted = submitService.submit("t_single", "audit-guard-app-" + UUID.randomUUID(),
+                "Guard", "text/plain", "guard-app-body");
+        UUID job = submitted.jobId();
+        String inputSha = jdbc.queryForObject(
+                "SELECT sha256 FROM document_versions WHERE tenant_id = ? AND id = ?",
+                String.class, "t_single", submitted.versionId());
+
+        appPool = newAppPool();
+        appJdbc = new JdbcTemplate(appPool);
+        TransactionTemplate appTx = new TransactionTemplate(new DataSourceTransactionManager(appPool));
+        for (int i = 1; i <= 100; i++) {
+            final int n = i;
+            appTx.execute(status -> {
+                appJdbc.queryForObject("SELECT set_config('app.tenant', ?, true)", String.class, "t_single");
+                AuditChain.append(appJdbc, "t_single", job, AuditChain.TYPE_CLAIM,
+                        Map.of("state", "RUNNING", "k", "v" + n));
+                return null;
+            });
+        }
+
+        // The V11 trigger ran as anvil_app under RLS and derived the summary.
+        Map<String, Object> cp = jdbc.queryForMap(
+                "SELECT artifact_sha, input_sha, commit_seq, commit_outcome "
+                        + "FROM job_checkpoints WHERE tenant_id = ? AND job_id = ? AND seq = 100",
+                "t_single", job);
+        assertThat(cp.get("artifact_sha")).isEqualTo("");
+        assertThat(cp.get("input_sha")).isEqualTo(inputSha);
+        assertThat(cp.get("commit_seq")).isNull();
+        assertThat(cp.get("commit_outcome")).isNull();
     }
 
     @Test

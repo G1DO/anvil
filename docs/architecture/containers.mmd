@@ -5,7 +5,7 @@ flowchart TB
     operator["Operator<br/>compose up, health probes, logs<br/>extraction budgets, kill-switch, revocations<br/>browser console: job state, chain, replay"]
     subgraph anvil["ANVIL: one Spring Boot deployable"]
         api["API service<br/>auth, validate, CBOR, submit, reads, audit, replay, URLs, health, extraction"]
-        console["Operator console<br/>static page served by the app<br/>same X-Tenant-Id scoping<br/>generic not found"]
+        console["Operator console<br/>static React + TypeScript bundle served by the app<br/>same X-Tenant-Id scoping<br/>generic not found"]
         workers["Workers<br/>claim, heartbeat, commit, relay, reconcile"]
         cli["Operator CLI, AnvilCli<br/>own process, no Spring context<br/>replay, export, verify"]
         subgraph jailZone["Untrusted code: tenant-supplied execution"]
