@@ -114,8 +114,13 @@ public final class DeepSeekExtractionModel implements ExtractionModel {
     }
 
     @Override
+    public boolean configured() {
+        return settings.apiKey() != null && !settings.apiKey().isBlank();
+    }
+
+    @Override
     public ModelReply complete(BoundedText document) {
-        if (settings.apiKey() == null || settings.apiKey().isBlank()) {
+        if (!configured()) {
             throw new ModelUnavailableException("no model credential is configured");
         }
         String body = requestBody(document);

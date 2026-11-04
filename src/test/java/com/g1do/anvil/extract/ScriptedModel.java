@@ -9,6 +9,7 @@ public final class ScriptedModel implements ExtractionModel {
 
     private final List<BoundedText> calls = new CopyOnWriteArrayList<>();
     private volatile Function<BoundedText, ModelReply> script;
+    private volatile boolean configured = true;
 
     public ScriptedModel(Function<BoundedText, ModelReply> script) {
         this.script = script;
@@ -29,6 +30,15 @@ public final class ScriptedModel implements ExtractionModel {
 
     public List<BoundedText> calls() {
         return calls;
+    }
+
+    public void configured(boolean next) {
+        this.configured = next;
+    }
+
+    @Override
+    public boolean configured() {
+        return configured;
     }
 
     @Override

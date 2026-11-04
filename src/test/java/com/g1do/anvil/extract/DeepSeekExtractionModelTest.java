@@ -73,6 +73,13 @@ class DeepSeekExtractionModelTest {
                 t, waits::add);
     }
 
+    @Test
+    void aBlankKeyMeansNotConfigured() {
+        assertThat(model(new Scripted(), "  ", 0).configured()).isFalse();
+        assertThat(model(new Scripted(), null, 0).configured()).isFalse();
+        assertThat(model(new Scripted(), KEY, 0).configured()).isTrue();
+    }
+
     static String choice(String content, String finish) throws Exception {
         return JSON.writeValueAsString(Map.of("choices", List.of(Map.of(
                 "index", 0,

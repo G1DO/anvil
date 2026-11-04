@@ -126,6 +126,11 @@ public final class Extractor {
         this.model = model;
     }
 
+    /** Whether a call can be attempted; false when no credential is configured. */
+    public boolean modelConfigured() {
+        return model.configured();
+    }
+
     public String modelId() {
         return model.id();
     }

@@ -188,6 +188,10 @@ public class ExtractionService {
             return store(tenant, v, hit.get().outcome(), Source.CACHE, extractor.modelId(), Prompt.SHA256,
                     p.contentSha256(), hit.get().original(), null);
         }
+        if (!extractor.modelConfigured()) {
+            // No call can be made, so none is spent; the budget pays only for attempts.
+            throw new ModelUnavailableException("no model credential is configured");
+        }
         if (!spendOneCall(tenant)) {
             return fallback(tenant, l, p, FallbackReason.BUDGET_EXHAUSTED);
         }
