@@ -451,6 +451,15 @@ class ContentStoreTest {
     }
 
     @Test
+    void acquireRefusesAnAddressWithNoFileAndWritesNoRow() throws Exception {
+        String sha = "a".repeat(64);
+
+        assertThatThrownBy(() -> store.acquire("t_single", sha, 1L)).isInstanceOf(IllegalStateException.class);
+
+        assertThat(artifactRows("t_single", sha)).isZero();
+    }
+
+    @Test
     void graceProtectsYoungUnreferencedRows() throws Exception {
         byte[] bytes = "young-orphan".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         String sha = store.put("t_single", bytes);

@@ -128,6 +128,7 @@ public class ContentStore {
         requireContent(content);
         String sha = sha256Hex(content);
 
+        restartGrace(tenant, sha);
         ensureFileDurably(tenant, sha, content);
         tx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
@@ -151,6 +152,7 @@ public class ContentStore {
         requireJobId(jobId);
         requireContent(content);
         String sha = sha256Hex(content);
+        restartGrace(tenant, sha);
         ensureFileDurably(tenant, sha, content);
         tx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
@@ -260,6 +262,11 @@ public class ContentStore {
      * Increments the reference count for {@code (tenant, sha)}, creating the
      * row with {@code refcount = 1} when absent. Live (referenced) rows are
      * never collected.
+     *
+     * <p>The file is checked after the row is written and locked, so collection
+     * either sees the reference and keeps the file, or has already deleted both.
+     *
+     * @throws IllegalStateException when no file exists at the address; nothing is written.
      */
     public void acquire(String tenantId, String shaHex, long sizeBytes) {
         String tenant = requireTenant(tenantId);
@@ -269,7 +276,11 @@ public class ContentStore {
         }
         tx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
-            return jdbc.update(ACQUIRE_UPSERT_SQL, tenant, sha, sizeBytes);
+            jdbc.update(ACQUIRE_UPSERT_SQL, tenant, sha, sizeBytes);
+            if (!Files.isRegularFile(tenantDir(tenant).resolve(sha))) {
+                throw new IllegalStateException("no content at this address");
+            }
+            return null;
         });
     }
 
@@ -623,6 +634,21 @@ public class ContentStore {
         if (jobId == null) {
             throw new IllegalArgumentException("jobId must not be null");
         }
+    }
+
+    /**
+     * Restarts an existing row's grace before its file is looked at. Collection
+     * then either sees the fresher row and keeps the file, or has already deleted
+     * it under the row lock, in which case this waits and the file is rewritten.
+     * Without this a put could find the file, lose it to collection, and advertise
+     * a row with no bytes behind it.
+     */
+    private void restartGrace(String tenant, String sha) {
+        tx.execute(status -> {
+            TenantGuard.setTenant(jdbc, tenant);
+            return jdbc.update("UPDATE artifacts SET updated_at = now() WHERE tenant_id = ? AND sha256 = ?",
+                    tenant, sha);
+        });
     }
 
     /**
