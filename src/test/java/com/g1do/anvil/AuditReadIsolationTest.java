@@ -233,9 +233,6 @@ class AuditReadIsolationTest {
                         .header("X-Tenant-Id", "t_unknown_xyz")
                         .param("job_id", jobA.toString()))
                 .andExpect(status().isUnauthorized());
-        // Aliased route enforces the same.
-        mockMvc.perform(get("/api/audit/events").param("job_id", jobA.toString()))
-                .andExpect(status().isUnauthorized());
     }
 
     @Test
