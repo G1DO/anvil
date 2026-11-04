@@ -1,4 +1,4 @@
-<!-- The description becomes the commit message. -->
+<!-- PRs merge with a merge commit, which keeps every commit on main. -->
 
 Closes #<!-- issue -->
 

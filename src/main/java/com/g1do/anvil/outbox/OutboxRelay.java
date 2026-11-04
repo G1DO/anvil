@@ -22,7 +22,7 @@ import com.g1do.anvil.tenant.TenantGuard;
  * <li>Each poll reads {@code WHERE tenant_id = ? AND sent_at IS NULL ORDER BY id
  * LIMIT 100 FOR UPDATE SKIP LOCKED} (uses {@code outbox_poll_idx}) and
  * publishes each event carrying its stable identity ({@code outbox.id} as
- * {@code event_id} in both payload and {@code event_id} header).</li>
+ * {@link OutboxEvent#eventId()} and in the {@code event_id} header).</li>
  * <li>Boundary per event: poll (own transaction) -&gt; publish (no
  * transaction) -&gt; {@code UPDATE outbox SET sent_at} in a separate
  * transaction after publish. The mark advances only after successful publish;

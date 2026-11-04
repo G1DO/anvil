@@ -51,7 +51,7 @@ public class ReplayController {
     public ResponseEntity<ReplayDto> replay(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenantHeader,
             @RequestParam(value = "job_id", required = false) String jobIdParam,
-            // Accepted but ignored: replay always covers the full chain.
+            // Accepted but ignored: replay isn't paged.
             @RequestParam(value = "limit", required = false) Integer limit,
             @RequestParam(value = "cursor", required = false) String cursor,
             // Accepted but deliberately ignored: tenant authority is the header only.
