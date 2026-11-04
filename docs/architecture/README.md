@@ -15,6 +15,19 @@ Mermaid diagrams, one file each. `task check:diagrams` renders them all in the g
 
 The exec jail exists and is tested, but no production code calls it yet. The diagrams show that link dashed.
 
+## Numbers and Constraints
+
+These are the system-wide numbers that the schema notes refer to. Each names the file that sets it and the test that holds it.
+
+| Number | Set in | Held by |
+| --- | --- | --- |
+| Claim batch: `LIMIT 20` | `JobService.CLAIM_LIMIT` and `CLAIM_SQL` in `src/main/java/com/g1do/anvil/jobs/JobService.java` | `JobServiceTest.claimTimingsMatchIssueConstraints` |
+| Relay batch: `LIMIT 100` | `OutboxRelay.POLL_LIMIT` and `POLL_BY_TENANT_SQL` in `src/main/java/com/g1do/anvil/outbox/OutboxRelay.java` | `OutboxRelayTest.relayBatchLimitIsOneHundred` |
+| Checkpoint interval: every 100 events | `AuditChain.CHECKPOINT_INTERVAL` in `src/main/java/com/g1do/anvil/audit/AuditChain.java` | `ReplayTest.checkpointsEvery100AndReplayEqualsFull` |
+| Capability grant lifetime: one hour | `ISSUE_CAP_SQL` in `src/main/java/com/g1do/anvil/jobs/JobService.java` (`clock_timestamp() + INTERVAL '1 hour'`) | No test holds the one-hour value; `CapRevokeMidRunTest.expiredCapDeniesCommit` holds the expiry denial. |
+
+No recovery-time or data-loss target is committed; the restore drill measures them but does not promise them (see [record 0016](../decisions/0016-restore-timeline-gate.md)).
+
 ## Schema notes
 
 The SQL in `src/main/resources/db/migration/` is the schema. These are the rules the SQL alone doesn't make obvious.
