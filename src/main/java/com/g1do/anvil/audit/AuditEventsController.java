@@ -20,8 +20,7 @@ import com.g1do.anvil.tenant.TenantContext;
  *
  * <p>Contract:
  * <ul>
- * <li>Route {@code GET /audit/events} (aliases {@code /api/audit/events},
- * {@code /api/v1/audit/events}) with {@code ?job_id=&limit=&cursor}. Tenant comes solely
+ * <li>Route {@code GET /audit/events} with {@code ?job_id=&limit=&cursor}. Tenant comes solely
  * from {@code X-Tenant-Id} via {@link TenantContext} (set by
  * {@code TenantAuthFilter}); any {@code tenant}/{@code tenant_id} query param
  * is accepted but ignored (forged tenant ignored, fail-closed).</li>
@@ -56,7 +55,7 @@ public class AuditEventsController {
             OffsetDateTime created_at) {
     }
 
-    @GetMapping({ "/audit/events", "/api/audit/events", "/api/v1/audit/events" })
+    @GetMapping("/audit/events")
     public ResponseEntity<List<AuditEventDto>> list(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenantHeader,
             @RequestParam(value = "job_id", required = false) String jobIdParam,

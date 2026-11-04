@@ -40,7 +40,6 @@ public class TenantAuthFilter extends OncePerRequestFilter {
         // Enforce on the submit slice, fail-closed reads, and the audit read API;
         // leave any future/other paths alone.
         return !(path.startsWith("/api/")
-                || path.equals("/documents") || path.startsWith("/documents/")
                 || path.equals("/audit") || path.startsWith("/audit/"));
     }
 
