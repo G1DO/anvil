@@ -197,20 +197,30 @@ public final class DeepSeekExtractionModel implements ExtractionModel {
     }
 
     /**
-     * The billed tokens: {@code prompt_cache_hit_tokens},
-     * {@code prompt_cache_miss_tokens} and {@code completion_tokens}. Null when
-     * any is missing or not a non-negative integer, so a cost is never made up.
+     * The billed tokens, from DeepSeek's {@code prompt_cache_hit_tokens},
+     * {@code prompt_cache_miss_tokens} and {@code completion_tokens}, or from
+     * OpenAI's {@code prompt_tokens_details.cached_tokens},
+     * {@code prompt_tokens} and {@code completion_tokens}. Null when any is
+     * missing or not a non-negative integer, so a cost is never made up.
      */
     static ModelReply.Usage usage(JsonNode u) {
         JsonNode hit = u.path("prompt_cache_hit_tokens");
         JsonNode miss = u.path("prompt_cache_miss_tokens");
         JsonNode out = u.path("completion_tokens");
-        if (!hit.canConvertToLong() || !miss.canConvertToLong() || !out.canConvertToLong()
-                || !hit.isIntegralNumber() || !miss.isIntegralNumber() || !out.isIntegralNumber()
-                || hit.asLong() < 0 || miss.asLong() < 0 || out.asLong() < 0) {
-            return null;
+        if (integral(hit) && integral(miss) && integral(out)) {
+            return new ModelReply.Usage(hit.asLong(), miss.asLong(), out.asLong());
         }
-        return new ModelReply.Usage(hit.asLong(), miss.asLong(), out.asLong());
+        JsonNode prompt = u.path("prompt_tokens");
+        JsonNode cached = u.path("prompt_tokens_details").path("cached_tokens");
+        long cachedTokens = cached.isMissingNode() ? 0 : integral(cached) ? cached.asLong() : -1;
+        if (integral(prompt) && cachedTokens >= 0 && cachedTokens <= prompt.asLong() && integral(out)) {
+            return new ModelReply.Usage(cachedTokens, prompt.asLong() - cachedTokens, out.asLong());
+        }
+        return null;
+    }
+
+    private static boolean integral(JsonNode n) {
+        return n.isIntegralNumber() && n.asLong() >= 0;
     }
 
     /** The server's {@code Retry-After} seconds when given, else 2, 4, 8 … seconds; at most a minute. */

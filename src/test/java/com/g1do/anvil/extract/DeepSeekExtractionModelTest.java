@@ -171,6 +171,14 @@ class DeepSeekExtractionModelTest {
         assertThat(DeepSeekExtractionModel.reply(body).usage())
                 .isEqualTo(new ModelReply.Usage(640, 60, 120));
 
+        // OpenCode Go answers with OpenAI's shape: prompt_tokens_details.cached_tokens.
+        String openAi = JSON.writeValueAsString(Map.of("choices", List.of(Map.of("index", 0,
+                "message", Map.of("role", "assistant", "content", "{\"facts\":[]}"), "finish_reason", "stop")),
+                "usage", Map.of("prompt_tokens", 700, "completion_tokens", 120, "total_tokens", 820,
+                        "prompt_tokens_details", Map.of("cached_tokens", 640))));
+        assertThat(DeepSeekExtractionModel.reply(openAi).usage())
+                .isEqualTo(new ModelReply.Usage(640, 60, 120));
+
         // No usage, a missing field, a non-integer or a negative count: no usage rather than a guess.
         assertThat(DeepSeekExtractionModel.reply(choice("{}", "stop")).usage()).isNull();
         for (Map<String, Object> bad : List.<Map<String, Object>>of(
