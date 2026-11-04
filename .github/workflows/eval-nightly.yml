@@ -13,8 +13,9 @@ concurrency:
 # model is DeepSeek V4.1 Flash through OpenCode Go. Its key is the repository
 # secret ANVIL_GO_API_KEY, given only to the step that calls the model;
 # without it the run fails rather than passing unscored.
-# Scheduled and manual runs use the default branch only, so no pull request
-# can reach the secret. A failed run opens an issue with its report; only the
+# Pull requests can't trigger it, so a fork can't reach the secret. Anyone with
+# write access can dispatch it from a branch, which then runs with the key
+# (accepted in docs/threat-model.md). A failed run opens an issue with its report; only the
 # report job, which runs no build, can write issues.
 jobs:
   live:
