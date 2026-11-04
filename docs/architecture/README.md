@@ -10,6 +10,8 @@ Mermaid diagrams, one file each. `task check:diagrams` renders them all in the g
 | [flow-submit-claim-commit.mmd](flow-submit-claim-commit.mmd) | Submit → claim → commit, including a duplicate submit, an invalid capability, and a zombie worker with a stale fencing token |
 | [flow-reconcile-outbox.mmd](flow-reconcile-outbox.mmd) | Reconciler and outbox relay, including a failed publish and a redelivery that applies once |
 | [state-job.mmd](state-job.mmd) | Job lifecycle: `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `DEAD` |
+| [state-capability.mmd](state-capability.mmd) | Capability grant lifecycle: issued, revoked, expired, deleted by `confirmTimeline`, and re-issued |
+| [flow-restore-confirm.mmd](flow-restore-confirm.mmd) | Restore confirm path: the gate refusal, lease wait, token raise, grant deletion and audit, and the retried claim |
 | [deployment.mmd](deployment.mmd) | Where each container runs: one Compose host with the app image and PostgreSQL |
 | `data-model.mmd` | Tables and relationships, generated from the dev database by `task diagrams`; not committed |
 

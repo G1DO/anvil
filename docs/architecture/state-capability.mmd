@@ -1,0 +1,17 @@
+stateDiagram-v2
+    [*] --> Issued : issueCap inserts epoch 1, revoked false, expires_at now plus one hour
+    Issued --> Issued : issueCap re-issues, epoch plus 1, revoked false, expiry refreshed
+    Issued --> Revoked : revokeCap sets revoked true
+    Issued --> Expired : clock_timestamp reaches expires_at
+    Revoked --> Issued : issueCap re-issues, epoch plus 1, revoked false, expiry refreshed
+    Expired --> Issued : issueCap re-issues, epoch plus 1, revoked false, expiry refreshed
+    Issued --> Deleted : confirmTimeline deletes every grant and audits cap.revoke
+    Revoked --> Deleted : confirmTimeline deletes every grant and audits cap.revoke
+    Expired --> Deleted : confirmTimeline deletes every grant and audits cap.revoke
+    Deleted --> Issued : issueCap inserts a new grant with a new id and epoch 1
+    note right of Revoked
+        Commit checks revoked and denies with 403 NEEDS_APPROVAL.
+    end note
+    note right of Expired
+        Commit checks expires_at against clock_timestamp and denies with 403 NEEDS_APPROVAL.
+    end note
