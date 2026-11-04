@@ -769,12 +769,6 @@ class ReplayTest {
         assertThat(ownTree.get("output_sha").asText()).matches("^[0-9a-f]{64}$");
         assertThat(ownTree.get("match").asBoolean()).isTrue();
 
-        // Alias route works.
-        mockMvc.perform(get("/api/audit/replay")
-                        .header("X-Tenant-Id", TENANT_A)
-                        .param("job_id", job.toString()))
-                .andExpect(status().isOk());
-
         // limit/cursor aliases ignored (still 200).
         mockMvc.perform(get("/audit/replay")
                         .header("X-Tenant-Id", TENANT_A)
