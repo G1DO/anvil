@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -222,6 +223,11 @@ public class ExecJail {
         if (Files.isSymbolicLink(target)) {
             throw new SecurityException("path traverses symlink");
         }
+        // A child can leave a FIFO here, and opening one blocks while holding the lock.
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)
+                && !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+            throw new SecurityException("not a regular file");
+        }
         Files.write(target, content,
                 java.nio.file.StandardOpenOption.CREATE,
                 java.nio.file.StandardOpenOption.TRUNCATE_EXISTING);
@@ -249,6 +255,10 @@ public class ExecJail {
             Path target = resolveInWorkspace(caller, relativePath);
             if (Files.isSymbolicLink(target)) {
                 throw new SecurityException("path traverses symlink");
+            }
+            // A child can leave a FIFO here, and opening one blocks while holding the lock.
+            if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+                throw new NoSuchFileException("workspaces/" + caller + "/" + rel);
             }
             return Files.readAllBytes(target);
         } catch (NoSuchFileException e) {

@@ -55,6 +55,7 @@ import com.sun.net.httpserver.HttpServer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * Jail proofs for issues #23 and #73.
@@ -300,6 +301,23 @@ class ExecJailTest {
                 List.of("/bin/cat", "secret-a.txt"), Map.of(), Duration.ofSeconds(10));
         assertThat(cat.exitCode()).isEqualTo(0);
         assertThat(cat.stdout()).isEqualTo("alpha-secret");
+    }
+
+    /** A jailed child can leave a FIFO behind; opening one blocks forever while holding the tenant's lock. */
+    @Test
+    void aFifoInTheWorkspaceIsNotOpened() throws Exception {
+        Path fifo = jail.workspaceDir(TENANT_A).resolve("p");
+        Process mkfifo = new ProcessBuilder("mkfifo", fifo.toString()).start();
+        Assumptions.assumeTrue(mkfifo.waitFor() == 0, "requires mkfifo");
+
+        assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+            assertThatThrownBy(() -> jail.readWorkspaceFile(TENANT_A, TENANT_A, "p"))
+                    .isInstanceOf(NoSuchFileException.class);
+            assertThatThrownBy(() -> jail.writeWorkspaceFile(TENANT_A, "p", new byte[] { 1 }))
+                    .isInstanceOf(SecurityException.class);
+            // The tenant isn't left locked out.
+            jail.writeWorkspaceFile(TENANT_A, "after.txt", new byte[] { 1 });
+        });
     }
 
     @Test
@@ -938,6 +956,30 @@ class ExecJailTest {
         }
     }
 
+    /** An allowlisted host doesn't get to exhaust the parent's heap or pass off a cut body as whole. */
+    @Test
+    void aHostileResponseIsRefused() throws Exception {
+        String huge = "X-Pad: " + "a".repeat(1024) + "\r\n";
+        for (String response : List.of(
+                "HTTP/1.1 200 OK\r\n" + huge.repeat(1024) + "Content-Length: 0\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nabc")) {
+            SSLContext tls = selfSignedContext("public.test");
+            try (SSLServerSocket server = (SSLServerSocket) tls.getServerSocketFactory()
+                    .createServerSocket(0, 50, InetAddress.getLoopbackAddress())) {
+                Thread acceptor = new Thread(() -> serve(server, new CopyOnWriteArrayList<>(), response),
+                        "tls-test-server");
+                acceptor.setDaemon(true);
+                acceptor.start();
+                InetSocketAddress loopback = new InetSocketAddress(InetAddress.getLoopbackAddress(),
+                        server.getLocalPort());
+                JailEgress.Connector trusting = JailEgress.tls(tls.getSocketFactory());
+                assertThatThrownBy(() -> JailEgress.fetch("https://public.test/", Set.of("public.test"),
+                        publicResolver(), (address, host, timeout) -> trusting.connect(loopback, host, timeout)))
+                        .isInstanceOf(IOException.class);
+            }
+        }
+    }
+
     /** An {@link SSLContext} whose key and only trust anchor is a fresh self-signed certificate for {@code name}. */
     private SSLContext selfSignedContext(String name) throws Exception {
         Path keystore = tempDir.resolve("tls-" + UUID.randomUUID() + ".p12");
@@ -964,6 +1006,11 @@ class ExecJailTest {
 
     /** Answers {@code 200 ok} to each TLS client, recording the SNI names it asked for. */
     private static void serveOk(SSLServerSocket server, List<String> sni) {
+        serve(server, sni, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+    }
+
+    /** Answers each TLS client with {@code response}, recording the SNI names it asked for. */
+    private static void serve(SSLServerSocket server, List<String> sni, String response) {
         while (!server.isClosed()) {
             try (SSLSocket socket = (SSLSocket) server.accept()) {
                 socket.setSoTimeout(5_000);
@@ -980,8 +1027,7 @@ class ExecJailTest {
                     }
                     matched = c == "\r\n\r\n".charAt(matched) ? matched + 1 : (c == '\r' ? 1 : 0);
                 }
-                socket.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
-                        .getBytes(StandardCharsets.US_ASCII));
+                socket.getOutputStream().write(response.getBytes(StandardCharsets.US_ASCII));
             } catch (IOException e) {
                 // A refused handshake is what the mismatch cases expect; keep serving.
             }
