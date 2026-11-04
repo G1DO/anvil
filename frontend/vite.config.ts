@@ -48,7 +48,6 @@ export default defineConfig(({ command }) => ({
         format: 'iife',
         entryFileNames: 'assets/app.js',
         assetFileNames: 'assets/[name][extname]',
-        inlineDynamicImports: true,
       },
     },
   },
