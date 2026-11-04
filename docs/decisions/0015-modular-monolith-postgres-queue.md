@@ -16,7 +16,7 @@ Alternatives: not recorded at the time.
 ## Decision
 
 - **One deployable.** A single Spring Boot application (`src/main/java/com/g1do/anvil`) holds the API, the workers, the outbox relay, the content store and the exec jail as packages.
-- **PostgreSQL is the source of truth and the queue.** Workers poll it with `SELECT ... FOR UPDATE SKIP LOCKED`. Events leave through the transactional outbox. There's no message broker.
+- **PostgreSQL is the source of truth and the queue.** Workers poll it (the code exists and is tested, but the app doesn't start a worker loop yet) with `SELECT ... FOR UPDATE SKIP LOCKED`. Events leave through the transactional outbox. There's no message broker.
 - **Content bytes** live on a filesystem path per tenant, advertised by `artifacts` rows.
 - **Deployment** is one app container plus one Postgres container (`docker-compose.yml`, `docs/architecture/deployment.mmd`).
 

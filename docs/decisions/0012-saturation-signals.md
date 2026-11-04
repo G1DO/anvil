@@ -1,6 +1,6 @@
 # 0012 — Queue, claim, pool saturation signals with burn alerts
 
-Status: accepted.
+Status: accepted. Files named here were later removed; see the git history. `BurnAlerts` publishes the `for 5m` windows but judges only current values, so it fires at once; the Prometheus rules that held the window were among the removed files.
 
 ## Context
 

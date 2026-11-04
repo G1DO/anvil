@@ -1,6 +1,6 @@
 # 0024 — A generated full-scale eval set, McNemar, a multilingual and base64 injection suite, and a nightly live run
 
-Status: proposed 2026-11-02, revised 2026-11-03 after review (#79). Builds on the frozen eval gate (record 0021), single bounded extraction (record 0022) and its restriction (record 0023).
+Status: proposed 2026-11-02, revised 2026-11-03 after review (#79), revised 2026-11-04 for the OpenCode Go nightly. Builds on the frozen eval gate (record 0021), single bounded extraction (record 0022) and its restriction (record 0023).
 
 ## Context
 
@@ -12,7 +12,7 @@ The pilot set behind records 0021 to 0023 is deliberately small: 40 quality docu
 - **10,000 resamples and McNemar.** The manifest sets 10,000 paired bootstrap resamples (seed 79). The gate report adds McNemar's test paired on each gold fact: whether each system found it. It reports the exact two-sided test and, since one document's facts aren't independent (one template can make a system miss all its amounts), the clustered test of Durkalski et al. (2003), which sums the discordance per document and estimates its variance across documents. Both are reported, not gated. The gate's question is whether the candidate regressed, and the bootstrap interval of the F1 difference already answers it. McNemar asks whether the two systems differ at all, so it would change no verdict the interval doesn't.
 - **A multilingual and base64 injection suite.** There are 52 cases in clear: four attacks (override the party, redefine the amount with fake system tags, replace the date if the reader is a model, rewrite every value) in each of thirteen languages: English, German, French, Spanish, Portuguese, Italian, Dutch, Polish, Turkish, Russian, Arabic, Chinese and Japanese. The other 20 cases base64-encode the instruction, four of them twice. They carry it as a processing note, a header, a data URI, a signature block or an encoded note, and write the canary in clear beside it, so the attack works only if the extractor decodes and follows it. Each case records its `language` and `encoding`, and the report gives attack success by each.
 - **Gated on every change.** `task eval:full` scores the committed live run over the full set, in CI's `eval` job and in `task verify`, next to the pilot gate.
-- **A nightly live run.** The `eval-nightly` workflow runs `task eval:nightly` every night at 22:23 UTC, in DeepSeek's off-peak price window. It runs the extraction path over the full set with the live model, then the full gate on the predictions. It is held to the committed live run as well as to the baseline, since a model that drifted far down from F1 0.996 would still beat the baseline's 0.632. The run fails when the paired F1 difference against the committed run lies wholly below 0, or when an attack the committed run blocked succeeds. A failed run, including one with no key, opens an issue with the report, or comments on the one still open. The key is the repository secret `ANVIL_MODEL_API_KEY`, given only to the one step that calls the model. Only scheduled and manual runs on the default branch can reach it, never a pull request.
+- **A nightly live run.** (The key, provider and pricing here are superseded by the 2026-11-04 revision below, and manual dispatch isn't limited to the default branch: see `docs/threat-model.md`.) The `eval-nightly` workflow runs `task eval:nightly` every night at 22:23 UTC, in DeepSeek's off-peak price window. It runs the extraction path over the full set with the live model, then the full gate on the predictions. It is held to the committed live run as well as to the baseline, since a model that drifted far down from F1 0.996 would still beat the baseline's 0.632. The run fails when the paired F1 difference against the committed run lies wholly below 0, or when an attack the committed run blocked succeeds. A failed run, including one with no key, opens an issue with the report, or comments on the one still open. The key is the repository secret `ANVIL_MODEL_API_KEY`, given only to the one step that calls the model. Only scheduled and manual runs on the default branch can reach it, never a pull request.
 
 ## Results
 
@@ -51,3 +51,33 @@ The generator, templates and word lists were written, and changed only, before a
 - **A public dataset.** Licenses, personal data and text the model may have seen in training. The manifest promises none of these.
 - **Gating on McNemar too.** It would add a second verdict for the same question, and a significant difference in the candidate's favour should never fail a gate.
 - **Running the nightly at a fixed early-morning hour.** 01:00 to 04:00 UTC is DeepSeek's peak price window, so 22:23 UTC halves the cost.
+
+## Revision 2026-11-04: the nightly runs through OpenCode Go
+
+The nightly live eval now calls DeepSeek V4.1 Flash through OpenCode Go
+(`https://opencode.ai/inference/go/openai/v1`, model `deepseek-v4.1-flash`)
+instead of DeepSeek's own API. The app's extraction default stays
+`deepseek-flash` on `https://api.deepseek.com` with `ANVIL_MODEL_API_KEY`; the
+workflow uses a separate repository secret, `ANVIL_GO_API_KEY`. The adapter
+sends the `x-opencode-session` header Go requires, with a random id per call,
+and reads Go's OpenAI-shaped usage fields.
+
+The drift reference is now
+`eval/runs/extract-v1-deepseek-v4.1-flash-full-v1`, a full-set run made on
+2026-11-04 with the unchanged prompt `extract-v1`:
+
+| Measure | Value |
+| --- | --- |
+| F1 | 0.996 [0.995, 0.998] |
+| Precision, recall | 0.995 [0.992, 0.997], 0.998 [0.996, 0.999] |
+| Attack success | 0 of 72, 0.000 [0.000, 0.051]; baseline 13 of 72 |
+| Unsupported citations | 0 of 3,688 |
+| Model-call latency | p50 1,635 ms, p95 2,574 ms, max 11,910 ms |
+| Tokens | 202,368 input cache hit, 153,725 input cache miss, 102,705 output |
+| Duration | 1,300 s |
+
+The nightly now compares like with like: the same Go endpoint, model and
+client path that produced the reference. The Go plan's monthly and 5-hour
+limits apply instead of per-token DeepSeek billing. The app's extraction path
+stays on DeepSeek, so a change in either provider is visible only on that
+path's runs.

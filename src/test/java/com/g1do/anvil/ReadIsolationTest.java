@@ -1,5 +1,6 @@
 package com.g1do.anvil;
 
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
@@ -520,7 +521,8 @@ class ReadIsolationTest {
         assertThat(Files.isRegularFile(pathB)).isTrue();
 
         // Age only A's row past GC grace; B stays young.
-        jdbc.update("UPDATE artifacts SET created_at = clock_timestamp() - INTERVAL '2 hours' "
+        jdbc.update("UPDATE artifacts SET created_at = clock_timestamp() - INTERVAL '2 hours', "
+                + "updated_at = clock_timestamp() - INTERVAL '2 hours' "
                 + "WHERE tenant_id = ? AND sha256 = ?", TENANT_A, shaA);
 
         tempStore.collectGarbage();
@@ -781,5 +783,23 @@ class ReadIsolationTest {
                         .param("query", "")
                         .param("limit", "10"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    /** Spring decodes the path before routing, so the filter must judge the same path. */
+    @Test
+    void theTenantFilterHoldsHoweverThePathIsSpelled() throws Exception {
+        for (String path : List.of("/%61pi/documents", "/api;a=b/documents", "/%61udit/events",
+                "/audit;a=b/events")) {
+            mockMvc.perform(get(URI.create(path)).header("X-Tenant-Id", "t_unknown_xyz"))
+                    .andExpect(status().isUnauthorized());
+        }
+    }
+
+    @Test
+    void aNulInTheSearchQueryIs400() throws Exception {
+        mockMvc.perform(get("/api/documents")
+                        .header("X-Tenant-Id", TENANT_A)
+                        .param("query", "a\u0000b"))
+                .andExpect(status().isBadRequest());
     }
 }

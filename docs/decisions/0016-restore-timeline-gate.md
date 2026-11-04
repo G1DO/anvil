@@ -1,6 +1,6 @@
 # 0016 — Fail-closed timeline gate after a database restore
 
-Status: proposed 2026-10-28 (#34). Builds the gate that record 0013 requires. No recovery-time or data-loss target is committed.
+Status: accepted 2026-10-28 (#34). Builds the gate that record 0013 requires. No recovery-time or data-loss target is committed.
 
 ## Context
 

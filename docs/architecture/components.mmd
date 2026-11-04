@@ -37,7 +37,7 @@ flowchart TB
     end
     exportFile["Exported chain file"]
 
-    subgraph workers["Workers"]
+    subgraph workers["Workers: library code, nothing starts the claim, commit, relay or store parts yet"]
         claim["JobService claim + claimNext<br/>tenant lock + quota, order by penalty, next_run_at<br/>LIMIT 20 SKIP LOCKED + token"]
         beat["JobService heartbeat<br/>owner token live lease"]
         commit["JobService commit<br/>cap gate + fenced write"]
@@ -85,31 +85,31 @@ flowchart TB
     verifyCmd -->|read, untrusted| chainExport
     chainExport --> offline
     offline -->|"ReplayService.evaluate only"| replay
-    casPre -->|authorize fetch| pg
-    casPre -->|signed get| cas
+    casPre -.->|"authorize fetch (no route yet)"| pg
+    casPre -.->|"signed get (no route yet)"| cas
     health -->|SELECT 1| pg
     submitSvc --> chain
 
-    claim -->|SELECT UPDATE| pg
-    beat -->|fenced UPDATE| pg
-    commit -->|cap check + UPDATE| pg
-    recon -->|reclaim deaden| pg
-    cap -->|cap_grants| pg
-    claim --> timeline
-    beat --> timeline
-    commit --> timeline
-    timeline -->|db_timeline vs pg_control| pg
-    relay -->|poll mark| pg
-    relay --> consumer
-    consumer -->|INSERT ON CONFLICT| pg
-    claim --> chain
-    commit --> chain
-    cap --> chain
-    store --> chain
+    claim -.->|"SELECT UPDATE (no running caller yet)"| pg
+    beat -.->|"fenced UPDATE (no running caller yet)"| pg
+    commit -.->|"cap check + UPDATE (no running caller yet)"| pg
+    recon -.->|"reclaim deaden (no running caller yet)"| pg
+    cap -.->|"cap_grants (no running caller yet)"| pg
+    claim -.-> timeline
+    beat -.-> timeline
+    commit -.-> timeline
+    timeline -.->|"db_timeline vs pg_control (no running caller yet)"| pg
+    relay -.->|"poll mark (no running caller yet)"| pg
+    relay -.-> consumer
+    consumer -.->|"INSERT ON CONFLICT (no running caller yet)"| pg
+    claim -.-> chain
+    commit -.-> chain
+    cap -.-> chain
+    store -.-> chain
     chain -->|SELECT+INSERT only| pg
-    store -->|artifacts row| pg
-    store --> cas
-    claim -->|timing only| signals
+    store -.->|"artifacts row (no running caller yet)"| pg
+    store -.-> cas
+    claim -.->|timing only| signals
     signals -->|oldest QUEUED on DB clock| pg
     signals --> observe
 

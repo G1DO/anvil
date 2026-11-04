@@ -15,8 +15,10 @@ import com.fasterxml.jackson.dataformat.cbor.CBORFactory;
  * <p>Participating fields only: {@code {title:tstr, mime_type:tstr, body:bstr}}.
  * Excluded: {@code tenant_id, idempotency_key, timestamps, request_id}.
  *
- * <p>Determinism comes from sorted text keys, definite lengths, shortest-form
- * ints and UTF-8. Backed by {@code jackson-dataformat-cbor} with
+ * <p>Determinism comes from a fixed key order ({@code body, mime_type, title})
+ * and UTF-8. The map is written with an indefinite length (a leading
+ * {@code 0xBF}), so the bytes aren't strictly RFC 8949 core-deterministic, and
+ * they can't change: stored hashes depend on them. Backed by {@code jackson-dataformat-cbor} with
  * {@code SORT_PROPERTIES_ALPHABETICALLY}; duplicate enforcement remains the DB
  * {@code UNIQUE(tenant_id, idempotency_key)} — canonical bytes only ensure the
  * same logical doc maps to the same bytes/sha.

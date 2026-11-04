@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class JailContainerEscapeTest {
 
-    private static final String RUNTIME_BASE = "eclipse-temurin:25.0.3_9-jre";
+    private static final String RUNTIME_BASE = "eclipse-temurin:25.0.5_8-jre";
 
     private static final List<String> ATTEMPTS = List.of("control-own-workspace",
             "sibling-workspace-read", "sibling-workspace-write", "symlink-to-sibling",

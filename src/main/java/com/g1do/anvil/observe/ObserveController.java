@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
  * evaluation. {@code GET /metrics} returns a minimal Prometheus text
  * exposition for the same three signals plus alert firing gauges. Both bypass
  * tenant auth by design (see {@code TenantAuthFilter#shouldNotFilter}: only
- * {@code /api/}, {@code /audit/}, {@code /documents} are
+ * {@code /api/} and {@code /audit/} are
  * filtered) and carry no tenant bytes.
  */
 @RestController
@@ -32,8 +32,6 @@ public class ObserveController {
     @GetMapping("/observe/saturation")
     public ResponseEntity<Map<String, Object>> saturation() {
         SaturationSignals.SaturationSnapshot snap = signals.snapshot();
-        List<BurnAlerts.Firing> firings = BurnAlerts.evaluate(
-                snap.queueAgeSeconds(), snap.claimP99Seconds(), snap.poolWaitP99Seconds());
         Map<String, Object> body = new LinkedHashMap<>();
         Map<String, Object> signalMap = new LinkedHashMap<>();
         signalMap.put("anvil_queue_age_seconds",

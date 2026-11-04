@@ -37,7 +37,7 @@ public class SubmitController {
         this.service = service;
     }
 
-    @PostMapping({ "/api/documents", "/api/v1/documents", "/documents" })
+    @PostMapping("/api/documents")
     public ResponseEntity<SubmitResponse> submit(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenantHeader,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,

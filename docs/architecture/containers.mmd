@@ -4,9 +4,9 @@ flowchart TB
     end
     operator["Operator<br/>compose up, health probes, logs<br/>extraction budgets, kill-switch, revocations<br/>browser console: job state, chain, replay"]
     subgraph anvil["ANVIL: one Spring Boot deployable"]
-        api["API service<br/>auth, validate, CBOR, submit, reads, audit, replay, URLs, health, extraction"]
+        api["API service<br/>auth, validate, CBOR, submit, reads, audit, replay, health, extraction"]
         console["Operator console<br/>static React + TypeScript bundle served by the app<br/>same X-Tenant-Id scoping<br/>generic not found"]
-        workers["Workers<br/>claim, heartbeat, commit, relay, reconcile"]
+        workers["Workers: library code, nothing starts them yet<br/>claim, heartbeat, commit, relay, reconcile"]
         cli["Operator CLI, AnvilCli<br/>own process, no Spring context<br/>replay, export, verify"]
         subgraph jailZone["Untrusted code: tenant-supplied execution"]
             jail["Exec jail<br/>bwrap namespaces: own workspace only, private /tmp, no network"]
@@ -30,11 +30,11 @@ flowchart TB
     cli -->|"export: never overwrites"| exports
     exports -.->|"TRUST BOUNDARY: verify reads the file as untrusted input, no database"| cli
     operator -->|"SQL: extraction budgets, kill-switch, revocations"| postgres
-    api -->|"JDBC, SET LOCAL app.tenant + RLS"| postgres
-    workers -->|"claim, heartbeat, commit, relay, reconcile under RLS"| postgres
-    api -->|put and get, torn tails removed| casStore
+    api -->|"JDBC, SET LOCAL app.tenant + RLS (Compose login bypasses RLS, record 0018)"| postgres
+    workers -.->|"claim, heartbeat, commit, relay, reconcile under RLS (no running caller yet)"| postgres
+    api -.->|"put and get, torn tails removed (no route yet)"| casStore
     api -.->|"TRUST BOUNDARY: HTTPS, first 500 chars of a document out; reply is untrusted and checked"| llm
-    workers -->|put and link, refcount GC| casStore
+    workers -.->|"put and link, refcount GC (no running caller yet)"| casStore
     workers -.->|"TRUST BOUNDARY: run tenant argv, env, timeout (no production caller yet)"| jail
     jail -->|"own tenant's workspace only: bind mount at /work, resolveInWorkspace"| execWorkspaces
     jail -.->|"TRUST BOUNDARY: empty network namespace, no route"| network

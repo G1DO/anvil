@@ -57,7 +57,7 @@ What holds across the measurements:
 ## Decision: over budget, so no index and no soak numbers
 
 Neither variant meets the budget. As record 0025 and #79 set out before measuring, the residual is reported and no soak numbers are claimed:
-- The schema has no full-text index. V10, added after measurement 1, is removed.
+- The schema has no full-text index. The GIN migration, numbered V10 after measurement 1, is removed; today's V10 is the unrelated checkpoint summary (record 0027).
 - `LoadRig` refuses to run the soak against this verdict. The soak run made under measurement 1's verdict is withdrawn: it stays in git history, and nothing cites it.
 - The residual: `fastupdate` off is 0.72 times the no-index WAL over its limit. `fastupdate` on is 10.77 ms over the slowest-store limit, and, in this run, 3.24 ms over the p95 limit.
 - The kill-switch stays recorded for when an index is added: `DROP INDEX CONCURRENTLY extracted_facts_value_fts_idx;` as `anvil_migrator`. No code reads the index, and `GinIndexTest` builds each measured variant with the statement the budget measured, then drops it as the operator role and shows extraction and the facts route still work.

@@ -18,8 +18,7 @@ import com.g1do.anvil.tenant.TenantContext;
  *
  * <p>Contract:
  * <ul>
- * <li>Route {@code GET /audit/replay} (aliases {@code /api/audit/replay},
- * {@code /api/v1/audit/replay}) with {@code ?job_id=} (required) plus
+ * <li>Route {@code GET /audit/replay} with {@code ?job_id=} (required) plus
  * {@code limit/cursor} aliases accepted-but-ignored like reads and
  * {@code tenant}/{@code tenant_id} accepted-but-ignored (tenant authority is
  * the header only).</li>
@@ -48,11 +47,11 @@ public class ReplayController {
             boolean match) {
     }
 
-    @GetMapping({ "/audit/replay", "/api/audit/replay", "/api/v1/audit/replay" })
+    @GetMapping("/audit/replay")
     public ResponseEntity<ReplayDto> replay(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenantHeader,
             @RequestParam(value = "job_id", required = false) String jobIdParam,
-            // Accepted but ignored: replay always covers the full chain.
+            // Accepted but ignored: replay isn't paged.
             @RequestParam(value = "limit", required = false) Integer limit,
             @RequestParam(value = "cursor", required = false) String cursor,
             // Accepted but deliberately ignored: tenant authority is the header only.

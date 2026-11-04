@@ -15,6 +15,6 @@ flowchart TB
     anvil -->|"export: one job's chain"| exports
     operator -->|"anvil verify: no database needed"| exports
     anvil -->|JDBC, tenant context, RLS| postgres
-    anvil -->|put and get, torn tails removed| casStore
-    anvil -->|resolveInWorkspace only| execWorkspaces
+    anvil -.->|"put and get, torn tails removed (no route yet)"| casStore
+    anvil -.->|"resolveInWorkspace only (no running caller yet)"| execWorkspaces
     anvil -->|HTTPS, first 500 chars per document, only with budget and the switch on| llm

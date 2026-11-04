@@ -1,8 +1,13 @@
 package com.g1do.anvil;
 
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import javax.sql.DataSource;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -11,6 +16,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.DelegatingDataSource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.g1do.anvil.observe.BurnAlerts;
@@ -38,6 +45,9 @@ class SaturationSignalTest {
 
     @Autowired
     MockMvc mockMvc;
+
+    @Autowired
+    DataSource dataSource;
 
     @BeforeEach
     void clean() {
@@ -145,6 +155,47 @@ class SaturationSignalTest {
         assertThat(text).contains("anvil_burn_alert_firing{alert=\"ClaimBurn\"}");
         assertThat(text).doesNotContain(secretTenant);
         assertThat(text).doesNotContain("t_single");
+    }
+
+    /** The case these signals exist for: no connection can be had, and the export must not read as healthy. */
+    @Test
+    void aPoolThatGivesNoConnectionFiresClaimBurnUntilItRecovers() {
+        seedQueued("t_single", "q-exhausted");
+        AtomicBoolean exhausted = new AtomicBoolean();
+        DataSource pool = new DelegatingDataSource(dataSource) {
+            @Override
+            public Connection getConnection() throws SQLException {
+                if (exhausted.get()) {
+                    try {
+                        Thread.sleep(600);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    throw new SQLException("connection is not available, request timed out");
+                }
+                return super.getConnection();
+            }
+        };
+        SaturationSignals watched = new SaturationSignals(
+                new JdbcTemplate(pool), new DataSourceTransactionManager(pool), pool);
+        SaturationSignals.SaturationSnapshot healthy = watched.snapshot();
+        double lastAge = healthy.queueAgeSeconds();
+        assertThat(lastAge).isGreaterThan(0.0);
+        assertThat(claimBurnFires(healthy)).as("healthy").isFalse();
+
+        exhausted.set(true);
+        SaturationSignals.SaturationSnapshot snap = watched.snapshot();
+        assertThat(snap.queueAgeSeconds()).as("an unread queue keeps its last value").isEqualTo(lastAge);
+        assertThat(snap.poolWaitP99Seconds()).isGreaterThan(BurnAlerts.POOL_WAIT_P99_THRESHOLD_SECONDS);
+        assertThat(claimBurnFires(snap)).as("exhausted").isTrue();
+
+        exhausted.set(false);
+        assertThat(claimBurnFires(watched.snapshot())).as("clears on the next good sample").isFalse();
+    }
+
+    private static boolean claimBurnFires(SaturationSignals.SaturationSnapshot snap) {
+        return BurnAlerts.evaluate(snap.queueAgeSeconds(), snap.claimP99Seconds(), snap.poolWaitP99Seconds())
+                .stream().filter(f -> f.alert().equals(BurnAlerts.CLAIM_BURN)).findFirst().orElseThrow().firing();
     }
 
     @Test

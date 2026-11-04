@@ -12,7 +12,7 @@ Order durability before advertisement and collect conservatively (`src/main/java
 
 - Identity `sha256(bytes)` (lowercase hex), per-tenant paths `tenants/{tenant}/{sha}`, no cross-tenant deduplication.
 - Mandatory order: tmp-write in the destination directory → fsync file → atomic rename → fsync directory, then the `artifacts` row. The final name appears only via rename; every read re-verifies the hash and removes (never serves) a torn tail.
-- GC deletes only `refcount = 0` rows past `GC_grace=1h` with a per-row `FOR UPDATE` re-check, file-before-row so a crash leaves at worst a row without a file; filesystem sweep reclaims only old files without rows or old tmp files. Any ambiguity retains.
+- GC deletes only `refcount = 0` rows not written for `GC_grace=1h` (a re-put or a release restarts the grace) with a per-row `FOR UPDATE` re-check, file-before-row so a crash leaves at worst a row without a file; filesystem sweep reclaims only old files without rows or old tmp files. Any ambiguity retains.
 
 ## Consequences
 

@@ -189,16 +189,14 @@ class OperatorConsoleTest {
         assertThat(get("/api/jobs/" + job, "t_console_nobody").statusCode()).isEqualTo(401);
     }
 
+    /** The page's assets are relative, so it only works from the path with the slash. */
     @Test
-    void consoleWithoutTrailingSlashKeepsTheRelativeAssetBase() throws Exception {
-        HttpResponse<String> response = HttpClient.newHttpClient().send(HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:" + port + "/console"))
-                .GET()
-                .build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-
+    void theConsoleWithoutASlashRedirectsToThePage() throws Exception {
+        HttpResponse<String> response = HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/console")).GET().build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         assertThat(response.statusCode()).isEqualTo(302);
-        assertThat(response.headers().firstValue("Location"))
-                .hasValueSatisfying(location -> assertThat(location).endsWith("/console/"));
+        assertThat(response.headers().firstValue("Location").orElseThrow()).endsWith("/console/");
     }
 
     // ---- browser helpers ----

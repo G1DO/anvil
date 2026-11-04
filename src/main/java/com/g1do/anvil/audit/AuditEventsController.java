@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.annotation.JsonRawValue;
 import com.g1do.anvil.tenant.TenantContext;
 
 /**
@@ -20,8 +20,7 @@ import com.g1do.anvil.tenant.TenantContext;
  *
  * <p>Contract:
  * <ul>
- * <li>Route {@code GET /audit/events} (aliases {@code /api/audit/events},
- * {@code /api/v1/audit/events}) with {@code ?job_id=&limit=&cursor}. Tenant comes solely
+ * <li>Route {@code GET /audit/events} with {@code ?job_id=&limit=&cursor}. Tenant comes solely
  * from {@code X-Tenant-Id} via {@link TenantContext} (set by
  * {@code TenantAuthFilter}); any {@code tenant}/{@code tenant_id} query param
  * is accepted but ignored (forged tenant ignored, fail-closed).</li>
@@ -52,11 +51,11 @@ public class AuditEventsController {
             String prev_hash,
             String event_hash,
             String type,
-            JsonNode payload,
+            @JsonRawValue String payload,
             OffsetDateTime created_at) {
     }
 
-    @GetMapping({ "/audit/events", "/api/audit/events", "/api/v1/audit/events" })
+    @GetMapping("/audit/events")
     public ResponseEntity<List<AuditEventDto>> list(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenantHeader,
             @RequestParam(value = "job_id", required = false) String jobIdParam,
@@ -93,7 +92,7 @@ public class AuditEventsController {
         List<AuditEventDto> dtos = rows.stream()
                 .map(r -> new AuditEventDto(
                         r.id(), r.tenantId(), r.jobId(), r.seq(),
-                        r.prevHash(), r.eventHash(), r.type(), r.payload(), r.createdAt()))
+                        r.prevHash(), r.eventHash(), r.type(), r.payload().toString(), r.createdAt()))
                 .toList();
         return ResponseEntity.ok(dtos);
     }

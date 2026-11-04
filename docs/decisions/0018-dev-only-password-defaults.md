@@ -7,8 +7,8 @@ Status: proposed 2026-10-29 (#101).
 Three places in the repository fall back to a literal password when no value is configured:
 
 - `src/main/resources/db/migration/V2__tenant_rls.sql`, lines 29 and 32. When the migration creates the roles `anvil_migrator` and `anvil_app`, it sets each role's password to a literal value.
-- `docker-compose.yml`, lines 9 and 27. The database and the app read `POSTGRES_PASSWORD`, with a literal fallback.
-- `Taskfile.yml`, line 165 (`task diagrams`). It reads `POSTGRES_PASSWORD`, with the same literal fallback.
+- `docker-compose.yml`. The database and the app read `POSTGRES_PASSWORD`, with a literal fallback, which the README's `task dev` example repeats.
+- `Taskfile.yml` (`task diagrams`). It reads `POSTGRES_PASSWORD`, with the same literal fallback.
 
 Three facts make "dev-only" a claim the code doesn't back:
 

@@ -19,8 +19,7 @@ import com.g1do.anvil.tenant.TenantContext;
  *
  * <p>Contract:
  * <ul>
- * <li>Route {@code GET /api/documents} (aliases {@code /api/v1/documents},
- * {@code /documents}) with {@code ?query=&limit=&cursor}. Tenant comes solely
+ * <li>Route {@code GET /api/documents} with {@code ?query=&limit=&cursor}. Tenant comes solely
  * from {@code X-Tenant-Id} via {@link TenantContext} (set by
  * {@code TenantAuthFilter}); any {@code tenant}/{@code tenant_id} query param
  * is accepted but ignored (S06 forged tenant ignored, S05 omitted tenant
@@ -46,7 +45,7 @@ public class DocumentSearchController {
             UUID id, String tenant_id, String title, String mime_type, OffsetDateTime created_at) {
     }
 
-    @GetMapping({ "/api/documents", "/api/v1/documents", "/documents" })
+    @GetMapping("/api/documents")
     public ResponseEntity<List<DocDto>> search(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenantHeader,
             @RequestParam(value = "query", required = false) String query,
@@ -61,6 +60,11 @@ public class DocumentSearchController {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "missing X-Tenant-Id");
         }
         String tenant = tenantId.trim();
+
+        // Text columns can't hold NUL, so Postgres would refuse the comparison.
+        if (query != null && query.indexOf('\0') >= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid query");
+        }
 
         UUID cursorId;
         try {

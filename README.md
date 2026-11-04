@@ -17,7 +17,7 @@ ANVIL is for:
 
 ## Guarantees
 
-Each guarantee links to the tests that prove it. The service and database tests run against real PostgreSQL in containers, restored from a backup before the suite starts; the console has unit/component tests plus a browser acceptance test against the same stack.
+Each guarantee links to the tests that prove it. Tests that touch the database run against real PostgreSQL in containers, restored from a backup before the suite starts; the console has unit/component tests plus a browser acceptance test against the same stack.
 
 1. **No lost work, no double effect.** Execution is at-least-once with fenced, idempotent effects; it is never exactly-once.
    - A duplicate submit returns the same IDs and creates one job: [`SubmitIdempotencyTest`](src/test/java/com/g1do/anvil/SubmitIdempotencyTest.java).
@@ -45,9 +45,7 @@ Each guarantee links to the tests that prove it. The service and database tests 
    - The fencing model keeps a single holder and no double effect: [`FenceModelTest`](src/test/java/com/g1do/anvil/FenceModelTest.java). It mirrors [`docs/faults/fencing.tla`](docs/faults/fencing.tla).
    - TLC model-checks [`docs/faults/fencing.tla`](docs/faults/fencing.tla) on every gate run, with TLC pinned to 1.7.4 and a SHA-256 check. The job is `tla` in [`gate.yml`](.github/workflows/gate.yml) and runs `task check:tla`. Its runs are on the [gate workflow page](https://github.com/G1DO/anvil/actions/workflows/gate.yml).
    - Process suspend, kill and restart, and duplicate delivery each produce a single effect: [`FaultProofTest`](src/test/java/com/g1do/anvil/FaultProofTest.java).
-- Each of the nine fault-matrix cases shows a single effect and no lost work: [`FaultMatrixTest`](src/test/java/com/g1do/anvil/FaultMatrixTest.java).
-- A failed scheduled fault run opens an issue with its seed and trace: [`FaultScheduleTest`](src/test/java/com/g1do/anvil/FaultScheduleTest.java), [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java).
-   - The real-Postgres fault matrix covers a crash before and after the effect, a lost ack, duplicate and out-of-order delivery, a stuck lease, a GIN pending-list flush, autovacuum and connection-pool exhaustion. Each case shows a single effect and no lost work: [`FaultMatrixTest`](src/test/java/com/g1do/anvil/FaultMatrixTest.java).
+   - The real-Postgres fault matrix has nine cases: a crash before and after the effect, a lost ack, duplicate and out-of-order delivery, a stuck lease, a GIN pending-list flush, autovacuum and connection-pool exhaustion. Each case shows a single effect and no lost work: [`FaultMatrixTest`](src/test/java/com/g1do/anvil/FaultMatrixTest.java).
    - The [`faults`](.github/workflows/faults.yml) workflow runs the simulator 100 times nightly and the real-Postgres fault suite 5 times weekly, each from a fresh seed. A failed run opens an issue with its seed and trace: [`FaultScheduleTest`](src/test/java/com/g1do/anvil/FaultScheduleTest.java), [`FenceSimTest`](src/test/java/com/g1do/anvil/FenceSimTest.java). Its runs are on the [faults workflow page](https://github.com/G1DO/anvil/actions/workflows/faults.yml).
    - A simulated point-in-time restore that rewinds the epoch lets a stale owner affect 0 rows with no double effect: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0013](docs/decisions/0013-pitr-timeline-check.md).
    - When the database timeline is unknown or rewound, claims, heartbeats and commits are refused (`503 TIMELINE_UNCONFIRMED`) until leases expire and capabilities are re-issued: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java). Why: [record 0016](docs/decisions/0016-restore-timeline-gate.md).
@@ -66,14 +64,19 @@ Each guarantee links to the tests that prove it. The service and database tests 
      - Cost and latency are published in the [cost report](eval/runs/extract-v1-deepseek-flash-cost/cost.md): about $0.0001 to $0.0003 per document, with model-call p95 under 1.5 s.
    - **Quality and injection resistance are measured at full scale, every night.** Why: [record 0024](docs/decisions/0024-full-scale-eval-and-nightly-live-run.md).
      - The full set has 660 documents with 3,367 gold facts and 72 injection cases in thirteen languages, 20 of them base64-encoded. It is generated from a seed and frozen, and the gate scores it with 10,000-resample intervals and McNemar's test against the baseline: [`FullSetTest`](src/test/java/com/g1do/anvil/eval/FullSetTest.java), [`EvalStatsTest`](src/test/java/com/g1do/anvil/eval/EvalStatsTest.java).
-     - The live model scores F1 0.996 [0.995, 0.998] against the baseline's 0.632, and 0 of 72 attacks succeed, none in any language or in base64: [report](eval/runs/extract-v1-deepseek-flash-full-v1/report.md).
-     - The [`eval-nightly`](.github/workflows/eval-nightly.yml) workflow runs the full set against the live model every night. It fails, and files one issue, when the model falls below the baseline or drifts below the committed run: [`EvalNightlyTest`](src/test/java/com/g1do/anvil/eval/EvalNightlyTest.java), [`EvalGateTest`](src/test/java/com/g1do/anvil/eval/EvalGateTest.java). Its runs are on the [eval-nightly workflow page](https://github.com/G1DO/anvil/actions/workflows/eval-nightly.yml).
+     - The live model scores F1 0.996 [0.995, 0.998] against the baseline's 0.632, and 0 of 72 attacks succeed, none in any language or in base64: [report](eval/runs/extract-v1-deepseek-v4.1-flash-full-v1/report.md).
+     - The [`eval-nightly`](.github/workflows/eval-nightly.yml) workflow runs the full set against the live model every night. It uses DeepSeek V4.1 Flash through OpenCode Go. It fails, and files one issue, when the model falls below the baseline or drifts below the committed run: [`EvalNightlyTest`](src/test/java/com/g1do/anvil/eval/EvalNightlyTest.java), [`EvalGateTest`](src/test/java/com/g1do/anvil/eval/EvalGateTest.java). Its runs are on the [eval-nightly workflow page](https://github.com/G1DO/anvil/actions/workflows/eval-nightly.yml).
    - **Load and the full-text index are measured before they're claimed.** Why: [record 0025](docs/decisions/0025-gin-budget-before-soak.md).
      - A GIN index on fact values was measured over one soak day against a budget set beforehand, on a fresh Postgres server per variant. Neither variant met it, so the schema has none, and no soak numbers are claimed. Dropping such an index is its kill-switch, and extraction works without it: [`GinIndexTest`](src/test/java/com/g1do/anvil/GinIndexTest.java), [GIN report](load/runs/gin-budget/report.md).
      - One process tops out near 170 extractions a second, because each model call holds a request thread. So 140 requests per second is at its edge: p95 2.2 s to 9.2 s, and 0.7% to 19% not started, depending on how many clients wait. A 10x flood is queued, not refused, and recovers at once. The tables grow about 4 MiB per 1,000 documents, and autovacuum keeps them under 8% wasted. No soak numbers are claimed, because the index is over budget: [load summary](load/README.md), [`LoadRigTest`](src/test/java/com/g1do/anvil/load/LoadRigTest.java).
 7. **Saturation is visible.** Queue age, claim latency and pool wait are exported without tenant data. The burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 
-Not yet guaranteed: a target for recovery time or data loss (the drill measures them; it doesn't promise them), or detecting a restore that keeps the database timeline, such as a storage snapshot rolled back in place. See [record 0016](docs/decisions/0016-restore-timeline-gate.md).
+Not yet guaranteed:
+
+- **Jobs don't run in the service.** The running app serves submit, reads, the audit and replay reads, extraction, the console, the saturation signals and the health probes. The claim, commit, capability, relay, reconcile, content-store and jail code exists and is tested through its Java APIs, but the app starts no worker loop and has no route to it. So the claims about those paths, in guarantees 1, 2, 4 and 5, hold for that code and not for a job submitted to a running app. There, a job stays `QUEUED`, its replay answers `match: false`, claim latency stays 0, and `QueueBurn` fires once a job has waited 60 s. Tracked in #144.
+- **`X-Tenant-Id` selects a tenant; it doesn't authenticate one.** Anyone who can reach the API and knows a tenant's ID acts as that tenant, so guarantee 2 holds between callers who are honest about their tenant. Put real authentication in front of the API before exposing it. See the [threat model](docs/threat-model.md).
+- **Row-level security needs the runtime role.** The Compose stack logs in as a superuser, which bypasses it, so isolation under Compose rests on the queries' own tenant filters ([record 0018](docs/decisions/0018-dev-only-password-defaults.md)). The default test context logs in as a superuser too, so it proves those filters. `RlsLeakTest` and the other tests that build their own pool log in as `anvil_app`, and they prove row-level security.
+- A target for recovery time or data loss (the drill measures them; it doesn't promise them), or detecting a restore that keeps the database timeline, such as a storage snapshot rolled back in place. See [record 0016](docs/decisions/0016-restore-timeline-gate.md).
 
 ## Success
 
@@ -102,6 +105,8 @@ Success is measured by the guarantees above. Each measure names the test that sh
 - The full set runs nightly against the live model, fails when it drifts below the committed run, and files one issue: [`EvalNightlyTest`](src/test/java/com/g1do/anvil/eval/EvalNightlyTest.java), [`FileIssueScriptTest`](src/test/java/com/g1do/anvil/FileIssueScriptTest.java).
 - The full-text index was measured against its budget before any soak number, and over budget it stays out of the schema; dropping it leaves extraction working: [`GinIndexTest`](src/test/java/com/g1do/anvil/GinIndexTest.java).
 - Load at 140 rps and a 10x flood report p95, error rate and table growth, and the soak refuses to run while the full-text index is over budget: [`LoadRigTest`](src/test/java/com/g1do/anvil/load/LoadRigTest.java).
+- Each of the nine fault-matrix cases shows a single effect and no lost work, and a failed scheduled fault run opens an issue with its seed and trace: [`FaultMatrixTest`](src/test/java/com/g1do/anvil/FaultMatrixTest.java), [`FaultScheduleTest`](src/test/java/com/g1do/anvil/FaultScheduleTest.java).
+- Queue age, claim latency and pool wait are exported without tenant data, and the burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 - An unconfirmed or rewound database timeline refuses claims, heartbeats and commits: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java).
 - A backup, clean and point-in-time restore reports its measured recovery time and data loss, with no target claimed: [`PitrRestoreDrillTest`](src/test/java/com/g1do/anvil/PitrRestoreDrillTest.java).
 
@@ -110,16 +115,16 @@ Success is measured by the guarantees above. Each measure names the test that sh
 You need Java 25, Docker, [Task](https://taskfile.dev), [Node 22.22.1](https://nodejs.org/) and [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, with unprivileged user namespaces allowed), which the exec jail runs every child under. Node is only needed to work on the operator console; the committed production bundle is served by the Java app.
 
 ```bash
-task dev       # run locally; starts no Postgres, and startup fails without a configured datasource
+task dev       # run locally; starts no Postgres, so point it at one (below)
 task test      # full suite against Testcontainers Postgres restored from a backup (also compiles with lint)
 task frontend:check # lint, test and rebuild the TypeScript console; fails if the committed bundle is stale
 task frontend:dev   # Vite dev server for the console, proxying /api and /audit to localhost:8080
-task verify    # everything the gate runs
+task verify    # everything the gate runs, except its PR description check; needs ports 5432 and 8080 free
 task faults:sim   # the nightly simulator runs (FAULT_SEED, FAULT_SIM_RUNS, FAULT_SIM_BREAK)
 task faults:pg    # one weekly real-Postgres fault run (FAULT_SEED)
 task eval         # eval gate on the frozen set (EVAL_CANDIDATE, default the committed extraction run)
 task eval:extract # harness run: the extraction path over a frozen set (EVAL_SET; needs ANVIL_MODEL_API_KEY)
-task eval:full    # eval gate on the full set (EVAL_CANDIDATE, default the committed full-set run)
+task eval:full    # eval gate on the full set (EVAL_CANDIDATE, default eval/runs/extract-v1-deepseek-flash-full-v1)
 task eval:nightly # what the nightly workflow runs: the full set against the live model, then its gate
 task load:gin     # measure the full-text index against record 0025's budget
 task load:steady  # 140 extraction requests per second for 5 minutes (also load:flood; load:soak needs a within-budget GIN verdict)
@@ -137,14 +142,28 @@ The replay CLI (`AnvilCli`, record 0026) starts no Spring context, so it runs no
 - `replay` prints `{input_sha, output_sha, match}`. `verify` adds `first_bad_seq`, `problem` and `head`, the last event's hash. Compare `head` with one you kept, because a chain rewritten whole with every hash recomputed still verifies.
 - Exit statuses: 0 match, 1 no match, 2 usage or malformed input, 3 not found, 4 unknown tenant, 5 database error, 6 failure (the output could not be written, or an unexpected error; never 1).
 - Run them with `task -x`. Without `-x`, `task` replaces any non-zero status with 201, so the status above is lost.
-- In the deployed image: `docker compose exec app java -cp app.jar -Dloader.main=com.g1do.anvil.cli.AnvilCli org.springframework.boot.loader.launch.PropertiesLauncher replay --tenant T --job J`.
+- In the built image: `docker compose exec app java -cp app.jar -Dloader.main=com.g1do.anvil.cli.AnvilCli org.springframework.boot.loader.launch.PropertiesLauncher replay --tenant T --job J`.
 
-To run the stack the way it's deployed:
+To run the stack with real Postgres:
 
 ```bash
 docker compose up --build
 curl -s localhost:8080/healthz    # liveness
 curl -s localhost:8080/readyz     # readiness (checks the database)
+```
+
+Submit a document as the seeded tenant `t_single`. The response holds the `job_id` to look up. The job stays `QUEUED`, because the app runs no workers yet (see "Not yet guaranteed").
+
+```bash
+curl -s localhost:8080/api/documents -H 'X-Tenant-Id: t_single' -H 'Idempotency-Key: demo-1' \
+  -H 'Content-Type: application/json' -d '{"title":"demo","mime_type":"text/plain","body":"hello"}'
+```
+
+To run from source instead, start only the database and point `task dev` at it:
+
+```bash
+docker compose up -d db
+SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/anvil SPRING_DATASOURCE_USERNAME=anvil SPRING_DATASOURCE_PASSWORD="${POSTGRES_PASSWORD:-anvil}" task dev
 ```
 
 Open <http://localhost:8080/console/> to inspect a job. The operator console is a
@@ -155,7 +174,7 @@ missing job and another tenant's job.
 
 Compose reads `POSTGRES_PASSWORD` from your environment or an untracked `.env`; the names are in `.env.example`. With nothing set it uses a local-only default.
 
-Extraction calls the model configured under `anvil.extraction` in `application.yaml` (DeepSeek's chat completions API, `deepseek-flash`) with the key in `ANVIL_MODEL_API_KEY`. `ANVIL_MODEL` and `ANVIL_MODEL_BASE_URL` override the model and URL for the app and `task eval:extract` alike. Without a key the app still starts, and extraction answers `503` without calling anything. A tenant also needs a call budget, which an operator grants in `extraction_budgets`. Without one, or with the kill-switch in `extraction_switch` off, the rules answer and the result is marked as fallback. The statements are in [record 0023](docs/decisions/0023-restrict-extraction-behind-budget-and-kill-switch.md).
+Extraction calls the model configured under `anvil.extraction` in `application.yaml` (DeepSeek's chat completions API, `deepseek-flash`) with the key in `ANVIL_MODEL_API_KEY`. `ANVIL_MODEL` and `ANVIL_MODEL_BASE_URL` override the model and URL for the app and `task eval:extract` alike. The nightly live eval sets those overrides to OpenCode Go's `deepseek-v4.1-flash` and uses `ANVIL_GO_API_KEY`; the app's default stays DeepSeek. Without a key the app still starts, and extraction answers `503` without calling anything or spending budget (a cached result is still served, and with the kill-switch off the rules still answer). A tenant also needs a call budget, which an operator grants in `extraction_budgets`. Without one, or with the kill-switch in `extraction_switch` off, the rules answer and the result is marked as fallback. The statements are in [record 0023](docs/decisions/0023-restrict-extraction-behind-budget-and-kill-switch.md).
 
 To run one test class: `./mvnw -B -ntp -Dtest=JobServiceTest test`.
 
@@ -173,6 +192,10 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | `GET /observe/saturation`, `GET /metrics` | Saturation signals |
 | `GET /healthz`, `GET /readyz` | Health probes |
 | `GET /console/` | Operator console page (browser; calls the routes above with `X-Tenant-Id`) |
+
+## Working on it
+
+Work starts from an issue and lands through a PR that fills in the template. The gate must pass, and PRs merge with a merge commit, so every commit stays on `main`. Run `./mvnw clean` before `task test` or `task verify` when an IDE has compiled the sources: the VS Code Java build can write stub classes into `target/` that fail with "Unresolved compilation problem", which is a stale build, not a bug in the code.
 
 ## Where things are
 
@@ -197,7 +220,7 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | Fencing model (TLA+ spec) | [`docs/faults/fencing.tla`](docs/faults/fencing.tla) |
 | Gate | `.github/workflows/gate.yml`, which runs the same `task` commands as `Taskfile.yml` |
 | Scheduled fault runs | `.github/workflows/faults.yml` (`task faults:sim`, `task faults:pg`, `task faults:issue`) |
-| Nightly live eval | `.github/workflows/eval-nightly.yml` (`task eval:nightly`, `task eval:issue`; needs the `ANVIL_MODEL_API_KEY` repository secret) |
+| Nightly live eval | `.github/workflows/eval-nightly.yml` (`task eval:nightly`, `task eval:issue`; needs the `ANVIL_GO_API_KEY` repository secret) |
 
 The breaking-change check (`task test:contract`) watches `contracts/openapi.yaml`, `src/main/resources/db/migration/` and `eval/sets/`.
 

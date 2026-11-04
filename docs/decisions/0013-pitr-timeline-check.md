@@ -1,6 +1,6 @@
 # 0013 — PITR timeline-check (INV-1, fail-closed, no SLO)
 
-Status: accepted 2026-10-27 by G1DO (INV-1 decision only; no RTO/RPO SLO claimed).
+Status: accepted 2026-10-27 by G1DO (INV-1 decision only; no RTO/RPO SLO claimed). Files named here were later removed; see the git history. Record 0016 builds the gate on this, using `pg_control_system()`.
 
 ## Context
 

@@ -19,6 +19,11 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    ignore:
+      # The project stays on the Java 25 LTS. Without this, Dependabot only ever
+      # proposes the next major and never a 25.x update.
+      - dependency-name: eclipse-temurin
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: docker-compose
     directory: /
     schedule:

@@ -15,6 +15,10 @@ import java.util.Map;
  * or {@code anvil_pool_wait_seconds p99 > 0.5 for 5m}.</li>
  * </ul>
  *
+ * <p>The windows are published with each alert for a scraper's own rule to apply.
+ * {@link #evaluate} judges only the current values, so it fires at once, with no
+ * hold.
+ *
  * <p>Labels are static ({@code severity="page"}); payloads carry no tenant
  * bytes. The logic runs in-process so containerized tests can prove
  * fire-on-burn and silent-on-green without a Prometheus dependency.

@@ -3,7 +3,7 @@ flowchart TB
     subgraph host["Compose host"]
         app["App image<br/>unprivileged, EXPOSE 8080<br/>healthz liveness, readyz PG check<br/>console at /console/"]
         db["PostgreSQL 18<br/>pg_isready healthcheck<br/>interval 5s, retries 10"]
-        pgdata["Volume pgdata<br/>/var/lib/postgresql/data"]
+        pgdata["Volume pgdata<br/>/var/lib/postgresql"]
     end
     logs["JSON logs<br/>correlationId, no secrets"]
     operator -->|compose up --build| app

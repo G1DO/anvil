@@ -121,7 +121,7 @@ tasks:
       - java -cp "target/classes:$(cat target/eval.classpath)" com.g1do.anvil.eval.EvalGate eval/sets/full-v1 "{{.CANDIDATE}}" "{{.REPORT}}" {{if .REFERENCE}}"{{.REFERENCE}}"{{end}}
 
   eval:nightly:
-    desc: "Nightly live eval (#79): the extraction path over eval/sets/full-v1 with the live model, then the full-set gate on its predictions, against the baseline and against the committed live run, so a drift below either fails. Needs ANVIL_MODEL_API_KEY; fails without it. Writes run, predictions and report to target/eval/nightly/"
+    desc: "Nightly live eval (#79): the extraction path over eval/sets/full-v1 with the live model, then the full-set gate on its predictions, against the baseline and against the committed live run, so a drift below either fails. Needs a model key in ANVIL_MODEL_API_KEY (the workflow passes the ANVIL_GO_API_KEY secret); fails without one. Writes run, predictions and report to target/eval/nightly/"
     cmds:
       - |
         set -a; [ -f .env ] && . ./.env; set +a
@@ -136,7 +136,7 @@ tasks:
         vars:
           EVAL_CANDIDATE: target/eval/nightly/predictions.jsonl
           EVAL_REPORT: target/eval/nightly/report.md
-          EVAL_REFERENCE: eval/runs/extract-v1-deepseek-flash-full-v1/predictions.jsonl
+          EVAL_REFERENCE: eval/runs/extract-v1-deepseek-v4.1-flash-full-v1/predictions.jsonl
 
   eval:issue:
     desc: "File a failed nightly live eval with its report and run summary from target/eval/nightly: a new issue, or a comment on the one still open; needs GH_TOKEN with issues: write and RUN_URL"
@@ -307,6 +307,25 @@ tasks:
         echo "{{.TLC_SHA256}}  $jar" | sha256sum -c -
         java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -metadir target/tlc -config docs/faults/fencing.cfg docs/faults/fencing.tla
 
+  check:stack:
+    desc: "docker compose starts the stack on a fresh volume and it serves requests (a throwaway project; your own volume is untouched; needs ports 5432 and 8080 free)"
+    cmds:
+      - |
+        set -e
+        p=anvil-check-stack
+        trap 'docker compose -p "$p" down -v >/dev/null 2>&1' EXIT
+        docker compose -p "$p" up -d --build --wait db app
+        ready=0
+        for i in $(seq 1 60); do
+          if curl -fs localhost:8080/readyz >/dev/null; then ready=1; break; fi
+          sleep 2
+        done
+        [ "$ready" = 1 ] || { docker compose -p "$p" logs app; echo "stack: /readyz never answered"; exit 1; }
+        curl -fs -o /dev/null localhost:8080/console/
+        curl -fs -o /dev/null localhost:8080/api/documents -H 'X-Tenant-Id: t_single' -H 'Idempotency-Key: check-stack' \
+          -H 'Content-Type: application/json' -d '{"title":"check","mime_type":"text/plain","body":"check"}'
+        echo "stack: up, ready and accepting a submit"
+
   faults:sim:
     desc: "Fault simulator: FAULT_SIM_RUNS runs (default 100) from FAULT_SEED; a violation writes its seed and trace to target/fault-runs/"
     cmds:
@@ -410,5 +429,6 @@ tasks:
       - task check:audit
       - task check:diagrams
       - task check:tla
+      - task check:stack
       - task eval
       - task eval:full
