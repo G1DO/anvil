@@ -520,7 +520,8 @@ class ReadIsolationTest {
         assertThat(Files.isRegularFile(pathB)).isTrue();
 
         // Age only A's row past GC grace; B stays young.
-        jdbc.update("UPDATE artifacts SET created_at = clock_timestamp() - INTERVAL '2 hours' "
+        jdbc.update("UPDATE artifacts SET created_at = clock_timestamp() - INTERVAL '2 hours', "
+                + "updated_at = clock_timestamp() - INTERVAL '2 hours' "
                 + "WHERE tenant_id = ? AND sha256 = ?", TENANT_A, shaA);
 
         tempStore.collectGarbage();

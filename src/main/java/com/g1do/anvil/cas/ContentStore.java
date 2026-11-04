@@ -48,12 +48,12 @@ import com.g1do.anvil.tenant.TenantGuard;
  * the address. A mismatch is a torn tail: the file is best-effort removed
  * and {@link CorruptContentException} is thrown instead of serving bytes.</li>
  * <li>Reference counting plus grace protects live content: collection deletes
- * only {@code refcount = 0} rows past {@link #GC_GRACE} and never deletes a
+ * only {@code refcount = 0} rows not written for {@link #GC_GRACE} and never deletes a
  * referenced SHA. When reference state is ambiguous (DB error, unexpected
  * file, young orphan without a row) collection retains rather than deletes.
  * </li>
  * <li>Timings: {@code GC_grace=1h}, far longer than test time, so collection
- * is deterministic under test (tests backdate {@code created_at} or file
+ * is deterministic under test (tests backdate {@code updated_at} or file
  * mtime to simulate age).</li>
  * <li>Tenant isolation (issue #20): every artifacts transaction sets
  * transaction-local {@code app.tenant} with a read-back probe; RLS
@@ -128,51 +128,7 @@ public class ContentStore {
         requireContent(content);
         String sha = sha256Hex(content);
 
-        Path tenantDir = tenantDir(tenant);
-        Files.createDirectories(tenantDir);
-        Path target = tenantDir.resolve(sha);
-
-        // Fast path: valid content already present, just ensure advertisement.
-        if (Files.isRegularFile(target)) {
-            try {
-                byte[] existing = Files.readAllBytes(target);
-                if (sha256Hex(existing).equals(sha)) {
-                    tx.execute(status -> {
-                        TenantGuard.setTenant(jdbc, tenant);
-                        return jdbc.update(PUT_UPSERT_SQL, tenant, sha, (long) content.length);
-                    });
-                    return sha;
-                }
-                // Torn tail at the final name: remove before rewriting.
-                Files.deleteIfExists(target);
-                fsyncDirectory(tenantDir);
-            } catch (NoSuchFileException gone) {
-                // Raced with collection; fall through to write.
-            }
-        }
-
-        // Mandatory durability order: tmp-write -> fsync file -> rename -> fsync dir.
-        Path tmp = tenantDir.resolve(TMP_PREFIX + UUID.randomUUID() + ".part");
-        try (FileChannel channel = FileChannel.open(tmp,
-                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
-            channel.write(ByteBuffer.wrap(content));
-            channel.force(true);
-        } catch (IOException e) {
-            Files.deleteIfExists(tmp);
-            throw e;
-        }
-        try {
-            try {
-                Files.move(tmp, target,
-                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException notAtomic) {
-                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
-            }
-            fsyncDirectory(tenantDir);
-        } finally {
-            Files.deleteIfExists(tmp);
-        }
-
+        ensureFileDurably(tenant, sha, content);
         tx.execute(status -> {
             TenantGuard.setTenant(jdbc, tenant);
             return jdbc.update(PUT_UPSERT_SQL, tenant, sha, (long) content.length);
@@ -336,7 +292,7 @@ public class ContentStore {
      * Single conservative collection pass.
      *
      * <p>Phase 1 reclaims database-advertised orphans: rows with
-     * {@code refcount = 0} older than {@link #GC_GRACE} (by the database
+     * {@code refcount = 0} not written for {@link #GC_GRACE} (by the database
      * clock). Each candidate is re-checked with {@code FOR UPDATE}; a row
      * that became referenced is retained. The file is deleted first, then
      * the row, so a crash leaves at worst a row without a file (reclaimed on
@@ -367,7 +323,7 @@ public class ContentStore {
                         SELECT tenant_id, sha256 FROM artifacts
                         WHERE tenant_id = ?
                           AND refcount = 0
-                          AND created_at <= clock_timestamp() - INTERVAL '1 hour'
+                          AND updated_at <= clock_timestamp() - INTERVAL '1 hour'
                         """, lt);
             });
             if (one != null) {
@@ -382,7 +338,7 @@ public class ContentStore {
                 List<Map<String, Object>> locked = jdbc.queryForList(
                         "SELECT size_bytes FROM artifacts "
                                 + "WHERE tenant_id = ? AND sha256 = ? AND refcount = 0 "
-                                + "AND created_at <= clock_timestamp() - INTERVAL '1 hour' FOR UPDATE",
+                                + "AND updated_at <= clock_timestamp() - INTERVAL '1 hour' FOR UPDATE",
                         tenant, sha);
                 if (locked.isEmpty()) {
                     return null;
@@ -693,7 +649,11 @@ public class ContentStore {
         Path tmp = tenantDir.resolve(TMP_PREFIX + UUID.randomUUID() + ".part");
         try (FileChannel channel = FileChannel.open(tmp,
                 StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
-            channel.write(ByteBuffer.wrap(content));
+            // A single write may be short (near-full disk, very large buffer); drain it.
+            ByteBuffer remaining = ByteBuffer.wrap(content);
+            while (remaining.hasRemaining()) {
+                channel.write(remaining);
+            }
             channel.force(true);
         } catch (IOException e) {
             Files.deleteIfExists(tmp);
