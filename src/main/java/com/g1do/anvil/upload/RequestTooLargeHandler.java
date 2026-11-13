@@ -4,11 +4,11 @@ import java.util.Map;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
-/** Maps a body that crossed the limit to {@code 413}, however the parser wrapped it. */
+/** Maps a body that crossed the limit to {@code 413}; other errors keep their normal handling. */
 @RestControllerAdvice
 public class RequestTooLargeHandler {
 
@@ -17,14 +17,10 @@ public class RequestTooLargeHandler {
         return response();
     }
 
-    @ExceptionHandler(HttpMessageNotReadableException.class)
-    ResponseEntity<Map<String, String>> unreadable(HttpMessageNotReadableException e) {
-        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
-            if (cause instanceof RequestTooLargeException) {
-                return response();
-            }
-        }
-        return ResponseEntity.badRequest().body(Map.of("error", "malformed request body"));
+    /** A streamed multipart body is enforced by the servlet multipart limit, not the input stream. */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    ResponseEntity<Map<String, String>> multipartTooLarge() {
+        return response();
     }
 
     private static ResponseEntity<Map<String, String>> response() {

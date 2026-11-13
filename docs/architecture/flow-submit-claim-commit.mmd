@@ -1,6 +1,7 @@
 sequenceDiagram
     autonumber
     participant C as Client
+    participant T as TenantAuthFilter
     participant L as RequestBodyLimitFilter
     participant A as API SubmitService
     participant D as Postgres
@@ -8,26 +9,28 @@ sequenceDiagram
     participant W as Worker JobService
     participant S as ContentStore
     Note over C,S: Submit runs in the app. Claim and commit are library code proven by tests: the running app starts no worker yet.
-    C->>L: POST documents with tenant and idempotency key
+    C->>T: POST documents with tenant and idempotency key
+    T->>L: tenant known
     alt request body over 10 MiB
         L-->>C: 413 before JSON parse, no rows
-    end
-    L->>A: body within limit
-    A->>D: validate tenant and fields plus encode CBOR
-    A->>D: fast-path findExisting by tenant and key
-    alt duplicate key
-        D-->>A: existing doc version job IDs
-        A-->>C: 202 replay same IDs
-    else new submit
-        A->>D: BEGIN plus SET LOCAL app tenant
-        A->>D: INSERT documents
-        A->>D: INSERT document_versions sha CBOR
-        A->>D: INSERT jobs QUEUED
-        A->>D: INSERT outbox job committed
-        A->>U: append submit seq 0 GENESIS
-        U->>D: INSERT audit_events submit
-        D-->>A: COMMIT doc version job IDs
-        A-->>C: 202 new IDs
+    else body within limit
+        L->>A: body within limit
+        A->>D: validate tenant and fields plus encode CBOR
+        A->>D: fast-path findExisting by tenant and key
+        alt duplicate key
+            D-->>A: existing doc version job IDs
+            A-->>C: 202 replay same IDs
+        else new submit
+            A->>D: BEGIN plus SET LOCAL app tenant
+            A->>D: INSERT documents
+            A->>D: INSERT document_versions sha CBOR
+            A->>D: INSERT jobs QUEUED
+            A->>D: INSERT outbox job committed
+            A->>U: append submit seq 0 GENESIS
+            U->>D: INSERT audit_events submit
+            D-->>A: COMMIT doc version job IDs
+            A-->>C: 202 new IDs
+        end
     end
     W->>D: claimNext ranks tenants under quota by penalty then next_run_at
     W->>D: claim takes tenant lock, rechecks quota, QUEUED due LIMIT 20 SKIP LOCKED

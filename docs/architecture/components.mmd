@@ -61,10 +61,10 @@ flowchart TB
         egress["JailEgress broker, in the parent<br/>allowlist, decoded IPs, re-resolve at connect<br/>pinned address, redirects denied"]
     end
 
-    client --> limit --> filter
+    client --> filter --> limit
     operator --> console
     console -->|"X-Tenant-Id on every request"| filter
-    filter --> submitCtrl --> submitSvc
+    limit --> submitCtrl --> submitSvc
     filter --> searchCtrl --> readSvc
     filter --> jobRead --> readSvc
     filter --> auditCtrl --> auditRead

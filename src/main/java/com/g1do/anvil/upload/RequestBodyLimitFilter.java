@@ -69,20 +69,29 @@ public class RequestBodyLimitFilter extends OncePerRequestFilter {
 
     private static final class LimitedRequest extends HttpServletRequestWrapper {
 
+        private ServletInputStream inputStream;
+        private BufferedReader reader;
+
         LimitedRequest(HttpServletRequest request) {
             super(request);
         }
 
         @Override
         public ServletInputStream getInputStream() throws IOException {
-            return new LimitedInputStream(super.getInputStream());
+            if (inputStream == null) {
+                inputStream = new LimitedInputStream(super.getInputStream());
+            }
+            return inputStream;
         }
 
         @Override
         public BufferedReader getReader() throws IOException {
-            String encoding = getCharacterEncoding();
-            Charset charset = encoding == null ? StandardCharsets.UTF_8 : Charset.forName(encoding);
-            return new BufferedReader(new InputStreamReader(getInputStream(), charset));
+            if (reader == null) {
+                String encoding = getCharacterEncoding();
+                Charset charset = encoding == null ? StandardCharsets.UTF_8 : Charset.forName(encoding);
+                reader = new BufferedReader(new InputStreamReader(getInputStream(), charset));
+            }
+            return reader;
         }
     }
 

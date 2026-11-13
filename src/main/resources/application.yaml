@@ -1,6 +1,11 @@
 spring:
   application:
     name: anvil
+  servlet:
+    multipart:
+      # The same 10 MiB request-body limit as UploadLimits.MAX_BYTES (#145).
+      max-file-size: 10485760B
+      max-request-size: 10485760B
 
 # AI extraction (#37, record 0022). The credential comes only from the
 # environment; with none set, extraction answers 503 and calls no model.

@@ -50,6 +50,11 @@ class RequestBodyLimitTest {
                 + "x".repeat(bodyBytes) + "\"}";
     }
 
+    /** A valid submit whose whole JSON body is exactly {@code totalBytes}. */
+    private static String submitJsonOfLength(int totalBytes) {
+        return submitJson(totalBytes - submitJson(0).length());
+    }
+
     private int count(String table) {
         return jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class);
     }
@@ -133,16 +138,33 @@ class RequestBodyLimitTest {
     }
 
     @Test
+    void bodyAtTheLimitIsAcceptedAndWritesARow() throws Exception {
+        int documentsBefore = count("documents");
+        int versionsBefore = count("document_versions");
+
+        mvc.perform(post("/api/documents")
+                        .header("X-Tenant-Id", "t_single")
+                        .header("Idempotency-Key", "at-limit-" + UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(submitJsonOfLength(MAX_BYTES)))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.doc_id").exists());
+
+        assertThat(count("documents")).isEqualTo(documentsBefore + 1);
+        assertThat(count("document_versions")).isEqualTo(versionsBefore + 1);
+    }
+
+    @Test
     void oversizeJsonIs413BeforeParsingAndWritesNoDocumentOrVersion() throws Exception {
         int documentsBefore = count("documents");
         int versionsBefore = count("document_versions");
 
-        // A valid request over the limit: without the limit this would be 202 and write rows.
+        // A valid request exactly one byte over the limit: without the limit this would be 202.
         mvc.perform(post("/api/documents")
                         .header("X-Tenant-Id", "t_single")
                         .header("Idempotency-Key", "oversize-valid-" + UUID.randomUUID())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(submitJson(MAX_BYTES)))
+                        .content(submitJsonOfLength(MAX_BYTES + 1)))
                 .andExpect(status().is(413))
                 .andExpect(jsonPath("$.error").exists());
 
@@ -169,12 +191,19 @@ class RequestBodyLimitTest {
         int documentsBefore = count("documents");
         int versionsBefore = count("document_versions");
 
-        // No Content-Length: the limit must hold while the body is streamed.
-        mvc.perform(chunkedSubmit("oversize-chunked-" + UUID.randomUUID(), submitJson(MAX_BYTES)))
+        // No Content-Length: exactly one byte over the limit, while the body is streamed.
+        mvc.perform(chunkedSubmit("oversize-chunked-" + UUID.randomUUID(),
+                        submitJsonOfLength(MAX_BYTES + 1)))
                 .andExpect(status().is(413));
 
         assertThat(count("documents")).isEqualTo(documentsBefore);
         assertThat(count("document_versions")).isEqualTo(versionsBefore);
+    }
+
+    @Test
+    void malformedChunkedBodyThatFailsBeforeTheLimitIs400() throws Exception {
+        mvc.perform(chunkedSubmit("malformed-chunked-" + UUID.randomUUID(), "{".repeat(1024)))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

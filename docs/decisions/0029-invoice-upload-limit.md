@@ -19,8 +19,11 @@ and to an invoice PDF.
 - **Whole request body: 10 MiB (10,485,760 bytes).** This is the limit for
   `POST /api/documents` and for an invoice PDF upload. `RequestBodyLimitFilter`
   refuses a declared `Content-Length` over the limit without reading the body, and
-  cuts a streamed body when it crosses the limit. Both paths return `413` before the
-  controller runs, so no document, version or job row is written.
+  cuts a streamed JSON body when it crosses the limit. Multipart parsing reads parts
+  rather than the wrapped input stream, so
+  `spring.servlet.multipart.max-file-size` and `max-request-size` are set to the same
+  limit, and `MaxUploadSizeExceededException` returns the same `413`. Rejection
+  happens before the controller runs, so no document, version or job row is written.
 - **Invoice PDF: at most 50 pages.** The PDF route enforces this when it parses the
   file (#170, #172). No PDF route exists yet, so this is a contract choice today, not
   a runtime check.
@@ -60,9 +63,14 @@ The large fixed cost at 1 MiB is the JSON parser's buffers; from 5 MiB up the re
 cost is about 3.3 to 3.7 times the body. At 10 MiB one request retains about 34 MiB,
 and the peak while parsing is higher.
 
-A 20 MiB body is already refused by Jackson's default maximum string length
-(20,000,000 characters), so an application limit above that would hand the real limit
-to a parser default. 10 MiB stays below it and leaves about 2x headroom.
+The HTTP body parser is Jackson 3.1.7, whose default maximum string length is
+100,000,000 characters, so it does not bound the request in practice. The application
+limit is the bound. The harness used Jackson 2's databind, the mapper the submit path
+uses for CBOR and the outbox, as a proxy for the HTTP binding; it estimates the copies
+the submit path makes, not the servlet parser's exact peak.
+
+These were one-off spike measurements; the harness and invoice generator were not
+committed.
 
 ## Consequences
 
@@ -71,8 +79,11 @@ to a parser default. 10 MiB stays below it and leaves about 2x headroom.
 - The JSON limit is the whole request body, including its envelope. A JSON document's
   content bytes are therefore slightly below 10 MiB; the same cap is on the whole
   multipart body of a PDF upload.
-- A chunked body with no `Content-Length` is refused as soon as it reads the byte
-  past the limit, so only the allowed bytes plus one are read.
+- A declared oversize body is refused without reading it. A streamed JSON body is cut
+  at the limit, so only the allowed bytes plus one are read. A streamed multipart body
+  is bounded by the servlet multipart `max-request-size` because the parser reads
+  parts rather than the wrapped stream. Malformed input that fails before the limit
+  remains a `400` parse error, not a `413`.
 - The page cap is not enforced until the PDF upload and text-extraction routes land.
   They must use `UploadLimits.MAX_PAGES`; until then an invoice PDF that would exceed
   50 pages has no route to be uploaded through.
