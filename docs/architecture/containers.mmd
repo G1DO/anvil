@@ -4,7 +4,7 @@ flowchart TB
     end
     operator["Operator<br/>compose up, health probes, logs<br/>extraction budgets, kill-switch, revocations<br/>browser console: job state, chain, replay"]
     subgraph anvil["ANVIL: one Spring Boot deployable"]
-        api["API service<br/>auth, validate, CBOR, submit, reads, audit, replay, health, extraction"]
+        api["API service<br/>auth, 10 MiB body limit, validate, CBOR<br/>submit, reads, audit, replay, health, extraction"]
         console["Operator console<br/>static React + TypeScript bundle served by the app<br/>same X-Tenant-Id scoping<br/>generic not found"]
         workers["Workers: library code, nothing starts them yet<br/>claim, heartbeat, commit, relay, reconcile"]
         cli["Operator CLI, AnvilCli<br/>own process, no Spring context<br/>replay, export, verify"]

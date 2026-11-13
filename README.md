@@ -108,6 +108,7 @@ Success is measured by the guarantees above. Each measure names the test that sh
 - Each of the nine fault-matrix cases shows a single effect and no lost work, and a failed scheduled fault run opens an issue with its seed and trace: [`FaultMatrixTest`](src/test/java/com/g1do/anvil/FaultMatrixTest.java), [`FaultScheduleTest`](src/test/java/com/g1do/anvil/FaultScheduleTest.java).
 - Queue age, claim latency and pool wait are exported without tenant data, and the burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 - An unconfirmed or rewound database timeline refuses claims, heartbeats and commits: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java).
+- A request body over 10 MiB is `413` before parsing, writes no document or version row, and the contract states the same limit for invoice PDFs with a 50-page cap: [`RequestBodyLimitTest`](src/test/java/com/g1do/anvil/RequestBodyLimitTest.java).
 - A backup, clean and point-in-time restore reports its measured recovery time and data loss, with no target claimed: [`PitrRestoreDrillTest`](src/test/java/com/g1do/anvil/PitrRestoreDrillTest.java).
 
 ## How to run

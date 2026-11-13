@@ -27,6 +27,7 @@ These are the system-wide numbers that the schema notes refer to. Each names the
 | Relay batch: `LIMIT 100` | `OutboxRelay.POLL_LIMIT` and `POLL_BY_TENANT_SQL` in `src/main/java/com/g1do/anvil/outbox/OutboxRelay.java` | `OutboxRelayTest.relayBatchLimitIsOneHundred` |
 | Checkpoint interval: every 100 events | `AuditChain.CHECKPOINT_INTERVAL` in `src/main/java/com/g1do/anvil/audit/AuditChain.java` | `ReplayTest.checkpointsEvery100AndReplayEqualsFull` |
 | Capability grant lifetime: one hour | `ISSUE_CAP_SQL` in `src/main/java/com/g1do/anvil/jobs/JobService.java` (`clock_timestamp() + INTERVAL '1 hour'`) | No test holds the one-hour value; `CapRevokeMidRunTest.expiredCapDeniesCommit` holds the expiry denial. |
+| Upload: 10 MiB (10,485,760 bytes) request body; invoice PDFs also 50 pages | `UploadLimits.MAX_BYTES` and `UploadLimits.MAX_PAGES` in `src/main/java/com/g1do/anvil/upload/UploadLimits.java` | `RequestBodyLimitTest.codeLimitMatchesTheContract`, `RequestBodyLimitTest.oversizeJsonIs413BeforeParsingAndWritesNoDocumentOrVersion` |
 
 No recovery-time or data-loss target is committed; the restore drill measures them but does not promise them (see [record 0016](../decisions/0016-restore-timeline-gate.md)).
 
