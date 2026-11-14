@@ -1,5 +1,5 @@
 flowchart TB
-    client["Tenant client<br/>X-Tenant-Id + Idempotency-Key"]
+    client["Tenant client<br/>X-Tenant-Id + Idempotency-Key<br/>JSON documents and multipart invoice PDFs"]
     operator["Operator browser<br/>console page"]
     pg["PostgreSQL 18<br/>RLS FORCE + tenant context"]
     cas["CAS store<br/>tenants/tenant/sha"]
@@ -7,10 +7,13 @@ flowchart TB
     llm["Model provider<br/>DeepSeek chat completions over HTTPS<br/>configured base URL, key from env"]
 
     subgraph api["API service"]
-        limit["RequestBodyLimitFilter<br/>10 MiB before parse<br/>413, no rows"]
+        limit["RequestBodyLimitFilter<br/>10 MiB before parse, JSON and invoice PDF<br/>413, no rows"]
         filter["TenantAuthFilter<br/>X-Tenant-Id check + TenantContext"]
         submitCtrl["SubmitController<br/>POST documents - 202 IDs"]
         submitSvc["SubmitService<br/>validate + canonical CBOR + one txn"]
+        invoiceCtrl["InvoiceUploadController<br/>POST invoices multipart<br/>202 doc id + version id, no job"]
+        invoiceSvc["InvoiceUploadService<br/>PDF framing + filename + one txn<br/>bytes in ContentStore, no parse"]
+        store["ContentStore<br/>tmp fsync rename + refcount GC<br/>put + pin for invoice upload"]
         searchCtrl["DocumentSearchController<br/>GET documents query limit cursor"]
         readSvc["ReadService<br/>direct-ID + title-prefix + recheck"]
         jobRead["JobReadController<br/>GET jobs id state<br/>same generic 404"]
@@ -38,7 +41,7 @@ flowchart TB
     end
     exportFile["Exported chain file"]
 
-    subgraph workers["Workers: library code, nothing starts the claim, commit, relay or store parts yet"]
+    subgraph workers["Workers: library code, nothing starts the claim, commit, relay or reconcile parts yet"]
         claim["JobService claim + claimNext<br/>tenant lock + quota, order by penalty, next_run_at<br/>LIMIT 20 SKIP LOCKED + token"]
         beat["JobService heartbeat<br/>owner token live lease"]
         commit["JobService commit<br/>cap gate + fenced write"]
@@ -48,7 +51,6 @@ flowchart TB
         relay["OutboxRelay<br/>poll unsent LIMIT 100 + mark sent"]
         consumer["IdempotentConsumer<br/>processed_events dedup"]
         chain["AuditChain append<br/>same txn as effect<br/>checkpoint every 100 + prefix summary"]
-        store["ContentStore<br/>tmp fsync rename + refcount GC"]
         signals["SaturationSignals + BurnAlerts<br/>queue age, claim p99, pool wait p99"]
     end
 
@@ -65,6 +67,9 @@ flowchart TB
     operator --> console
     console -->|"X-Tenant-Id on every request"| filter
     limit --> submitCtrl --> submitSvc
+    limit --> invoiceCtrl --> invoiceSvc
+    invoiceSvc -->|"documents + versions + artifact pin, one txn"| pg
+    invoiceSvc -->|"put + acquire"| store
     filter --> searchCtrl --> readSvc
     filter --> jobRead --> readSvc
     filter --> auditCtrl --> auditRead
@@ -106,10 +111,10 @@ flowchart TB
     claim -.-> chain
     commit -.-> chain
     cap -.-> chain
-    store -.-> chain
+    store -.->|"putForJob plus audit (no running caller yet)"| chain
     chain -->|SELECT+INSERT only| pg
-    store -.->|"artifacts row (no running caller yet)"| pg
-    store -.-> cas
+    store -->|"artifacts row, refcount pin"| pg
+    store -->|"tmp fsync rename, per-tenant sha"| cas
     claim -.->|timing only| signals
     signals -->|oldest QUEUED on DB clock| pg
     signals --> observe

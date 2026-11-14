@@ -8,8 +8,9 @@ info:
     (record 0014), and task test:contract refuses a breaking one. The HTML
     operator console at /console/ is outside this contract.
     A document upload request body is limited to 10 MiB (10,485,760 bytes)
-    before parsing. The same byte limit applies to invoice PDFs, which are
-    also limited to 50 pages. Oversize input returns 413 and writes no rows.
+    before parsing. The same byte limit applies to an invoice PDF, which is
+    also limited to 50 pages when it is parsed. Oversize input returns 413 and
+    writes no rows.
 servers:
   - url: http://localhost:8080
 paths:
@@ -72,6 +73,55 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /api/invoices:
+    post:
+      summary: Accept an invoice PDF (multipart, no job yet)
+      description: >
+        Validates the PDF by content (magic bytes and end-of-file marker), stores
+        the bytes in the content store, and writes document and version metadata.
+        It creates no job and does not parse or extract the PDF. The whole
+        request body is at most 10 MiB (10,485,760 bytes) and is refused with
+        413 before parsing. The 50-page cap is enforced by the PDF parser, not
+        by this route.
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: A PDF whose first bytes are %PDF-
+                title:
+                  type: string
+                  maxLength: 4096
+                  description: Optional; defaults to the sanitized filename
+      responses:
+        '202':
+          description: Stored; no job, outbox event or audit event was created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceUploadResponse'
+        '400':
+          description: Missing file, malformed PDF (no end-of-file marker), or invalid title; no rows written
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: Request body or file exceeds 10 MiB (10,485,760 bytes) before parsing; no rows written
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '415':
+          description: Not multipart/form-data, or the file content is not a PDF; no rows written
+        '500':
+          description: The content store or database failed; no metadata rows were written
   /api/documents/{id}/extract:
     post:
       summary: Extract cited facts from the caller's document once (records 0022, 0023)
@@ -281,6 +331,12 @@ components:
         doc_id: { type: string, format: uuid }
         version_id: { type: string, format: uuid }
         job_id: { type: string, format: uuid }
+    InvoiceUploadResponse:
+      type: object
+      required: [doc_id, version_id]
+      properties:
+        doc_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
     Document:
       type: object
       properties:

@@ -73,8 +73,9 @@ Each guarantee links to the tests that prove it. Tests that touch the database r
 
 Not yet guaranteed:
 
-- **Jobs don't run in the service.** The running app serves submit, reads, the audit and replay reads, extraction, the console, the saturation signals and the health probes. The claim, commit, capability, relay, reconcile, content-store and jail code exists and is tested through its Java APIs, but the app starts no worker loop and has no route to it. So the claims about those paths, in guarantees 1, 2, 4 and 5, hold for that code and not for a job submitted to a running app. There, a job stays `QUEUED`, its replay answers `match: false`, claim latency stays 0, and `QueueBurn` fires once a job has waited 60 s. Tracked in #144.
+- **Jobs don't run in the service.** The running app serves submit, invoice upload, reads, the audit and replay reads, extraction, the console, the saturation signals and the health probes. The claim, commit, capability, relay, reconcile, content-store read and jail code exists and is tested through its Java APIs, but the app starts no worker loop and has no route to it. So the claims about those paths, in guarantees 1, 2, 4 and 5, hold for that code and not for a job submitted to a running app. There, a job stays `QUEUED`, its replay answers `match: false`, claim latency stays 0, and `QueueBurn` fires once a job has waited 60 s. Tracked in #144.
 - **`X-Tenant-Id` selects a tenant; it doesn't authenticate one.** Anyone who can reach the API and knows a tenant's ID acts as that tenant, so guarantee 2 holds between callers who are honest about their tenant. Put real authentication in front of the API before exposing it. See the [threat model](docs/threat-model.md).
+- **Invoice PDFs are stored but not parsed.** `POST /api/invoices` accepts a PDF and returns its document and version IDs, but the app enforces only the byte limit and PDF framing. The 50-page cap, text extraction and invoice fields land with the parser and handler in #172 and #175.
 - **Row-level security needs the runtime role.** The Compose stack logs in as a superuser, which bypasses it, so isolation under Compose rests on the queries' own tenant filters ([record 0018](docs/decisions/0018-dev-only-password-defaults.md)). The default test context logs in as a superuser too, so it proves those filters. `RlsLeakTest` and the other tests that build their own pool log in as `anvil_app`, and they prove row-level security.
 - A target for recovery time or data loss (the drill measures them; it doesn't promise them), or detecting a restore that keeps the database timeline, such as a storage snapshot rolled back in place. See [record 0016](docs/decisions/0016-restore-timeline-gate.md).
 
@@ -108,7 +109,7 @@ Success is measured by the guarantees above. Each measure names the test that sh
 - Each of the nine fault-matrix cases shows a single effect and no lost work, and a failed scheduled fault run opens an issue with its seed and trace: [`FaultMatrixTest`](src/test/java/com/g1do/anvil/FaultMatrixTest.java), [`FaultScheduleTest`](src/test/java/com/g1do/anvil/FaultScheduleTest.java).
 - Queue age, claim latency and pool wait are exported without tenant data, and the burn alerts fire on induced burn and stay silent when healthy: [`SaturationSignalTest`](src/test/java/com/g1do/anvil/SaturationSignalTest.java).
 - An unconfirmed or rewound database timeline refuses claims, heartbeats and commits: [`PitrTimelineCheckTest`](src/test/java/com/g1do/anvil/PitrTimelineCheckTest.java).
-- For a known tenant, a declared upload over 10 MiB is `413` before parsing and writes no document or version row; a streamed JSON body is cut at 10 MiB, and multipart invoice PDFs use the same limit. The contract states the 50-page PDF cap for #170/#172: [`RequestBodyLimitTest`](src/test/java/com/g1do/anvil/RequestBodyLimitTest.java), [`InvoiceMultipartLimitTest`](src/test/java/com/g1do/anvil/InvoiceMultipartLimitTest.java).
+- For a known tenant, a declared upload over 10 MiB is `413` before parsing and writes no document or version row; a streamed JSON body is cut at 10 MiB, and a multipart invoice PDF uses the same limit. A multipart invoice PDF with the PDF marker is stored by content address with document/version metadata and no job; a non-PDF is `415`, a PDF without an end marker is `400`, and invalid input writes no rows. The 50-page cap is enforced when #172 parses the PDF: [`InvoiceUploadTest`](src/test/java/com/g1do/anvil/InvoiceUploadTest.java), [`InvoiceMultipartLimitTest`](src/test/java/com/g1do/anvil/InvoiceMultipartLimitTest.java), [`RequestBodyLimitTest`](src/test/java/com/g1do/anvil/RequestBodyLimitTest.java), [`RlsLeakTest`](src/test/java/com/g1do/anvil/RlsLeakTest.java).
 - A backup, clean and point-in-time restore reports its measured recovery time and data loss, with no target claimed: [`PitrRestoreDrillTest`](src/test/java/com/g1do/anvil/PitrRestoreDrillTest.java).
 
 ## How to run
@@ -160,6 +161,13 @@ curl -s localhost:8080/api/documents -H 'X-Tenant-Id: t_single' -H 'Idempotency-
   -H 'Content-Type: application/json' -d '{"title":"demo","mime_type":"text/plain","body":"hello"}'
 ```
 
+Upload an invoice PDF. The response holds `doc_id` and `version_id`; no job is created, and the PDF is not parsed yet.
+
+```bash
+curl -s localhost:8080/api/invoices -H 'X-Tenant-Id: t_single' \
+  -F 'file=@invoice.pdf;type=application/pdf'
+```
+
 To run from source instead, start only the database and point `task dev` at it:
 
 ```bash
@@ -184,6 +192,7 @@ HTTP API (spec in `contracts/openapi.yaml`):
 | Route | What it does |
 | --- | --- |
 | `POST /api/documents` | Submit a document |
+| `POST /api/invoices` | Accept an invoice PDF (multipart `file`, optional `title`), store the bytes and document/version metadata, create no job |
 | `GET /api/documents?query=&limit=&cursor=` | Title-prefix search |
 | `POST /api/documents/{id}/extract` | Extract cited facts from a document, once per version, prompt and model; from the tenant's cache, the model, or the rules fallback |
 | `GET /api/documents/{id}/facts` | The document's indexed facts, marked when they come from the fallback |

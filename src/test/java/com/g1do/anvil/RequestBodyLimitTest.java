@@ -207,8 +207,8 @@ class RequestBodyLimitTest {
     }
 
     @Test
-    void invoicePathUsesTheSameLimitBeforeItsRouteLands() throws Exception {
-        // The invoice upload route is #170; its body limit is already on the path.
+    void invoicePathUsesTheSameLimit() throws Exception {
+        // Invoice uploads are #170; their body limit is already on the path.
         mvc.perform(post("/api/invoices")
                         .header("X-Tenant-Id", "t_single")
                         .contentType(MediaType.MULTIPART_FORM_DATA)

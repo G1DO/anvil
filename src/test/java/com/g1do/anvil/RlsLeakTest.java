@@ -29,6 +29,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -36,6 +37,7 @@ import com.g1do.anvil.audit.AuditChain;
 import com.g1do.anvil.audit.AuditReadService;
 import com.g1do.anvil.cas.CasPresignedService;
 import com.g1do.anvil.cas.ContentStore;
+import com.g1do.anvil.invoice.InvoiceUploadService;
 import com.g1do.anvil.jobs.CapDeniedException;
 import com.g1do.anvil.jobs.CapGrant;
 import com.g1do.anvil.jobs.ClaimedJob;
@@ -797,6 +799,36 @@ class RlsLeakTest {
             }
         }
         assertThat(refcountOf(seedB.tenant(), shaB)).as("tenant B refcount untouched").isEqualTo(refcountB);
+        assertPooledLinkClean();
+    }
+
+    @Test
+    void invoiceUploadWritesUnderTheCallersTenantAndAnotherTenantCannotReadIt() throws Exception {
+        DataSourceTransactionManager appManager = new DataSourceTransactionManager(appPool);
+        ContentStore store = new ContentStore(appJdbc, appManager, tempDir.toString());
+        InvoiceUploadService uploads = new InvoiceUploadService(appJdbc, appManager, store);
+        ReadService reads = new ReadService(appJdbc, appManager);
+
+        byte[] pdf = "%PDF-1.7\ninvoice\n%%EOF\n".getBytes(StandardCharsets.US_ASCII);
+        InvoiceUploadService.UploadResult uploaded = uploads.upload(TENANT_A,
+                new MockMultipartFile("file", "invoice.pdf", "application/pdf", pdf), null);
+        String sha = ContentStore.sha256Hex(pdf);
+
+        // The upload succeeded as the restricted role, so its rows were written
+        // under the caller's tenant context and RLS check.
+        assertThat(reads.getDocument(TENANT_A, uploaded.docId())).isPresent();
+        assertThat(reads.getVersion(TENANT_A, uploaded.versionId())).isPresent();
+        assertThat(reads.getArtifact(TENANT_A, sha)).isPresent();
+        assertThat(refcountOf(TENANT_A, sha)).isEqualTo(1);
+        assertThat(store.get(TENANT_A, sha)).isEqualTo(pdf);
+
+        // The other tenant sees nothing, by ID or by content address.
+        assertThat(reads.getDocument(TENANT_B, uploaded.docId())).isEmpty();
+        assertThat(reads.getVersion(TENANT_B, uploaded.versionId())).isEmpty();
+        assertThat(reads.getArtifact(TENANT_B, sha)).isEmpty();
+        assertThatThrownBy(() -> store.get(TENANT_B, sha))
+                .isInstanceOf(NoSuchFileException.class);
+
         assertPooledLinkClean();
     }
 
