@@ -1,6 +1,6 @@
 # 0029 — Invoice upload limit: 10 MiB and 50 pages
 
-Status: accepted 2026-11-13 (#145).
+Status: accepted 2026-11-13 (#145). Amended 2026-11-14 (#170): the upload route exists and enforces the 10 MiB byte limit; the 50-page cap is enforced by the parser in #172, not by upload (record 0030).
 
 ## Context
 
@@ -24,9 +24,10 @@ and to an invoice PDF.
   `spring.servlet.multipart.max-file-size` and `max-request-size` are set to the same
   limit, and `MaxUploadSizeExceededException` returns the same `413`. Rejection
   happens before the controller runs, so no document, version or job row is written.
-- **Invoice PDF: at most 50 pages.** The PDF route enforces this when it parses the
-  file (#170, #172). No PDF route exists yet, so this is a contract choice today, not
-  a runtime check.
+- **Invoice PDF: at most 50 pages.** The parser enforces this when it reads the
+  file (#172). The upload route (#170) stores the bytes without parsing them and
+  does not enforce the cap (record 0030); a PDF over 50 pages is refused when it
+  is parsed.
 - The values live in `UploadLimits` (`MAX_BYTES`, `MAX_PAGES`) and are stated in
   `contracts/openapi.yaml`.
 
@@ -84,6 +85,6 @@ committed.
   is bounded by the servlet multipart `max-request-size` because the parser reads
   parts rather than the wrapped stream. Malformed input that fails before the limit
   remains a `400` parse error, not a `413`.
-- The page cap is not enforced until the PDF upload and text-extraction routes land.
-  They must use `UploadLimits.MAX_PAGES`; until then an invoice PDF that would exceed
-  50 pages has no route to be uploaded through.
+- The page cap is not enforced on upload. #172's parser must use
+  `UploadLimits.MAX_PAGES`; #170's route stores a PDF that exceeds 50 pages, and
+  it is refused when it is parsed.

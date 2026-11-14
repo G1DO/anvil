@@ -1,5 +1,5 @@
 flowchart TB
-    tenantClient["Tenant client<br/>X-Tenant-Id + Idempotency-Key"]
+    tenantClient["Tenant client<br/>X-Tenant-Id + Idempotency-Key<br/>JSON documents and multipart invoice PDFs"]
     operator["Operator<br/>compose up, health probes, logs by correlationId<br/>extraction budgets, kill-switch, revocations<br/>browser console: job state, chain and replay<br/>replay, export and verify a job's chain from the CLI"]
     anvil["ANVIL<br/>Capability-secure, deterministically replayable execution fabric"]
     postgres["PostgreSQL 18<br/>Source of truth, queue, outbox"]
@@ -7,7 +7,7 @@ flowchart TB
     execWorkspaces["Exec workspaces<br/>per-tenant writable directories"]
     llm["Model provider<br/>DeepSeek chat completions API"]
     exports["Exported chains<br/>anvil-chain/1 files, kept by the operator"]
-    tenantClient -->|POST documents, reads, audit reads, extract, facts| anvil
+    tenantClient -->|POST documents, invoice PDFs, reads, audit reads, extract, facts| anvil
     operator -->|health probes, logs| anvil
     operator -->|"browser console: X-Tenant-Id, job state, chain, replay"| anvil
     operator -->|SQL: extraction budgets, kill-switch, revocations| postgres
@@ -15,6 +15,6 @@ flowchart TB
     anvil -->|"export: one job's chain"| exports
     operator -->|"anvil verify: no database needed"| exports
     anvil -->|JDBC, tenant context, RLS| postgres
-    anvil -.->|"put and get, torn tails removed (no route yet)"| casStore
+    anvil -->|"put + pin for invoice PDFs; reads have no route yet"| casStore
     anvil -.->|"resolveInWorkspace only (no running caller yet)"| execWorkspaces
     anvil -->|HTTPS, first 500 chars per document, only with budget and the switch on| llm

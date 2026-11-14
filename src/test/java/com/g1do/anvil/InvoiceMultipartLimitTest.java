@@ -7,27 +7,23 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
 import java.util.UUID;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.multipart.MultipartFile;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * #145: the same 10 MiB limit applies to a multipart invoice PDF. The probe
- * route stands in for #170; it exists only in this test until that route lands.
+ * #145/#170: the same 10 MiB limit applies to a multipart invoice PDF, and the
+ * real route accepts a PDF below it.
  */
-@Import({ TestcontainersConfiguration.class, InvoiceMultipartLimitTest.InvoiceProbe.class })
+@Import(TestcontainersConfiguration.class)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class InvoiceMultipartLimitTest {
 
@@ -39,14 +35,19 @@ class InvoiceMultipartLimitTest {
     @LocalServerPort
     int port;
 
-    @RestController
-    static class InvoiceProbe {
+    @Autowired
+    JdbcTemplate jdbc;
 
-        @PostMapping("/api/invoices")
-        ResponseEntity<Map<String, String>> upload(@RequestParam("file") MultipartFile file) {
-            return ResponseEntity.status(HttpStatus.ACCEPTED)
-                    .body(Map.of("bytes", Long.toString(file.getSize())));
-        }
+    @BeforeEach
+    void clean() {
+        jdbc.execute("TRUNCATE TABLE audit_events");
+        jdbc.execute("DELETE FROM processed_events");
+        jdbc.execute("DELETE FROM outbox");
+        jdbc.execute("DELETE FROM attempts");
+        jdbc.execute("DELETE FROM jobs");
+        jdbc.execute("DELETE FROM document_versions");
+        jdbc.execute("DELETE FROM documents");
+        jdbc.execute("DELETE FROM artifacts");
     }
 
     @Test
@@ -54,7 +55,8 @@ class InvoiceMultipartLimitTest {
         HttpResponse<String> response = post(EVIDENCE_PDF_BYTES, false);
 
         assertThat(response.statusCode()).isEqualTo(202);
-        assertThat(response.body()).contains("\"bytes\":\"" + EVIDENCE_PDF_BYTES + "\"");
+        assertThat(response.body()).contains("\"doc_id\"", "\"version_id\"");
+        assertThat(count("documents")).isEqualTo(1);
     }
 
     @Test
@@ -63,6 +65,7 @@ class InvoiceMultipartLimitTest {
 
         assertThat(response.statusCode()).isEqualTo(413);
         assertThat(response.body()).contains("request body exceeds " + MAX_BYTES + " bytes");
+        assertNoRows();
     }
 
     @Test
@@ -71,11 +74,22 @@ class InvoiceMultipartLimitTest {
 
         assertThat(response.statusCode()).isEqualTo(413);
         assertThat(response.body()).contains("request body exceeds " + MAX_BYTES + " bytes");
+        assertNoRows();
+    }
+
+    private int count(String table) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class);
+    }
+
+    private void assertNoRows() {
+        assertThat(count("documents")).isZero();
+        assertThat(count("document_versions")).isZero();
+        assertThat(count("artifacts")).isZero();
     }
 
     private HttpResponse<String> post(int fileBytes, boolean chunked) throws Exception {
         String boundary = "anvil-" + UUID.randomUUID();
-        byte[] multipart = multipartBody(boundary, new byte[fileBytes]);
+        byte[] multipart = multipartBody(boundary, pdfOfSize(fileBytes));
         HttpRequest.BodyPublisher publisher = chunked
                 ? HttpRequest.BodyPublishers.ofInputStream(() -> new ByteArrayInputStream(multipart))
                 : HttpRequest.BodyPublishers.ofByteArray(multipart);
@@ -85,6 +99,19 @@ class InvoiceMultipartLimitTest {
                 .POST(publisher)
                 .build();
         return HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    /** A byte sequence of exactly {@code size} bytes that the upload route reads as a PDF. */
+    private static byte[] pdfOfSize(int size) {
+        byte[] bytes = new byte[size];
+        java.util.Arrays.fill(bytes, (byte) 'x');
+        byte[] head = "%PDF-1.7\n".getBytes(StandardCharsets.US_ASCII);
+        byte[] tail = "\n%%EOF\n".getBytes(StandardCharsets.US_ASCII);
+        if (size >= head.length + tail.length) {
+            System.arraycopy(head, 0, bytes, 0, head.length);
+            System.arraycopy(tail, 0, bytes, size - tail.length, tail.length);
+        }
+        return bytes;
     }
 
     private static byte[] multipartBody(String boundary, byte[] file) {
